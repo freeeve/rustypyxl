@@ -1,0 +1,19 @@
+[package]
+name = "rustypyxl-pyo3"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Python bindings for rustypyxl - openpyxl-compatible Excel library"
+
+[lib]
+name = "rustypyxl"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustypyxl-core = { path = "../rustypyxl-core" }
+pyo3 = { workspace = true }
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]

@@ -1,0 +1,43 @@
+[package]
+name = "rustypyxl-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core Rust library for reading and writing Excel xlsx files"
+
+[dependencies]
+zip = { workspace = true }
+quick-xml = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+itoa = "1.0"
+ryu = "1.0"
+rayon = "1.10"
+pprof = { version = "0.15", optional = true, features = ["flamegraph", "protobuf-codec"] }
+ahash = { version = "0.8", optional = true }
+hashbrown = { version = "0.14", optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.14"
+
+[features]
+default = ["fast-hash"]
+bench = []
+pprof = ["dep:pprof"]
+fast-hash = ["dep:ahash", "dep:hashbrown"]
+
+[[bin]]
+name = "profile_read"
+path = "src/bin/profile_read.rs"
+required-features = ["pprof"]
+
+[[bin]]
+name = "profile_write"
+path = "src/bin/profile_write.rs"
+required-features = ["pprof"]
+
+[[bench]]
+name = "excel_creation"
+harness = false

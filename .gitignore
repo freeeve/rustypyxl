@@ -1,0 +1,36 @@
+# Build artifacts
+/target/
+**/fuzz/target/
+Cargo.lock
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test files (generated)
+*.xlsx
+!tests/fixtures/*.xlsx
+
+# Profiling
+*.pb
+*.svg
+flamegraph*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

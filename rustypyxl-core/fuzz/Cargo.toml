@@ -1,0 +1,47 @@
+[package]
+name = "rustypyxl-core-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+quick-xml = "0.37"
+zip = "2.4"
+
+[dependencies.rustypyxl-core]
+path = ".."
+default-features = false
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_xml"
+path = "fuzz_targets/fuzz_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_coordinates"
+path = "fuzz_targets/fuzz_coordinates.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_load"
+path = "fuzz_targets/fuzz_load.rs"
+test = false
+doc = false
+bench = false

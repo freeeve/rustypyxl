@@ -1,0 +1,22 @@
+[workspace]
+members = ["rustypyxl-core", "rustypyxl-pyo3"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Eric Freeman"]
+license = "MIT"
+repository = "https://github.com/efreeman/rustypyxl"
+
+[workspace.dependencies]
+zip = "2.2"
+quick-xml = "0.37"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2.0"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
