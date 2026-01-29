@@ -79,7 +79,8 @@ def normalize_value(val):
             return round(val, 10)
         return val
     if isinstance(val, str):
-        return val
+        # Normalize line endings (Windows uses \r\n, Unix uses \n)
+        return val.replace('\r\n', '\n').replace('\r', '\n')
     return str(val)
 
 

@@ -27,16 +27,6 @@ jobs:
           - os: linux
             runs-on: ubuntu-latest
             python-version: "3.13"
-          # macOS x64 (Intel)
-          - os: macos-intel
-            runs-on: macos-13
-            python-version: "3.10"
-          - os: macos-intel
-            runs-on: macos-13
-            python-version: "3.11"
-          - os: macos-intel
-            runs-on: macos-13
-            python-version: "3.12"
           # macOS ARM64 (Apple Silicon)
           - os: macos-arm
             runs-on: macos-latest
