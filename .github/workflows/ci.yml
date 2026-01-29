@@ -2,77 +2,62 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, master]
 
 jobs:
   test:
     name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x64
-          - os: linux
-            runs-on: ubuntu-latest
+          # Linux x86_64
+          - os: ubuntu-latest
             python-version: "3.10"
-          - os: linux
-            runs-on: ubuntu-latest
+          - os: ubuntu-latest
             python-version: "3.11"
-          - os: linux
-            runs-on: ubuntu-latest
+          - os: ubuntu-latest
             python-version: "3.12"
-          - os: linux
-            runs-on: ubuntu-latest
+          - os: ubuntu-latest
             python-version: "3.13"
-          - os: linux
-            runs-on: ubuntu-latest
+          - os: ubuntu-latest
             python-version: "3.14"
-          # macOS ARM64 (Apple Silicon)
-          - os: macos-arm
-            runs-on: macos-latest
+          # macOS (arm64 - macos-latest is ARM now)
+          - os: macos-latest
             python-version: "3.10"
-          - os: macos-arm
-            runs-on: macos-latest
+          - os: macos-latest
             python-version: "3.11"
-          - os: macos-arm
-            runs-on: macos-latest
+          - os: macos-latest
             python-version: "3.12"
-          - os: macos-arm
-            runs-on: macos-latest
+          - os: macos-latest
             python-version: "3.13"
-          - os: macos-arm
-            runs-on: macos-latest
+          - os: macos-latest
             python-version: "3.14"
-          # Windows x64
-          - os: windows
-            runs-on: windows-latest
+          # Windows x86_64
+          - os: windows-latest
             python-version: "3.10"
-          - os: windows
-            runs-on: windows-latest
+          - os: windows-latest
             python-version: "3.11"
-          - os: windows
-            runs-on: windows-latest
+          - os: windows-latest
             python-version: "3.12"
-          - os: windows
-            runs-on: windows-latest
+          - os: windows-latest
             python-version: "3.13"
-          - os: windows
-            runs-on: windows-latest
+          - os: windows-latest
             python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -87,20 +72,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install dependencies
+      - name: Build and test
         run: |
+          python -m venv .venv
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
           python -m pip install --upgrade pip
-          pip install maturin pytest openpyxl
-
-      - name: Build wheel
-        run: maturin build --release --out dist
-
-      - name: Install wheel
+          python -m pip install maturin pytest openpyxl
+          maturin develop --release
+          pytest tests/ -v
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: ${{ (matrix.python-version == '3.13' || matrix.python-version == '3.14') && '1' || '' }}
         shell: bash
-        run: pip install dist/*.whl
-
-      - name: Run tests
-        run: pytest tests/ -v
 
   rust-tests:
     name: Rust tests
