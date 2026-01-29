@@ -46,7 +46,37 @@ wb.save('output.xlsx')
 - **Formatting**: Fonts, alignment, fills, borders, number formats
 - **Workbook features**: Comments, hyperlinks, named ranges, merged cells
 - **Sheet features**: Protection, data validation, column/row dimensions
+- **Parquet import**: Fast import from Parquet files (bypasses Python FFI)
 - **Configurable compression**: Trade off speed vs file size
+
+## Parquet Import
+
+Import large Parquet files directly into Excel worksheets. Data flows from Parquet → Rust → Excel without crossing the Python FFI boundary, making it very fast for large datasets.
+
+```python
+import rustypyxl
+
+wb = rustypyxl.Workbook()
+wb.create_sheet("Data")
+
+# Import parquet file into sheet
+result = wb.insert_from_parquet(
+    sheet_name="Data",
+    path="large_dataset.parquet",
+    start_row=1,
+    start_col=1,
+    include_headers=True,
+    column_renames={"old_name": "new_name"},  # optional
+    columns=["col1", "col2", "col3"],  # optional: select specific columns
+)
+
+print(f"Imported {result['rows_imported']} rows")
+print(f"Data range: {result['range_with_headers']}")
+
+wb.save("output.xlsx")
+```
+
+Performance: ~4 seconds for 1M rows × 20 columns on M1 MacBook Pro.
 
 ## Benchmarks
 
@@ -69,6 +99,16 @@ Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data char
 | 100k × 20 (mixed) | 1.40s | 2.36s | 32.9s |
 
 [calamine](https://github.com/tafia/calamine) is a Rust Excel reader with Python bindings via python-calamine (read-only).
+
+### Memory Usage (Read)
+
+| Dataset | rustypyxl | calamine | openpyxl |
+|---------|-----------|----------|----------|
+| 10k × 20 | 29 MB | 9 MB | 11 MB |
+| 50k × 20 | 58 MB | 48 MB | 53 MB |
+| 100k × 20 | 95 MB | 95 MB | 106 MB |
+
+Note: openpyxl's `write_only=True` mode uses minimal memory (~0.4 MB) by streaming rows to disk. rustypyxl currently holds the full workbook in memory.
 
 ## Building from Source
 
