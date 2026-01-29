@@ -55,4 +55,7 @@ pub use workbook::{CompressionLevel, NamedRange, Workbook};
 pub use worksheet::{CellData, DataValidation, Worksheet, WorksheetProtection};
 
 #[cfg(feature = "parquet")]
-pub use parquet_import::{ParquetImportOptions, ParquetImportResult};
+pub use parquet_import::{
+    ColumnType, ParquetCompression, ParquetExportOptions, ParquetExportResult,
+    ParquetImportOptions, ParquetImportResult,
+};

@@ -46,7 +46,7 @@ wb.save('output.xlsx')
 - **Formatting**: Fonts, alignment, fills, borders, number formats
 - **Workbook features**: Comments, hyperlinks, named ranges, merged cells
 - **Sheet features**: Protection, data validation, column/row dimensions
-- **Parquet import**: Fast import from Parquet files (bypasses Python FFI)
+- **Parquet import/export**: Fast import and export of Parquet files (bypasses Python FFI)
 - **Configurable compression**: Trade off speed vs file size
 
 ## Parquet Import
@@ -77,6 +77,39 @@ wb.save("output.xlsx")
 ```
 
 Performance: ~4 seconds for 1M rows × 20 columns on M1 MacBook Pro.
+
+## Parquet Export
+
+Export worksheet data to Parquet format with automatic type inference:
+
+```python
+import rustypyxl
+
+wb = rustypyxl.load_workbook("data.xlsx")
+
+# Export entire sheet
+result = wb.export_to_parquet(
+    sheet_name="Sheet1",
+    path="output.parquet",
+    has_headers=True,              # first row contains headers
+    compression="snappy",          # snappy, zstd, gzip, lz4, none
+    column_renames={"old": "new"}, # optional: rename columns
+    column_types={"date_col": "datetime"},  # optional: force column types
+)
+
+print(f"Exported {result['rows_exported']} rows")
+print(f"File size: {result['file_size']} bytes")
+
+# Export specific range
+result = wb.export_range_to_parquet(
+    sheet_name="Sheet1",
+    path="subset.parquet",
+    min_row=1, min_col=1,
+    max_row=1000, max_col=5,
+)
+```
+
+Supported column type hints: `string`, `float64`, `int64`, `boolean`, `date`, `datetime`, `auto`.
 
 ## Streaming Writes (Low Memory)
 

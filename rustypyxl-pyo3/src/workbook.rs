@@ -410,6 +410,148 @@ impl PyWorkbook {
         Ok(dict.into())
     }
 
+    /// Export a worksheet to a Parquet file.
+    ///
+    /// This exports cell data directly to Parquet format with automatic type inference.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet to export
+    ///     path: Output path for the Parquet file
+    ///     has_headers: Whether the first row contains headers (default True)
+    ///     compression: Compression type: "snappy", "gzip", "zstd", "lz4", "none" (default "snappy")
+    ///     column_renames: Dict mapping original column names to new names
+    ///     column_types: Dict mapping column names to types: "string", "float64", "int64", "boolean", "date", "datetime"
+    ///
+    /// Returns:
+    ///     Dict with export results: rows_exported, columns_exported, column_names, file_size
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (sheet_name, path, has_headers=true, compression="snappy", column_renames=None, column_types=None))]
+    fn export_to_parquet(
+        &self,
+        sheet_name: &str,
+        path: &str,
+        has_headers: bool,
+        compression: &str,
+        column_renames: Option<std::collections::HashMap<String, String>>,
+        column_types: Option<std::collections::HashMap<String, String>>,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        use rustypyxl_core::{ParquetExportOptions, ParquetCompression, ColumnType};
+        use pyo3::types::PyDict;
+
+        let compression = match compression.to_lowercase().as_str() {
+            "none" => ParquetCompression::None,
+            "snappy" => ParquetCompression::Snappy,
+            "gzip" => ParquetCompression::Gzip,
+            "zstd" => ParquetCompression::Zstd,
+            "lz4" => ParquetCompression::Lz4,
+            _ => return Err(PyValueError::new_err(format!(
+                "Invalid compression: {}. Use 'none', 'snappy', 'gzip', 'zstd', or 'lz4'",
+                compression
+            ))),
+        };
+
+        let mut opts = ParquetExportOptions::new()
+            .with_headers(has_headers)
+            .with_compression(compression);
+
+        if let Some(renames) = column_renames {
+            opts.column_renames = renames;
+        }
+
+        if let Some(types) = column_types {
+            for (col_name, type_str) in types {
+                let col_type = match type_str.to_lowercase().as_str() {
+                    "string" | "str" => ColumnType::String,
+                    "float64" | "float" | "double" => ColumnType::Float64,
+                    "int64" | "int" | "integer" => ColumnType::Int64,
+                    "boolean" | "bool" => ColumnType::Boolean,
+                    "date" => ColumnType::Date,
+                    "datetime" | "timestamp" => ColumnType::DateTime,
+                    "auto" => ColumnType::Auto,
+                    _ => return Err(PyValueError::new_err(format!(
+                        "Invalid column type: {}. Use 'string', 'float64', 'int64', 'boolean', 'date', 'datetime', or 'auto'",
+                        type_str
+                    ))),
+                };
+                opts.column_types.insert(col_name, col_type);
+            }
+        }
+
+        let result = self.inner
+            .export_to_parquet(sheet_name, path, Some(opts))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        // Build result dict
+        let dict = PyDict::new(py);
+        dict.set_item("rows_exported", result.rows_exported)?;
+        dict.set_item("columns_exported", result.columns_exported)?;
+        dict.set_item("column_names", result.column_names)?;
+        dict.set_item("file_size", result.file_size)?;
+
+        Ok(dict.into())
+    }
+
+    /// Export a specific range from a worksheet to a Parquet file.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet to export
+    ///     path: Output path for the Parquet file
+    ///     min_row: Starting row (1-indexed)
+    ///     min_col: Starting column (1-indexed)
+    ///     max_row: Ending row (1-indexed)
+    ///     max_col: Ending column (1-indexed)
+    ///     has_headers: Whether the first row contains headers (default True)
+    ///     compression: Compression type (default "snappy")
+    ///
+    /// Returns:
+    ///     Dict with export results
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (sheet_name, path, min_row, min_col, max_row, max_col, has_headers=true, compression="snappy"))]
+    fn export_range_to_parquet(
+        &self,
+        sheet_name: &str,
+        path: &str,
+        min_row: u32,
+        min_col: u32,
+        max_row: u32,
+        max_col: u32,
+        has_headers: bool,
+        compression: &str,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        use rustypyxl_core::{ParquetExportOptions, ParquetCompression};
+        use pyo3::types::PyDict;
+
+        let compression = match compression.to_lowercase().as_str() {
+            "none" => ParquetCompression::None,
+            "snappy" => ParquetCompression::Snappy,
+            "gzip" => ParquetCompression::Gzip,
+            "zstd" => ParquetCompression::Zstd,
+            "lz4" => ParquetCompression::Lz4,
+            _ => return Err(PyValueError::new_err(format!(
+                "Invalid compression: {}",
+                compression
+            ))),
+        };
+
+        let opts = ParquetExportOptions::new()
+            .with_headers(has_headers)
+            .with_compression(compression);
+
+        let result = self.inner
+            .export_range_to_parquet(sheet_name, path, min_row, min_col, max_row, max_col, Some(opts))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        let dict = PyDict::new(py);
+        dict.set_item("rows_exported", result.rows_exported)?;
+        dict.set_item("columns_exported", result.columns_exported)?;
+        dict.set_item("column_names", result.column_names)?;
+        dict.set_item("file_size", result.file_size)?;
+
+        Ok(dict.into())
+    }
+
     fn __str__(&self) -> String {
         format!("<Workbook with {} sheet(s)>", self.inner.worksheets.len())
     }

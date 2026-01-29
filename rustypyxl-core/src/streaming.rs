@@ -30,19 +30,20 @@ pub struct StreamingSheet {
 /// ```no_run
 /// use rustypyxl_core::streaming::StreamingWorkbook;
 /// use rustypyxl_core::CellValue;
+/// use std::sync::Arc;
 ///
 /// let mut wb = StreamingWorkbook::new("output.xlsx").unwrap();
 /// let mut sheet = wb.create_sheet("Data").unwrap();
 ///
 /// // Write rows - they go directly to disk
-/// sheet.append_row(&wb, vec![
-///     CellValue::String("Name".into()),
-///     CellValue::String("Age".into()),
+/// wb.append_row(&mut sheet, vec![
+///     CellValue::String(Arc::from("Name")),
+///     CellValue::String(Arc::from("Age")),
 /// ]).unwrap();
 ///
-/// for i in 0..1_000_000 {
-///     sheet.append_row(&wb, vec![
-///         CellValue::String(format!("Person {}", i).into()),
+/// for i in 0..1000 {
+///     wb.append_row(&mut sheet, vec![
+///         CellValue::String(Arc::from(format!("Person {}", i))),
 ///         CellValue::Number(i as f64),
 ///     ]).unwrap();
 /// }
