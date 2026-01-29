@@ -4,13 +4,37 @@ build-backend = "maturin"
 
 [project]
 name = "rustypyxl"
-version = "0.1.0"
+version = "0.1.1"
+description = "A fast, Rust-powered Excel xlsx library for Python with openpyxl-compatible API"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Eve Freeman", email = "eve.freeman@gmail.com" }
+]
+keywords = ["excel", "xlsx", "spreadsheet", "openpyxl", "rust", "performance"]
 requires-python = ">=3.10,<3.15"
 classifiers = [
-    "Programming Language :: Rust",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Rust",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/freeeve/rustypyxl"
+Repository = "https://github.com/freeeve/rustypyxl"
+Issues = "https://github.com/freeeve/rustypyxl/issues"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

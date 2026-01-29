@@ -34,3 +34,7 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Fuzz testing artifacts
+rustypyxl-core/fuzz/artifacts/
+rustypyxl-core/fuzz/corpus/

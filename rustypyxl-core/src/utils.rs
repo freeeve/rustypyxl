@@ -2,6 +2,11 @@
 
 use crate::error::{Result, RustypyxlError};
 
+/// Maximum column number in Excel (XFD = 16384).
+pub const MAX_COLUMN: u32 = 16384;
+/// Maximum row number in Excel.
+pub const MAX_ROW: u32 = 1_048_576;
+
 /// Parse an Excel cell coordinate from bytes (e.g., b"A1", b"AB123") into (row, column).
 /// Row and column are 1-indexed. This is the fast path that avoids string allocation.
 #[inline]
@@ -13,7 +18,7 @@ pub fn parse_coordinate_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
     let mut i = 0usize;
     let mut column: u32 = 0;
 
-    // Parse column letters
+    // Parse column letters with overflow protection
     while i < bytes.len() {
         let b = bytes[i];
         let upper = match b {
@@ -21,7 +26,12 @@ pub fn parse_coordinate_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
             b'A'..=b'Z' => b,
             _ => break,
         };
-        column = column * 26 + (upper - b'A' + 1) as u32;
+        // Use checked arithmetic to prevent overflow
+        column = column.checked_mul(26)?.checked_add((upper - b'A' + 1) as u32)?;
+        // Early exit if column exceeds Excel's max
+        if column > MAX_COLUMN {
+            return None;
+        }
         i += 1;
     }
 
@@ -29,14 +39,19 @@ pub fn parse_coordinate_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
 
-    // Parse row number
+    // Parse row number with overflow protection
     let mut row: u32 = 0;
     while i < bytes.len() {
         let b = bytes[i];
         if !b.is_ascii_digit() {
             return None;
         }
-        row = row.wrapping_mul(10).wrapping_add((b - b'0') as u32);
+        // Use checked arithmetic to prevent overflow
+        row = row.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+        // Early exit if row exceeds Excel's max
+        if row > MAX_ROW {
+            return None;
+        }
         i += 1;
     }
 
@@ -66,7 +81,8 @@ pub fn parse_u32_bytes(bytes: &[u8]) -> Option<u32> {
         if !b.is_ascii_digit() {
             return None;
         }
-        result = result.wrapping_mul(10).wrapping_add((b - b'0') as u32);
+        // Use checked arithmetic to prevent overflow
+        result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(result)
 }
@@ -103,7 +119,19 @@ pub fn letter_to_column(letters: &str) -> Result<u32> {
             }
         };
         saw_letter = true;
-        result = result * 26 + (upper - b'A' + 1) as u32;
+        // Use checked arithmetic to prevent overflow
+        result = result
+            .checked_mul(26)
+            .and_then(|r| r.checked_add((upper - b'A' + 1) as u32))
+            .ok_or_else(|| RustypyxlError::InvalidCoordinate(
+                format!("Column '{}' exceeds maximum", letters)
+            ))?;
+        // Validate against Excel's max column
+        if result > MAX_COLUMN {
+            return Err(RustypyxlError::InvalidCoordinate(
+                format!("Column '{}' exceeds Excel maximum (XFD = {})", letters, MAX_COLUMN)
+            ));
+        }
     }
 
     if !saw_letter || result == 0 {
@@ -216,5 +244,43 @@ mod tests {
     fn test_coordinate_from_row_col() {
         assert_eq!(coordinate_from_row_col(1, 1), "A1");
         assert_eq!(coordinate_from_row_col(10, 28), "AB10");
+    }
+
+    #[test]
+    fn test_overflow_protection_column() {
+        // Test the fuzz-discovered crash input: very long column names
+        assert!(parse_coordinate("CCCccccc0").is_err());
+        assert!(parse_coordinate("AAAAAAAAAA1").is_err());
+        assert!(parse_coordinate("ZZZZZZZZZ1").is_err());
+        // Column exceeds Excel max (XFD = 16384)
+        assert!(parse_coordinate("XFE1").is_err());
+        assert!(parse_coordinate("XFDA1").is_err());
+    }
+
+    #[test]
+    fn test_overflow_protection_row() {
+        // Row exceeds Excel max (1048576)
+        assert!(parse_coordinate("A1048577").is_err());
+        assert!(parse_coordinate("A9999999999").is_err());
+        // Numeric overflow
+        assert!(parse_coordinate("A99999999999999999999").is_err());
+    }
+
+    #[test]
+    fn test_letter_to_column_overflow() {
+        // Very long column name should fail, not overflow
+        assert!(letter_to_column("AAAAAAAAAA").is_err());
+        assert!(letter_to_column("ZZZZZZZZZ").is_err());
+        // Column exceeds Excel max
+        assert!(letter_to_column("XFE").is_err());
+    }
+
+    #[test]
+    fn test_parse_u32_bytes_overflow() {
+        // Should return None on overflow, not wrap
+        assert!(parse_u32_bytes(b"99999999999999999999").is_none());
+        // Valid numbers should work
+        assert_eq!(parse_u32_bytes(b"123"), Some(123));
+        assert_eq!(parse_u32_bytes(b"4294967295"), Some(u32::MAX));
     }
 }
