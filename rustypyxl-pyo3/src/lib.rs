@@ -6,11 +6,13 @@
 use pyo3::prelude::*;
 
 mod cell;
+mod streaming;
 mod style;
 mod workbook;
 mod worksheet;
 
 use cell::PyCell;
+use streaming::PyStreamingWorkbook;
 use style::{PyFont, PyAlignment, PyPatternFill, PyBorder};
 use workbook::PyWorkbook;
 use worksheet::PyWorksheet;
@@ -37,6 +39,9 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorkbook>()?;
     m.add_class::<PyWorksheet>()?;
     m.add_class::<PyCell>()?;
+
+    // Streaming (write-only) classes
+    m.add_class::<PyStreamingWorkbook>()?;
 
     // Style classes
     m.add_class::<PyFont>()?;

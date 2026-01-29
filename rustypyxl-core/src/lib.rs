@@ -39,6 +39,7 @@ pub mod writer;
 // Phase 3 additional modules
 pub mod autofilter;
 pub mod pagesetup;
+pub mod streaming;
 pub mod table;
 
 // Optional parquet support

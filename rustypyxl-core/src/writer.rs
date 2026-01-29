@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 /// Escape XML special characters in text content.
 #[inline]
-fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
+pub fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
     if s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
         let mut escaped = String::with_capacity(s.len() + 8);
         for c in s.chars() {
@@ -32,6 +32,54 @@ fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Owned(escaped)
     } else {
         std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Format a cell value directly to a string buffer (for streaming writes).
+/// Uses inline strings instead of shared strings for simplicity.
+#[inline]
+pub fn format_cell_value(buf: &mut String, coord: &str, value: &CellValue) {
+    match value {
+        CellValue::String(s) => {
+            let escaped = escape_xml(s.as_ref());
+            buf.push_str("<c r=\"");
+            buf.push_str(coord);
+            buf.push_str("\" t=\"inlineStr\"><is><t>");
+            buf.push_str(&escaped);
+            buf.push_str("</t></is></c>");
+        }
+        CellValue::Number(n) => {
+            buf.push_str("<c r=\"");
+            buf.push_str(coord);
+            buf.push_str("\"><v>");
+            buf.push_str(ryu::Buffer::new().format(*n));
+            buf.push_str("</v></c>");
+        }
+        CellValue::Boolean(b) => {
+            buf.push_str("<c r=\"");
+            buf.push_str(coord);
+            buf.push_str("\" t=\"b\"><v>");
+            buf.push_str(if *b { "1" } else { "0" });
+            buf.push_str("</v></c>");
+        }
+        CellValue::Formula(f) => {
+            let escaped = escape_xml(f);
+            buf.push_str("<c r=\"");
+            buf.push_str(coord);
+            buf.push_str("\"><f>");
+            buf.push_str(&escaped);
+            buf.push_str("</f></c>");
+        }
+        CellValue::Date(d) => {
+            buf.push_str("<c r=\"");
+            buf.push_str(coord);
+            buf.push_str("\" t=\"d\"><v>");
+            buf.push_str(d);
+            buf.push_str("</v></c>");
+        }
+        CellValue::Empty => {
+            // Skip empty cells in streaming mode
+        }
     }
 }
 

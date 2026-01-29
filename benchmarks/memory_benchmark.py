@@ -104,6 +104,27 @@ def benchmark_write_rustypyxl(path, rows, cols):
 
     return peak
 
+def benchmark_write_rustypyxl_streaming(path, rows, cols):
+    """Benchmark rustypyxl streaming write memory."""
+    import rustypyxl
+
+    gc.collect()
+    tracemalloc.start()
+
+    wb = rustypyxl.WriteOnlyWorkbook(path)
+    wb.create_sheet("Sheet")
+
+    for r in range(rows):
+        row = [f"R{r}C{c}" if c % 2 else r * c for c in range(cols)]
+        wb.append_row(row)
+
+    wb.close()
+
+    peak = get_peak_memory_mb()
+    tracemalloc.stop()
+
+    return peak
+
 def benchmark_write_openpyxl(path, rows, cols):
     """Benchmark openpyxl write memory."""
     import openpyxl
@@ -158,17 +179,19 @@ def main():
 
         # Write benchmarks
         print("\n## Write Memory Usage\n")
-        print("| Dataset | rustypyxl | openpyxl |")
-        print("|---------|-----------|----------|")
+        print("| Dataset | rustypyxl | rustypyxl (streaming) | openpyxl (write_only) |")
+        print("|---------|-----------|----------------------|----------------------|")
 
         for rows, cols, _ in configs:
             path_rusty = os.path.join(tmpdir, f"write_rusty_{rows}.xlsx")
+            path_stream = os.path.join(tmpdir, f"write_stream_{rows}.xlsx")
             path_opx = os.path.join(tmpdir, f"write_opx_{rows}.xlsx")
 
             rusty_mem = benchmark_write_rustypyxl(path_rusty, rows, cols)
+            stream_mem = benchmark_write_rustypyxl_streaming(path_stream, rows, cols)
             opx_mem = benchmark_write_openpyxl(path_opx, rows, cols)
 
-            print(f"| {rows//1000}k × {cols} | {rusty_mem:.1f} MB | {opx_mem:.1f} MB |")
+            print(f"| {rows//1000}k × {cols} | {rusty_mem:.1f} MB | {stream_mem:.1f} MB | {opx_mem:.1f} MB |")
 
 if __name__ == "__main__":
     main()

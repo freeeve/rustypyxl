@@ -78,6 +78,24 @@ wb.save("output.xlsx")
 
 Performance: ~4 seconds for 1M rows × 20 columns on M1 MacBook Pro.
 
+## Streaming Writes (Low Memory)
+
+For very large files, use `WriteOnlyWorkbook` which streams rows directly to disk:
+
+```python
+import rustypyxl
+
+wb = rustypyxl.WriteOnlyWorkbook("large_output.xlsx")
+wb.create_sheet("Data")
+
+for i in range(1_000_000):
+    wb.append_row([f"Row {i}", i, i * 1.5, i % 2 == 0])
+
+wb.close()  # Must call close() to finalize the file
+```
+
+This uses minimal memory regardless of file size, similar to openpyxl's `write_only=True` mode.
+
 ## Benchmarks
 
 Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data characteristics and hardware.
@@ -108,7 +126,15 @@ Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data char
 | 50k × 20 | 58 MB | 48 MB | 53 MB |
 | 100k × 20 | 95 MB | 95 MB | 106 MB |
 
-Note: openpyxl's `write_only=True` mode uses minimal memory (~0.4 MB) by streaming rows to disk. rustypyxl currently holds the full workbook in memory.
+### Memory Usage (Write)
+
+| Dataset | rustypyxl | WriteOnlyWorkbook | openpyxl (write_only) |
+|---------|-----------|-------------------|----------------------|
+| 10k × 20 | 10 MB | ~0 MB | 0.4 MB |
+| 50k × 20 | 50 MB | ~0 MB | 0.4 MB |
+| 100k × 20 | 99 MB | ~0 MB | 0.4 MB |
+
+`WriteOnlyWorkbook` streams rows directly to disk like openpyxl's write_only mode.
 
 ## Building from Source
 
