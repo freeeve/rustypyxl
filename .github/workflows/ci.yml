@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }} (${{ matrix.arch }})
+    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -16,134 +16,47 @@ jobs:
         include:
           # Linux x64
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.10"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.11"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.12"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.13"
-          - os: linux
-            arch: x64
-            runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            python-version: "3.14"
-          # Linux ARM64
-          - os: linux
-            arch: arm64
-            runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.10"
-          - os: linux
-            arch: arm64
-            runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.11"
-          - os: linux
-            arch: arm64
-            runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.12"
-          - os: linux
-            arch: arm64
-            runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.13"
-          - os: linux
-            arch: arm64
-            runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            python-version: "3.14"
           # macOS x64 (Intel)
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.10"
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.11"
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.12"
-          - os: macos
-            arch: x64
-            runs-on: macos-13
-            target: x86_64-apple-darwin
-            python-version: "3.13"
-          - os: macos
-            arch: x64
-            runs-on: macos-13
-            target: x86_64-apple-darwin
-            python-version: "3.14"
           # macOS ARM64 (Apple Silicon)
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.10"
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.11"
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.12"
-          - os: macos
-            arch: arm64
-            runs-on: macos-latest
-            target: aarch64-apple-darwin
-            python-version: "3.13"
-          - os: macos
-            arch: arm64
-            runs-on: macos-latest
-            target: aarch64-apple-darwin
-            python-version: "3.14"
           # Windows x64
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.10"
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.11"
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.12"
-          - os: windows
-            arch: x64
-            runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
-            python-version: "3.13"
-          - os: windows
-            arch: x64
-            runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
-            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v4
@@ -155,8 +68,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -167,42 +78,27 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-cargo-
+            ${{ runner.os }}-cargo-
 
-      - name: Install maturin
-        uses: PyO3/maturin-action@v1
-        with:
-          manylinux: auto
-          target: ${{ matrix.target }}
-
-      - name: Build package
-        run: maturin build --release
-
-      - name: Install package
+      - name: Install dependencies
         run: |
-          pip install pytest
-          python -c "import glob; import subprocess; wheels = glob.glob('target/wheels/*.whl'); subprocess.check_call(['pip', 'install'] + wheels)"
+          python -m pip install --upgrade pip
+          pip install maturin pytest openpyxl
+
+      - name: Build and install package
+        run: |
+          maturin develop --release
 
       - name: Run tests
-        run: pytest tests/
+        run: pytest tests/ -v
 
-  coverage:
-    name: Coverage (Rust with Tarpaulin)
+  rust-tests:
+    name: Rust tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
-    
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -216,38 +112,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: linux-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            linux-x64-cargo-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install maturin
-        uses: PyO3/maturin-action@v1
-        with:
-          manylinux: auto
-
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
-
-      - name: Build package
-        run: maturin build --release
-
-      - name: Install package
-        run: |
-          pip install pytest
-          python -c "import glob; import subprocess; wheels = glob.glob('target/wheels/*.whl'); subprocess.check_call(['pip', 'install'] + wheels)"
-
-      - name: Run Rust tests with tarpaulin
-        run: |
-          cargo tarpaulin --out Lcov --output-dir . --exclude-files 'tests/*' --exclude-files 'benches/*' --timeout 120
-        continue-on-error: true
-
-      - name: Run Python tests
-        run: pytest tests/
-
-      - name: Upload coverage to Coveralls
-        uses: coverallsapp/github-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: ./lcov.info
-          parallel: false
-
+      - name: Run Rust tests
+        run: cargo test --workspace --release

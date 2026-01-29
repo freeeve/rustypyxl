@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-wheels:
-    name: Build wheels (${{ matrix.os }}, ${{ matrix.arch }}, py${{ matrix.python-version }})
+    name: Build wheels (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -14,87 +14,55 @@ jobs:
         include:
           # Linux x64
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.10"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.11"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.12"
           - os: linux
-            arch: x64
             runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
             python-version: "3.13"
           # macOS x64 (Intel)
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.10"
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.11"
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.12"
-          - os: macos
-            arch: x64
+          - os: macos-intel
             runs-on: macos-13
-            target: x86_64-apple-darwin
             python-version: "3.13"
           # macOS ARM64 (Apple Silicon)
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.10"
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.11"
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.12"
-          - os: macos
-            arch: arm64
+          - os: macos-arm
             runs-on: macos-latest
-            target: aarch64-apple-darwin
             python-version: "3.13"
           # Windows x64
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.10"
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.11"
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.12"
           - os: windows
-            arch: x64
             runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
             python-version: "3.13"
 
     steps:
@@ -107,21 +75,17 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Install maturin
         run: pip install maturin
 
       - name: Build wheels
         run: maturin build --release --out dist
-        env:
-          MATURIN_PEP517_ARGS: "--manylinux=off"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.arch }}-py${{ matrix.python-version }}
+          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
           path: dist/*.whl
           if-no-files-found: error
 
