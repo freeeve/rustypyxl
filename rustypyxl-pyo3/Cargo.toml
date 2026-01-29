@@ -11,9 +11,10 @@ name = "rustypyxl"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustypyxl-core = { path = "../rustypyxl-core" }
+rustypyxl-core = { path = "../rustypyxl-core", features = ["parquet"] }
 pyo3 = { workspace = true }
 
 [features]
-default = ["extension-module"]
+default = ["extension-module", "parquet"]
 extension-module = ["pyo3/extension-module"]
+parquet = ["rustypyxl-core/parquet"]

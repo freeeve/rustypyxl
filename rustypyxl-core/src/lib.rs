@@ -41,6 +41,10 @@ pub mod autofilter;
 pub mod pagesetup;
 pub mod table;
 
+// Optional parquet support
+#[cfg(feature = "parquet")]
+pub mod parquet_import;
+
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
@@ -48,3 +52,6 @@ pub use style::{Alignment, Border, BorderStyle, CellStyle, Fill, Font};
 pub use utils::{column_to_letter, coordinate_from_row_col, letter_to_column, parse_coordinate, parse_coordinate_bytes, parse_f64_bytes, parse_u32_bytes, parse_range};
 pub use workbook::{CompressionLevel, NamedRange, Workbook};
 pub use worksheet::{CellData, DataValidation, Worksheet, WorksheetProtection};
+
+#[cfg(feature = "parquet")]
+pub use parquet_import::{ParquetImportOptions, ParquetImportResult};

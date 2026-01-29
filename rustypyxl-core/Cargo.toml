@@ -17,6 +17,8 @@ rayon = "1.10"
 pprof = { version = "0.15", optional = true, features = ["flamegraph", "protobuf-codec"] }
 ahash = { version = "0.8", optional = true }
 hashbrown = { version = "0.14", optional = true }
+parquet = { version = "54", optional = true, default-features = false, features = ["arrow", "snap", "zstd", "lz4"] }
+arrow = { version = "54", optional = true, default-features = false }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -27,6 +29,7 @@ default = ["fast-hash"]
 bench = []
 pprof = ["dep:pprof"]
 fast-hash = ["dep:ahash", "dep:hashbrown"]
+parquet = ["dep:parquet", "dep:arrow"]
 
 [[bin]]
 name = "profile_read"

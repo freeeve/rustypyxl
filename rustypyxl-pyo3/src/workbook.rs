@@ -347,6 +347,69 @@ impl PyWorkbook {
         Ok(result)
     }
 
+    /// Import data from a Parquet file directly into a worksheet.
+    ///
+    /// This is the fastest way to load large datasets, as it bypasses
+    /// Python FFI entirely and reads directly from Parquet into cells.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet to insert into
+    ///     path: Path to the Parquet file
+    ///     start_row: Starting row (1-indexed, default 1)
+    ///     start_col: Starting column (1-indexed, default 1)
+    ///     include_headers: Include column headers (default True)
+    ///     column_renames: Dict mapping original column names to new names
+    ///     columns: List of column names to import (None = all columns)
+    ///
+    /// Returns:
+    ///     Dict with import results: rows_imported, columns_imported,
+    ///     range (e.g. "A1:Z1000"), header_range, data_range, column_names
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (sheet_name, path, start_row=1, start_col=1, include_headers=true, column_renames=None, columns=None))]
+    fn insert_from_parquet(
+        &mut self,
+        sheet_name: &str,
+        path: &str,
+        start_row: u32,
+        start_col: u32,
+        include_headers: bool,
+        column_renames: Option<std::collections::HashMap<String, String>>,
+        columns: Option<Vec<String>>,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        use rustypyxl_core::ParquetImportOptions;
+        use pyo3::types::PyDict;
+
+        let mut opts = ParquetImportOptions::new().with_headers(include_headers);
+
+        if let Some(renames) = column_renames {
+            opts.column_renames = renames;
+        }
+
+        if let Some(cols) = columns {
+            opts.columns = cols;
+        }
+
+        let result = self.inner
+            .insert_from_parquet(sheet_name, path, start_row, start_col, Some(opts))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        // Build result dict
+        let dict = PyDict::new(py);
+        dict.set_item("rows_imported", result.rows_imported)?;
+        dict.set_item("columns_imported", result.columns_imported)?;
+        dict.set_item("start_row", result.start_row)?;
+        dict.set_item("start_col", result.start_col)?;
+        dict.set_item("end_row", result.end_row)?;
+        dict.set_item("end_col", result.end_col)?;
+        dict.set_item("range", result.range_with_headers())?;
+        dict.set_item("header_range", result.header_range())?;
+        dict.set_item("data_range", result.data_range())?;
+        dict.set_item("column_names", result.column_names)?;
+
+        Ok(dict.into())
+    }
+
     fn __str__(&self) -> String {
         format!("<Workbook with {} sheet(s)>", self.inner.worksheets.len())
     }
