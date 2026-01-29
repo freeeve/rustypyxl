@@ -1,6 +1,6 @@
 # rustypyxl
 
-A high-performance Excel (XLSX) library for Python, written in Rust. Drop-in replacement for openpyxl with 10-20x faster read/write performance.
+A Rust-powered Excel (XLSX) library for Python with an openpyxl-compatible API.
 
 ## Installation
 
@@ -25,7 +25,7 @@ wb.set_cell_value('Sheet1', 1, 1, 'Hello')
 wb.set_cell_value('Sheet1', 2, 1, 42.5)
 wb.set_cell_value('Sheet1', 3, 1, '=SUM(A1:A2)')
 
-# Bulk operations (fastest)
+# Bulk operations
 wb.write_rows('Sheet1', [
     ['Name', 'Age', 'Score'],
     ['Alice', 30, 95.5],
@@ -40,40 +40,35 @@ wb.save('output.xlsx')
 
 ## Features
 
-- **Fast**: 10-20x faster than openpyxl for large files
-- **Compatible**: Drop-in replacement for common openpyxl patterns
-- **Full-featured**:
-  - Cell values (string, number, boolean, date, formula)
-  - Cell formatting (font, alignment, fill, borders, number formats)
-  - Comments and hyperlinks
-  - Named ranges
-  - Sheet protection
-  - Data validation
-  - Merged cells
-  - Column/row dimensions
-  - Configurable compression
+- **openpyxl-compatible API**: Familiar patterns for easy migration
+- **Read and write support**: Full round-trip capability
+- **Cell values**: Strings, numbers, booleans, dates, formulas
+- **Formatting**: Fonts, alignment, fills, borders, number formats
+- **Workbook features**: Comments, hyperlinks, named ranges, merged cells
+- **Sheet features**: Protection, data validation, column/row dimensions
+- **Configurable compression**: Trade off speed vs file size
 
-## Performance
+## Benchmarks
 
-In micro benchmarks on M1 MacBook (1M rows × 20 columns):
+Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data characteristics and hardware.
 
-| Operation | rustypyxl | openpyxl | Speedup |
-|-----------|-----------|----------|---------|
-| Write     | ~10s      | ~200s    | 20x     |
-| Read      | ~11s      | ~180s    | 16x     |
+### Write Performance (1M rows × 20 columns)
 
-### Read Performance vs calamine
+| Library | Time |
+|---------|------|
+| rustypyxl | ~10s |
+| openpyxl | ~200s |
 
-rustypyxl is also faster than [calamine](https://github.com/tafia/calamine), a popular Rust Excel reader (with Python bindings via python-calamine):
+### Read Performance
 
-| Dataset | rustypyxl | calamine | openpyxl | vs calamine | vs openpyxl |
-|---------|-----------|----------|----------|-------------|-------------|
-| 10k × 20 (numeric) | 0.13s | 0.21s | 1.16s | 1.7x | 9.1x |
-| 10k × 20 (strings) | 0.14s | 0.26s | 2.97s | 1.9x | 21x  |
-| 100k × 20 (numeric) | 0.84s | 1.76s | 11.5s | 2.1x | 14x  |
-| 100k × 20 (mixed) | 1.40s | 2.36s | 32.9s | 1.7x | 24x  |
+| Dataset | rustypyxl | calamine | openpyxl |
+|---------|-----------|----------|----------|
+| 10k × 20 (numeric) | 0.13s | 0.21s | 1.16s |
+| 10k × 20 (strings) | 0.14s | 0.26s | 2.97s |
+| 100k × 20 (numeric) | 0.84s | 1.76s | 11.5s |
+| 100k × 20 (mixed) | 1.40s | 2.36s | 32.9s |
 
-Unlike calamine (read-only), rustypyxl also supports writing Excel files.
+[calamine](https://github.com/tafia/calamine) is a Rust Excel reader with Python bindings via python-calamine (read-only).
 
 ## Building from Source
 
