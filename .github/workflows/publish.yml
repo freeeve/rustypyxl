@@ -25,6 +25,9 @@ jobs:
           - os: linux
             runs-on: ubuntu-latest
             python-version: "3.13"
+          - os: linux
+            runs-on: ubuntu-latest
+            python-version: "3.14"
           # macOS ARM64 (Apple Silicon)
           - os: macos-arm
             runs-on: macos-latest
@@ -38,6 +41,9 @@ jobs:
           - os: macos-arm
             runs-on: macos-latest
             python-version: "3.13"
+          - os: macos-arm
+            runs-on: macos-latest
+            python-version: "3.14"
           # Windows x64
           - os: windows
             runs-on: windows-latest
@@ -51,6 +57,9 @@ jobs:
           - os: windows
             runs-on: windows-latest
             python-version: "3.13"
+          - os: windows
+            runs-on: windows-latest
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v4
