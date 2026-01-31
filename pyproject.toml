@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustypyxl"
-version = "0.2.0"
+version = "0.3.0"
 description = "A fast, Rust-powered Excel xlsx library for Python with openpyxl-compatible API"
 readme = "README.md"
 license = { text = "MIT" }
