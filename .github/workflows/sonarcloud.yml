@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0  # Full history for better analysis
 
       - name: Set up Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
