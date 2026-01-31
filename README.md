@@ -187,10 +187,10 @@ Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data char
 
 | Dataset | rustypyxl | calamine | openpyxl |
 |---------|-----------|----------|----------|
-| 10k × 20 (numeric) | 0.13s | 0.21s | 1.16s |
-| 10k × 20 (strings) | 0.14s | 0.26s | 2.97s |
-| 100k × 20 (numeric) | 0.84s | 1.76s | 11.5s |
-| 100k × 20 (mixed) | 1.40s | 2.36s | 32.9s |
+| 10k × 20 (numeric) | 0.08s | 0.10s | 0.51s |
+| 10k × 20 (strings) | 0.10s | 0.12s | 1.23s |
+| 100k × 20 (numeric) | 0.97s | 1.03s | 4.74s |
+| 100k × 20 (mixed) | 1.20s | 1.28s | 12.1s |
 
 [calamine](https://github.com/tafia/calamine) is a Rust Excel reader with Python bindings via python-calamine (read-only).
 
