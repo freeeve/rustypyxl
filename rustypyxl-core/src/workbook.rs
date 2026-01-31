@@ -845,6 +845,100 @@ impl Workbook {
         Ok(strings)
     }
 
+    /// Get a string attribute value from an XML element.
+    fn get_attr_str(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
+        for attr in e.attributes().flatten() {
+            if attr.key.as_ref() == key {
+                return Some(String::from_utf8_lossy(&attr.value).to_string());
+            }
+        }
+        None
+    }
+
+    /// Get an optional u32 attribute value from an XML element.
+    fn get_attr_u32(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<u32> {
+        Self::get_attr_str(e, key).and_then(|s| s.parse().ok())
+    }
+
+    /// Get an optional f64 attribute value from an XML element.
+    fn get_attr_f64(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<f64> {
+        Self::get_attr_str(e, key).and_then(|s| s.parse().ok())
+    }
+
+    /// Check if an attribute equals "1" or "true".
+    fn get_attr_bool(e: &quick_xml::events::BytesStart, key: &[u8]) -> bool {
+        Self::get_attr_str(e, key)
+            .map(|s| s == "1" || s == "true")
+            .unwrap_or(false)
+    }
+
+    /// Parse font properties from an XML element (handles both Start and Empty events).
+    fn parse_font_element(e: &quick_xml::events::BytesStart, font: &mut Font) {
+        let name = e.name();
+        let name = name.as_ref();
+        match name {
+            b"b" => font.bold = true,
+            b"i" => font.italic = true,
+            b"u" => font.underline = true,
+            b"strike" => font.strike = true,
+            b"sz" => font.size = Self::get_attr_f64(e, b"val"),
+            b"name" => font.name = Self::get_attr_str(e, b"val"),
+            b"vertAlign" => font.vert_align = Self::get_attr_str(e, b"val"),
+            b"color" => {
+                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
+                    font.color = Some(format!("#{}", rgb));
+                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
+                    font.color = Some(format!("theme:{}", theme));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Parse fill properties from an XML element.
+    fn parse_fill_element(e: &quick_xml::events::BytesStart, fill: &mut Fill) {
+        let name = e.name();
+        let name = name.as_ref();
+        match name {
+            b"patternFill" => {
+                fill.pattern_type = Self::get_attr_str(e, b"patternType");
+            }
+            b"fgColor" => {
+                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
+                    fill.fg_color = Some(format!("#{}", rgb));
+                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
+                    fill.fg_color = Some(format!("theme:{}", theme));
+                }
+            }
+            b"bgColor" => {
+                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
+                    fill.bg_color = Some(format!("#{}", rgb));
+                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
+                    fill.bg_color = Some(format!("theme:{}", theme));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Parse border side properties and return (style, color).
+    fn parse_border_side_attrs(e: &quick_xml::events::BytesStart) -> (Option<String>, Option<String>) {
+        let style = Self::get_attr_str(e, b"style");
+        let color = None; // Color comes from nested element
+        (style, color)
+    }
+
+    /// Parse a color element and return the color string.
+    fn parse_color_element(e: &quick_xml::events::BytesStart) -> Option<String> {
+        if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
+            Some(format!("#{}", rgb))
+        } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
+            Some(format!("theme:{}", theme))
+        } else {
+            None
+        }
+    }
+
     fn parse_styles_xml(xml: &[u8]) -> Result<(HashMap<u32, Arc<CellStyle>>, StyleRegistry)> {
         let mut reader = Reader::from_reader(Cursor::new(xml));
         reader.config_mut().trim_text(true);
@@ -875,93 +969,15 @@ impl Workbook {
                 Ok(Event::Empty(e)) => {
                     let name = e.name();
                     let name = name.as_ref();
+
+                    // Handle font properties
                     if in_font {
-                        if name == b"b" {
-                            current_font.bold = true;
-                        } else if name == b"i" {
-                            current_font.italic = true;
-                        } else if name == b"u" {
-                            current_font.underline = true;
-                        } else if name == b"sz" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        if let Ok(size) =
-                                            String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                        {
-                                            current_font.size = Some(size);
-                                        }
-                                    }
-                                }
-                            }
-                        } else if name == b"name" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        current_font.name =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
-                            }
-                        } else if name == b"color" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"rgb" {
-                                        current_font.color = Some(format!(
-                                            "#{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    } else if attr_key == b"theme" {
-                                        current_font.color = Some(format!(
-                                            "theme:{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    }
-                                }
-                            }
-                        } else if name == b"strike" {
-                            current_font.strike = true;
-                        } else if name == b"vertAlign" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        current_font.vert_align =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
-                            }
-                        }
+                        Self::parse_font_element(&e, &mut current_font);
                     }
-                    // Handle fill color in empty elements (self-closing tags)
-                    if in_fill && name == b"fgColor" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"rgb" {
-                                    current_fill.fg_color = Some(format!(
-                                        "#{}",
-                                        String::from_utf8_lossy(&attr.value)
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    if in_fill && name == b"bgColor" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"rgb" {
-                                    current_fill.bg_color = Some(format!(
-                                        "#{}",
-                                        String::from_utf8_lossy(&attr.value)
-                                    ));
-                                }
-                            }
-                        }
+
+                    // Handle fill properties
+                    if in_fill {
+                        Self::parse_fill_element(&e, &mut current_fill);
                     }
                     // Handle self-closing border side elements (e.g., <left style="thin"/>)
                     if in_border && (name == b"left" || name == b"right" || name == b"top"
@@ -1054,105 +1070,9 @@ impl Workbook {
                             }
                         }
                     } else if in_font {
-                        let prop_name = e.name();
-                        let prop_name = prop_name.as_ref();
-                        if prop_name == b"name" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        current_font.name =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
-                            }
-                        } else if prop_name == b"sz" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        if let Ok(size) =
-                                            String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                        {
-                                            current_font.size = Some(size);
-                                        }
-                                    }
-                                }
-                            }
-                        } else if prop_name == b"b" {
-                            current_font.bold = true;
-                        } else if prop_name == b"i" {
-                            current_font.italic = true;
-                        } else if prop_name == b"u" {
-                            current_font.underline = true;
-                        } else if prop_name == b"strike" {
-                            current_font.strike = true;
-                        } else if prop_name == b"vertAlign" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"val" {
-                                        current_font.vert_align =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
-                            }
-                        } else if prop_name == b"color" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"rgb" {
-                                        current_font.color = Some(format!(
-                                            "#{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    } else if attr_key == b"theme" {
-                                        current_font.color = Some(format!(
-                                            "theme:{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                        Self::parse_font_element(&e, &mut current_font);
                     } else if in_fill {
-                        let prop_name = e.name();
-                        let prop_name = prop_name.as_ref();
-                        if prop_name == b"patternFill" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"patternType" {
-                                        current_fill.pattern_type =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
-                            }
-                        } else if prop_name == b"fgColor" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"rgb" {
-                                        current_fill.fg_color = Some(format!(
-                                            "#{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    }
-                                }
-                            }
-                        } else if prop_name == b"bgColor" {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let attr_key = attr.key.as_ref();
-                                    if attr_key == b"rgb" {
-                                        current_fill.bg_color = Some(format!(
-                                            "#{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                        Self::parse_fill_element(&e, &mut current_fill);
                     } else if in_border {
                         let prop_name = e.name();
                         let prop_name = prop_name.as_ref();

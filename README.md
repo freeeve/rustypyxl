@@ -1,5 +1,10 @@
 # rustypyxl
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=freeeve_rustypyxl&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=freeeve_rustypyxl)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=freeeve_rustypyxl&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=freeeve_rustypyxl)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=freeeve_rustypyxl&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=freeeve_rustypyxl)
+[![Known Vulnerabilities](https://snyk.io/test/github/freeeve/rustypyxl/badge.svg)](https://snyk.io/test/github/freeeve/rustypyxl)
+
 A Rust-powered Excel (XLSX) library for Python with an openpyxl-compatible API.
 
 ## Installation
