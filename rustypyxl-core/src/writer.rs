@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::autofilter::FilterType;
 use crate::conditional::{ConditionalFormatType, ConditionalOperator};
 use crate::pagesetup::Orientation;
+use crate::style::StyleRegistry;
 use zip::write::{FileOptions, ExtendedFileOptions};
 use zip::ZipWriter;
 use quick_xml::Writer;
@@ -92,13 +93,25 @@ fn write_cell_direct(
     cell_data: &CellData,
     shared_string_map: &HashMap<InternedString, usize>,
 ) {
+    // Helper to write style attribute
+    let style_attr = cell_data.style_index.map(|s| {
+        let mut attr = String::with_capacity(10);
+        attr.push_str(" s=\"");
+        attr.push_str(itoa::Buffer::new().format(s));
+        attr.push('"');
+        attr
+    });
+    let style_str = style_attr.as_deref().unwrap_or("");
+
     match &cell_data.value {
         CellValue::String(s) => {
             if let Some(&idx) = shared_string_map.get(s) {
                 // Shared string reference - use itoa for fast integer formatting
                 buf.push_str("<c r=\"");
                 buf.push_str(coord);
-                buf.push_str("\" t=\"s\"><v>");
+                buf.push('"');
+                buf.push_str(style_str);
+                buf.push_str(" t=\"s\"><v>");
                 buf.push_str(itoa::Buffer::new().format(idx));
                 buf.push_str("</v></c>");
             } else {
@@ -106,7 +119,9 @@ fn write_cell_direct(
                 let escaped = escape_xml(s.as_ref());
                 buf.push_str("<c r=\"");
                 buf.push_str(coord);
-                buf.push_str("\" t=\"inlineStr\"><is><t>");
+                buf.push('"');
+                buf.push_str(style_str);
+                buf.push_str(" t=\"inlineStr\"><is><t>");
                 buf.push_str(&escaped);
                 buf.push_str("</t></is></c>");
             }
@@ -115,14 +130,18 @@ fn write_cell_direct(
             // Use ryu for fast float formatting
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\"><v>");
+            buf.push('"');
+            buf.push_str(style_str);
+            buf.push_str("><v>");
             buf.push_str(ryu::Buffer::new().format(*n));
             buf.push_str("</v></c>");
         }
         CellValue::Boolean(b) => {
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\" t=\"b\"><v>");
+            buf.push('"');
+            buf.push_str(style_str);
+            buf.push_str(" t=\"b\"><v>");
             buf.push_str(if *b { "1" } else { "0" });
             buf.push_str("</v></c>");
         }
@@ -130,21 +149,31 @@ fn write_cell_direct(
             let escaped = escape_xml(f);
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\"><f>");
+            buf.push('"');
+            buf.push_str(style_str);
+            buf.push_str("><f>");
             buf.push_str(&escaped);
             buf.push_str("</f></c>");
         }
         CellValue::Date(d) => {
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\" t=\"d\"><v>");
+            buf.push('"');
+            buf.push_str(style_str);
+            buf.push_str(" t=\"d\"><v>");
             buf.push_str(d);
             buf.push_str("</v></c>");
         }
         CellValue::Empty => {
+            // Skip empty cells without styles, but include if there's a style
+            if style_str.is_empty() {
+                return; // Skip completely empty cells
+            }
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\"/>");
+            buf.push('"');
+            buf.push_str(style_str);
+            buf.push_str("/>");
         }
     }
 }
@@ -406,42 +435,198 @@ pub fn write_shared_strings<W: Write + Seek>(
 pub fn write_styles_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
+    styles: &StyleRegistry,
 ) -> Result<()> {
     zip.start_file("xl/styles.xml", options.clone())?;
-    
-    // Basic minimal styles.xml
-    let styles_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="0"/>
-<fonts count="1">
-<font>
-<sz val="11"/>
-<color theme="1"/>
-<name val="Calibri"/>
-<family val="2"/>
-<scheme val="minor"/>
-</font>
-</fonts>
-<fills count="2">
-<fill><patternFill/></fill>
-<fill><patternFill patternType="gray125"/></fill>
-</fills>
-<borders count="1">
-<border><left/><right/><top/><bottom/><diagonal/></border>
-</borders>
-<cellStyleXfs count="1">
-<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
-</cellStyleXfs>
-<cellXfs count="1">
-<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
-</cellXfs>
-<cellStyles count="1">
-<cellStyle name="Normal" xfId="0" builtinId="0"/>
-</cellStyles>
-</styleSheet>"#;
-    
-    zip.write_all(styles_xml.as_bytes())?;
+
+    let mut xml = String::with_capacity(4096);
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
+    xml.push_str(r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#);
+
+    // Number formats
+    if !styles.num_fmts.is_empty() {
+        xml.push_str(&format!(r#"<numFmts count="{}">"#, styles.num_fmts.len()));
+        for (id, code) in &styles.num_fmts {
+            xml.push_str(&format!(r#"<numFmt numFmtId="{}" formatCode="{}"/>"#, id, escape_xml(code)));
+        }
+        xml.push_str("</numFmts>");
+    } else {
+        xml.push_str(r#"<numFmts count="0"/>"#);
+    }
+
+    // Fonts
+    xml.push_str(&format!(r#"<fonts count="{}">"#, styles.fonts.len()));
+    for font in &styles.fonts {
+        xml.push_str("<font>");
+        if font.bold {
+            xml.push_str("<b/>");
+        }
+        if font.italic {
+            xml.push_str("<i/>");
+        }
+        if font.underline {
+            xml.push_str("<u/>");
+        }
+        if font.strike {
+            xml.push_str("<strike/>");
+        }
+        if let Some(ref va) = font.vert_align {
+            xml.push_str(&format!(r#"<vertAlign val="{}"/>"#, va));
+        }
+        if let Some(size) = font.size {
+            xml.push_str(&format!(r#"<sz val="{}"/>"#, size));
+        }
+        if let Some(ref color) = font.color {
+            // Handle both rgb and theme colors
+            if color.starts_with("theme:") {
+                xml.push_str(&format!(r#"<color theme="{}"/>"#, &color[6..]));
+            } else if color.starts_with('#') {
+                xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, &color[1..]));
+            } else {
+                xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
+            }
+        } else {
+            xml.push_str(r#"<color theme="1"/>"#);
+        }
+        if let Some(ref name) = font.name {
+            xml.push_str(&format!(r#"<name val="{}"/>"#, escape_xml(name)));
+        } else {
+            xml.push_str(r#"<name val="Calibri"/>"#);
+        }
+        xml.push_str(r#"<family val="2"/>"#);
+        xml.push_str("</font>");
+    }
+    xml.push_str("</fonts>");
+
+    // Fills
+    xml.push_str(&format!(r#"<fills count="{}">"#, styles.fills.len()));
+    for fill in &styles.fills {
+        xml.push_str("<fill>");
+        if let Some(ref pattern) = fill.pattern_type {
+            xml.push_str(&format!(r#"<patternFill patternType="{}">"#, pattern));
+            if let Some(ref fg) = fill.fg_color {
+                let color = if fg.starts_with('#') { &fg[1..] } else { fg.as_str() };
+                xml.push_str(&format!(r#"<fgColor rgb="FF{}"/>"#, color));
+            }
+            if let Some(ref bg) = fill.bg_color {
+                let color = if bg.starts_with('#') { &bg[1..] } else { bg.as_str() };
+                xml.push_str(&format!(r#"<bgColor rgb="FF{}"/>"#, color));
+            }
+            xml.push_str("</patternFill>");
+        } else {
+            xml.push_str("<patternFill/>");
+        }
+        xml.push_str("</fill>");
+    }
+    xml.push_str("</fills>");
+
+    // Borders
+    xml.push_str(&format!(r#"<borders count="{}">"#, styles.borders.len()));
+    for border in &styles.borders {
+        xml.push_str("<border>");
+        write_border_side(&mut xml, "left", &border.left);
+        write_border_side(&mut xml, "right", &border.right);
+        write_border_side(&mut xml, "top", &border.top);
+        write_border_side(&mut xml, "bottom", &border.bottom);
+        write_border_side(&mut xml, "diagonal", &border.diagonal);
+        xml.push_str("</border>");
+    }
+    xml.push_str("</borders>");
+
+    // Cell style XFs (just one default)
+    xml.push_str(r#"<cellStyleXfs count="1">"#);
+    xml.push_str(r#"<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>"#);
+    xml.push_str("</cellStyleXfs>");
+
+    // Cell XFs
+    xml.push_str(&format!(r#"<cellXfs count="{}">"#, styles.cell_xfs.len()));
+    for xf in &styles.cell_xfs {
+        xml.push_str(&format!(
+            r#"<xf numFmtId="{}" fontId="{}" fillId="{}" borderId="{}""#,
+            xf.num_fmt_id, xf.font_id, xf.fill_id, xf.border_id
+        ));
+        if xf.apply_font {
+            xml.push_str(r#" applyFont="1""#);
+        }
+        if xf.apply_fill {
+            xml.push_str(r#" applyFill="1""#);
+        }
+        if xf.apply_border {
+            xml.push_str(r#" applyBorder="1""#);
+        }
+        if xf.apply_number_format {
+            xml.push_str(r#" applyNumberFormat="1""#);
+        }
+        if xf.alignment.is_some() {
+            xml.push_str(r#" applyAlignment="1""#);
+        }
+        if xf.protection.is_some() {
+            xml.push_str(r#" applyProtection="1""#);
+        }
+
+        let has_children = xf.alignment.is_some() || xf.protection.is_some();
+        if has_children {
+            xml.push_str(">");
+
+            if let Some(ref align) = xf.alignment {
+                xml.push_str("<alignment");
+                if let Some(ref h) = align.horizontal {
+                    xml.push_str(&format!(r#" horizontal="{}""#, h));
+                }
+                if let Some(ref v) = align.vertical {
+                    xml.push_str(&format!(r#" vertical="{}""#, v));
+                }
+                if align.wrap_text {
+                    xml.push_str(r#" wrapText="1""#);
+                }
+                if let Some(rot) = align.text_rotation {
+                    xml.push_str(&format!(r#" textRotation="{}""#, rot));
+                }
+                if align.shrink_to_fit {
+                    xml.push_str(r#" shrinkToFit="1""#);
+                }
+                xml.push_str("/>");
+            }
+
+            if let Some(ref prot) = xf.protection {
+                xml.push_str("<protection");
+                xml.push_str(&format!(r#" locked="{}""#, if prot.locked { "1" } else { "0" }));
+                if prot.hidden {
+                    xml.push_str(r#" hidden="1""#);
+                }
+                xml.push_str("/>");
+            }
+
+            xml.push_str("</xf>");
+        } else {
+            xml.push_str("/>");
+        }
+    }
+    xml.push_str("</cellXfs>");
+
+    // Cell styles (just Normal)
+    xml.push_str(r#"<cellStyles count="1">"#);
+    xml.push_str(r#"<cellStyle name="Normal" xfId="0" builtinId="0"/>"#);
+    xml.push_str("</cellStyles>");
+
+    xml.push_str("</styleSheet>");
+
+    zip.write_all(xml.as_bytes())?;
     Ok(())
+}
+
+/// Helper to write a border side element.
+fn write_border_side(xml: &mut String, name: &str, side: &Option<crate::style::BorderStyle>) {
+    if let Some(ref s) = side {
+        xml.push_str(&format!(r#"<{} style="{}">"#, name, s.style));
+        if let Some(ref color) = s.color {
+            let color = if color.starts_with('#') { &color[1..] } else { color.as_str() };
+            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
+        }
+        xml.push_str(&format!("</{}>", name));
+    } else {
+        xml.push_str(&format!("<{}/>", name));
+    }
 }
 
 pub fn write_worksheet_xml<W: Write + Seek>(

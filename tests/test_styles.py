@@ -110,6 +110,33 @@ class TestPatternFill:
         assert "PatternFill" in s
 
 
+class TestGradientFill:
+    """Test GradientFill styling class."""
+
+    def test_gradient_fill_creation_default(self):
+        """Create a gradient fill with default values."""
+        fill = rustypyxl.GradientFill()
+        assert fill.fill_type == "linear"
+        assert fill.degree == 0.0
+
+    def test_gradient_fill_creation_with_degree(self):
+        """Create a gradient fill with specific degree."""
+        fill = rustypyxl.GradientFill(degree=90)
+        assert fill.degree == 90.0
+
+    def test_gradient_fill_copy(self):
+        """Test gradient fill copy method."""
+        fill1 = rustypyxl.GradientFill(degree=45)
+        fill2 = fill1.copy()
+        assert fill2.degree == 45.0
+
+    def test_gradient_fill_repr(self):
+        """Test gradient fill string representation."""
+        fill = rustypyxl.GradientFill()
+        s = str(fill)
+        assert "GradientFill" in s
+
+
 class TestBorder:
     """Test Border styling class."""
 

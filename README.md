@@ -46,7 +46,9 @@ wb.save('output.xlsx')
 - **Formatting**: Fonts, alignment, fills, borders, number formats
 - **Workbook features**: Comments, hyperlinks, named ranges, merged cells
 - **Sheet features**: Protection, data validation, column/row dimensions
-- **Parquet import/export**: Fast import and export of Parquet files (bypasses Python FFI)
+- **Parquet import/export**: Direct Parquet ↔ Excel conversion (bypasses Python FFI)
+- **S3 support**: Works with boto3 via bytes I/O
+- **Bytes I/O**: Load from bytes or file-like objects, save to bytes
 - **Configurable compression**: Trade off speed vs file size
 
 ## Parquet Import
@@ -110,6 +112,47 @@ result = wb.export_range_to_parquet(
 ```
 
 Supported column type hints: `string`, `float64`, `int64`, `boolean`, `date`, `datetime`, `auto`.
+
+## Loading from Bytes or File-like Objects
+
+Load workbooks from in-memory bytes or file-like objects:
+
+```python
+import rustypyxl
+import io
+
+# From bytes
+with open("file.xlsx", "rb") as f:
+    data = f.read()
+wb = rustypyxl.load_workbook(data)
+
+# From file-like object (e.g., BytesIO, HTTP response)
+wb = rustypyxl.load_workbook(io.BytesIO(data))
+
+# Save to bytes (for HTTP responses, S3, etc.)
+output_bytes = wb.save_to_bytes()
+```
+
+## S3 Support
+
+Use `save_to_bytes()` and `load_workbook(bytes)` with boto3 for S3 integration:
+
+```python
+import boto3
+import rustypyxl
+
+s3 = boto3.client("s3")
+
+# Load from S3
+response = s3.get_object(Bucket="my-bucket", Key="path/to/file.xlsx")
+wb = rustypyxl.load_workbook(response["Body"].read())
+
+# Save to S3
+data = wb.save_to_bytes()
+s3.put_object(Bucket="my-bucket", Key="path/to/output.xlsx", Body=data)
+```
+
+This works with any S3-compatible service and uses boto3's credential handling (IAM roles, environment variables, etc.).
 
 ## Streaming Writes (Low Memory)
 

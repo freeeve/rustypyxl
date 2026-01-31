@@ -41,6 +41,9 @@ pub enum RustypyxlError {
     #[error("Parse error: {0}")]
     ParseError(String),
 
+    #[error("S3 error: {0}")]
+    S3Error(String),
+
     #[error("{0}")]
     Custom(String),
 }

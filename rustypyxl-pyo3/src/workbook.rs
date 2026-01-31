@@ -3,10 +3,13 @@
 #![allow(deprecated)]
 
 use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
-use rustypyxl_core::{Workbook, CellValue, CompressionLevel};
+use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::types::PyBytes;
+use rustypyxl_core::{Workbook, CellValue, CompressionLevel, CellStyle, Font, Fill, Border, BorderStyle, Alignment, Protection};
+use std::sync::Arc;
 
 use crate::worksheet::PyWorksheet;
+use crate::style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection};
 
 /// An Excel Workbook (openpyxl-compatible API).
 #[pyclass(name = "Workbook")]
@@ -24,21 +27,55 @@ impl PyWorkbook {
         }
     }
 
-    /// Load a workbook from a file path.
+    /// Load a workbook from a file path, bytes, or file-like object.
+    ///
+    /// Args:
+    ///     source: File path (str), bytes, or file-like object with .read() method
+    ///
+    /// Returns:
+    ///     Workbook: The loaded workbook
     #[staticmethod]
-    pub fn load(filename: &str) -> PyResult<Self> {
-        let inner = Workbook::load(filename)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyWorkbook { inner })
+    #[pyo3(signature = (source))]
+    pub fn load(source: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // Check if source is a string (file path)
+        if let Ok(path) = source.extract::<&str>() {
+            let inner = Workbook::load(path)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            return Ok(PyWorkbook { inner });
+        }
+
+        // Check if source is bytes
+        if let Ok(bytes) = source.extract::<&[u8]>() {
+            let inner = Workbook::load_from_bytes(bytes)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            return Ok(PyWorkbook { inner });
+        }
+
+        // Check if source has .read() method (file-like object)
+        if source.hasattr("read")? {
+            let bytes_obj = source.call_method0("read")?;
+            let bytes = bytes_obj.extract::<&[u8]>()?;
+            let inner = Workbook::load_from_bytes(bytes)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            return Ok(PyWorkbook { inner });
+        }
+
+        Err(PyTypeError::new_err(
+            "Expected file path (str), bytes, or file-like object with .read() method"
+        ))
     }
 
     /// Get the active worksheet.
     #[getter]
-    fn active(&self) -> PyResult<PyWorksheet> {
-        if self.inner.worksheets.is_empty() {
+    fn active(self_: Py<Self>, py: Python<'_>) -> PyResult<PyWorksheet> {
+        let this = self_.borrow(py);
+        if this.inner.worksheets.is_empty() {
             return Err(PyValueError::new_err("No worksheets in workbook"));
         }
-        Ok(PyWorksheet::from_ref(self, 0))
+        let title = this.inner.sheet_names.get(0)
+            .cloned()
+            .unwrap_or_else(|| "Sheet1".to_string());
+        Ok(PyWorksheet::connected(self_.clone_ref(py), 0, title))
     }
 
     /// Get all sheet names.
@@ -49,17 +86,24 @@ impl PyWorkbook {
 
     /// Get all worksheets.
     #[getter]
-    fn worksheets(&self) -> Vec<PyWorksheet> {
-        (0..self.inner.worksheets.len())
-            .map(|i| PyWorksheet::from_ref(self, i))
+    fn worksheets(self_: Py<Self>, py: Python<'_>) -> Vec<PyWorksheet> {
+        let this = self_.borrow(py);
+        (0..this.inner.worksheets.len())
+            .map(|i| {
+                let title = this.inner.sheet_names.get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Sheet{}", i + 1));
+                PyWorksheet::connected(self_.clone_ref(py), i, title)
+            })
             .collect()
     }
 
     /// Get a worksheet by name using subscript notation: wb['Sheet1'].
-    fn __getitem__(&self, key: &str) -> PyResult<PyWorksheet> {
-        for (idx, name) in self.inner.sheet_names.iter().enumerate() {
+    fn __getitem__(self_: Py<Self>, key: &str, py: Python<'_>) -> PyResult<PyWorksheet> {
+        let this = self_.borrow(py);
+        for (idx, name) in this.inner.sheet_names.iter().enumerate() {
             if name == key {
-                return Ok(PyWorksheet::from_ref(self, idx));
+                return Ok(PyWorksheet::connected(self_.clone_ref(py), idx, name.clone()));
             }
         }
         Err(PyValueError::new_err(format!(
@@ -95,16 +139,23 @@ impl PyWorkbook {
     /// Returns:
     ///     Worksheet: The newly created worksheet
     #[pyo3(signature = (title=None, index=None))]
-    fn create_sheet(&mut self, title: Option<String>, index: Option<usize>) -> PyResult<PyWorksheet> {
+    fn create_sheet(self_: Py<Self>, title: Option<String>, index: Option<usize>, py: Python<'_>) -> PyResult<PyWorksheet> {
         // Note: index is currently ignored for simplicity
         let _ = index;
 
-        self.inner
-            .create_sheet(title)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        {
+            let mut this = self_.borrow_mut(py);
+            this.inner
+                .create_sheet(title)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
 
-        let idx = self.inner.worksheets.len() - 1;
-        Ok(PyWorksheet::from_ref(self, idx))
+        let this = self_.borrow(py);
+        let idx = this.inner.worksheets.len() - 1;
+        let sheet_title = this.inner.sheet_names.get(idx)
+            .cloned()
+            .unwrap_or_else(|| format!("Sheet{}", idx + 1));
+        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, sheet_title))
     }
 
     /// Remove a worksheet.
@@ -125,32 +176,46 @@ impl PyWorkbook {
     ///
     /// Returns:
     ///     Worksheet: The copied worksheet
-    fn copy_worksheet(&mut self, source: &PyWorksheet) -> PyResult<PyWorksheet> {
-        // Get the source worksheet's data
-        let source_idx = source.index;
-        if source_idx >= self.inner.worksheets.len() {
-            return Err(PyValueError::new_err("Invalid worksheet index"));
+    fn copy_worksheet(self_: Py<Self>, source: &PyWorksheet, py: Python<'_>) -> PyResult<PyWorksheet> {
+        let new_name: String;
+        let idx: usize;
+
+        {
+            let mut this = self_.borrow_mut(py);
+            // Get the source worksheet's data
+            let source_idx = source.index;
+            if source_idx >= this.inner.worksheets.len() {
+                return Err(PyValueError::new_err("Invalid worksheet index"));
+            }
+
+            // Clone the worksheet
+            let src_ws = &this.inner.worksheets[source_idx];
+            let mut new_ws = src_ws.clone();
+
+            // Generate a new unique name
+            let base_name = format!("{} Copy", src_ws.title);
+            let mut counter = 1;
+            new_name = base_name.clone();
+            let mut temp_name = new_name.clone();
+            while this.inner.sheet_names.contains(&temp_name) {
+                temp_name = format!("{} {}", base_name, counter);
+                counter += 1;
+            }
+            new_ws.set_title(&temp_name);
+
+            this.inner.worksheets.push(new_ws);
+            this.inner.sheet_names.push(temp_name.clone());
+
+            idx = this.inner.worksheets.len() - 1;
+            // Re-assign for return
+            drop(this);
         }
 
-        // Clone the worksheet
-        let src_ws = &self.inner.worksheets[source_idx];
-        let mut new_ws = src_ws.clone();
-
-        // Generate a new unique name
-        let base_name = format!("{} Copy", src_ws.title);
-        let mut counter = 1;
-        let mut new_name = base_name.clone();
-        while self.inner.sheet_names.contains(&new_name) {
-            new_name = format!("{} {}", base_name, counter);
-            counter += 1;
-        }
-        new_ws.set_title(&new_name);
-
-        self.inner.worksheets.push(new_ws);
-        self.inner.sheet_names.push(new_name);
-
-        let idx = self.inner.worksheets.len() - 1;
-        Ok(PyWorksheet::from_ref(self, idx))
+        let this = self_.borrow(py);
+        let sheet_title = this.inner.sheet_names.get(idx)
+            .cloned()
+            .unwrap_or_else(|| format!("Sheet{}", idx + 1));
+        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, sheet_title))
     }
 
     /// Move a worksheet within the workbook.
@@ -207,6 +272,17 @@ impl PyWorkbook {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Save the workbook to bytes.
+    ///
+    /// Returns:
+    ///     bytes: The workbook as an xlsx file in memory
+    fn save_to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self.inner
+            .save_to_bytes()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
     /// Set compression level for saving.
     ///
     /// Args:
@@ -238,7 +314,7 @@ impl PyWorkbook {
     ///     row: Row number (1-indexed)
     ///     column: Column number (1-indexed)
     ///     value: Value to set (string, number, boolean, or None)
-    fn set_cell_value(&mut self, sheet_name: &str, row: u32, column: u32, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    pub fn set_cell_value(&mut self, sheet_name: &str, row: u32, column: u32, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let cell_value = python_to_cell_value(value)?;
         self.inner
             .set_cell_value_in_sheet(sheet_name, row, column, cell_value)
@@ -254,7 +330,7 @@ impl PyWorkbook {
     ///
     /// Returns:
     ///     The cell value, or None if empty
-    fn get_cell_value(&self, sheet_name: &str, row: u32, column: u32, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn get_cell_value(&self, sheet_name: &str, row: u32, column: u32, py: Python<'_>) -> PyResult<PyObject> {
         let ws = self.inner
             .get_sheet_by_name(sheet_name)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -345,6 +421,229 @@ impl PyWorkbook {
             result.push(row_data);
         }
         Ok(result)
+    }
+
+    /// Set a cell's font style.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     font: Font style to apply
+    pub fn set_cell_font(&mut self, sheet_name: &str, row: u32, column: u32, font: &PyFont) -> PyResult<()> {
+        let rust_font = pyfont_to_font(font);
+        let style = rustypyxl_core::CellStyle::new().with_font(rust_font);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set a cell's fill (background color).
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     fill: PatternFill style to apply
+    pub fn set_cell_fill(&mut self, sheet_name: &str, row: u32, column: u32, fill: &PyPatternFill) -> PyResult<()> {
+        let rust_fill = pyfill_to_fill(fill);
+        let style = rustypyxl_core::CellStyle::new().with_fill(rust_fill);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set a cell's border.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     border: Border style to apply
+    pub fn set_cell_border(&mut self, sheet_name: &str, row: u32, column: u32, border: &PyBorder) -> PyResult<()> {
+        let rust_border = pyborder_to_border(border);
+        let style = rustypyxl_core::CellStyle::new().with_border(rust_border);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set a cell's alignment.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     alignment: Alignment style to apply
+    pub fn set_cell_alignment(&mut self, sheet_name: &str, row: u32, column: u32, alignment: &PyAlignment) -> PyResult<()> {
+        let rust_align = pyalignment_to_alignment(alignment);
+        let style = rustypyxl_core::CellStyle::new().with_alignment(rust_align);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set a cell's number format.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     format: Number format string (e.g., "#,##0.00", "0.00%")
+    pub fn set_cell_number_format(&mut self, sheet_name: &str, row: u32, column: u32, format: &str) -> PyResult<()> {
+        let style = rustypyxl_core::CellStyle::new().with_number_format(format);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set a cell's protection.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     protection: Protection style to apply
+    pub fn set_cell_protection(&mut self, sheet_name: &str, row: u32, column: u32, protection: &PyProtection) -> PyResult<()> {
+        let rust_protection = pyprotection_to_protection(protection);
+        let style = rustypyxl_core::CellStyle::new().with_protection(rust_protection);
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Set multiple style properties on a cell at once.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///     font: Optional font style
+    ///     fill: Optional fill style
+    ///     border: Optional border style
+    ///     alignment: Optional alignment style
+    ///     number_format: Optional number format string
+    #[pyo3(signature = (sheet_name, row, column, font=None, fill=None, border=None, alignment=None, number_format=None))]
+    fn set_cell_style(
+        &mut self,
+        sheet_name: &str,
+        row: u32,
+        column: u32,
+        font: Option<&PyFont>,
+        fill: Option<&PyPatternFill>,
+        border: Option<&PyBorder>,
+        alignment: Option<&PyAlignment>,
+        number_format: Option<&str>,
+    ) -> PyResult<()> {
+        let mut style = rustypyxl_core::CellStyle::new();
+
+        if let Some(f) = font {
+            style = style.with_font(pyfont_to_font(f));
+        }
+        if let Some(f) = fill {
+            style = style.with_fill(pyfill_to_fill(f));
+        }
+        if let Some(b) = border {
+            style = style.with_border(pyborder_to_border(b));
+        }
+        if let Some(a) = alignment {
+            style = style.with_alignment(pyalignment_to_alignment(a));
+        }
+        if let Some(nf) = number_format {
+            style = style.with_number_format(nf);
+        }
+
+        self.set_or_merge_cell_style(sheet_name, row, column, style)
+    }
+
+    /// Get a cell's font style.
+    ///
+    /// Args:
+    ///     sheet_name: Name of the worksheet
+    ///     row: Row number (1-indexed)
+    ///     column: Column number (1-indexed)
+    ///
+    /// Returns:
+    ///     Font style or None if not set
+    pub fn get_cell_font(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<PyFont>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                if let Some(ref font) = style.font {
+                    return Ok(Some(font_to_pyfont(font)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get a cell's fill style.
+    pub fn get_cell_fill(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<PyPatternFill>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                if let Some(ref fill) = style.fill {
+                    return Ok(Some(fill_to_pyfill(fill)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get a cell's border style.
+    pub fn get_cell_border(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<PyBorder>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                if let Some(ref border) = style.border {
+                    return Ok(Some(border_to_pyborder(border)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get a cell's alignment style.
+    pub fn get_cell_alignment(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<PyAlignment>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                if let Some(ref align) = style.alignment {
+                    return Ok(Some(alignment_to_pyalignment(align)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get a cell's number format.
+    pub fn get_cell_number_format(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<String>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                return Ok(style.number_format.clone());
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get a cell's protection style.
+    pub fn get_cell_protection(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<PyProtection>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        if let Some(cell) = ws.get_cell(row, column) {
+            if let Some(ref style) = cell.style {
+                if let Some(ref protection) = style.protection {
+                    return Ok(Some(protection_to_pyprotection(protection)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Import data from a Parquet file directly into a worksheet.
@@ -552,12 +851,128 @@ impl PyWorkbook {
         Ok(dict.into())
     }
 
+    /// Load a workbook from S3.
+    ///
+    /// Args:
+    ///     bucket: S3 bucket name
+    ///     key: S3 object key (path within the bucket)
+    ///     region: Optional AWS region (e.g., "us-east-1")
+    ///     endpoint_url: Optional custom endpoint URL (for S3-compatible services)
+    ///
+    /// Returns:
+    ///     Workbook: The loaded workbook
+    #[cfg(feature = "s3")]
+    #[staticmethod]
+    #[pyo3(signature = (bucket, key, region=None, endpoint_url=None))]
+    pub fn load_from_s3(
+        bucket: &str,
+        key: &str,
+        region: Option<&str>,
+        endpoint_url: Option<&str>,
+    ) -> PyResult<Self> {
+        use rustypyxl_core::S3Config;
+
+        let mut config = S3Config::new();
+        if let Some(r) = region {
+            config = config.with_region(r);
+        }
+        if let Some(url) = endpoint_url {
+            config = config.with_endpoint_url(url);
+        }
+
+        let inner = Workbook::load_from_s3(bucket, key, Some(config))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyWorkbook { inner })
+    }
+
+    /// Save the workbook to S3.
+    ///
+    /// Args:
+    ///     bucket: S3 bucket name
+    ///     key: S3 object key (path within the bucket)
+    ///     region: Optional AWS region (e.g., "us-east-1")
+    ///     endpoint_url: Optional custom endpoint URL (for S3-compatible services)
+    #[cfg(feature = "s3")]
+    #[pyo3(signature = (bucket, key, region=None, endpoint_url=None))]
+    pub fn save_to_s3(
+        &self,
+        bucket: &str,
+        key: &str,
+        region: Option<&str>,
+        endpoint_url: Option<&str>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::S3Config;
+
+        let mut config = S3Config::new();
+        if let Some(r) = region {
+            config = config.with_region(r);
+        }
+        if let Some(url) = endpoint_url {
+            config = config.with_endpoint_url(url);
+        }
+
+        self.inner
+            .save_to_s3(bucket, key, Some(config))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     fn __str__(&self) -> String {
         format!("<Workbook with {} sheet(s)>", self.inner.worksheets.len())
     }
 
     fn __repr__(&self) -> String {
         self.__str__()
+    }
+}
+
+impl PyWorkbook {
+    /// Helper to set or merge a cell style with the existing style.
+    fn set_or_merge_cell_style(&mut self, sheet_name: &str, row: u32, column: u32, new_style: CellStyle) -> PyResult<()> {
+        // First, compute merged style from existing cell (if any)
+        let merged_style = {
+            let ws = self.inner
+                .get_sheet_by_name(sheet_name)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+            if let Some(cell) = ws.get_cell(row, column) {
+                if let Some(ref existing) = cell.style {
+                    let mut merged = (**existing).clone();
+                    if new_style.font.is_some() {
+                        merged.font = new_style.font.clone();
+                    }
+                    if new_style.fill.is_some() {
+                        merged.fill = new_style.fill.clone();
+                    }
+                    if new_style.border.is_some() {
+                        merged.border = new_style.border.clone();
+                    }
+                    if new_style.alignment.is_some() {
+                        merged.alignment = new_style.alignment.clone();
+                    }
+                    if new_style.number_format.is_some() {
+                        merged.number_format = new_style.number_format.clone();
+                    }
+                    merged
+                } else {
+                    new_style
+                }
+            } else {
+                new_style
+            }
+        };
+
+        // Get the style index for this style
+        let style_index = self.inner.styles.get_or_add_cell_xf(&merged_style);
+
+        // Now get mutable reference and set the style
+        let ws = self.inner
+            .get_sheet_by_name_mut(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let cell = ws.get_or_create_cell_mut(row, column);
+        cell.style = Some(Arc::new(merged_style));
+        cell.style_index = Some(style_index as u32);
+
+        Ok(())
     }
 }
 
@@ -615,7 +1030,138 @@ fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObject {
         CellValue::String(s) => s.as_ref().to_object(py),
         CellValue::Number(n) => n.to_object(py),
         CellValue::Boolean(b) => b.to_object(py),
-        CellValue::Formula(f) => f.to_object(py),
+        CellValue::Formula(f) => format!("={}", f).to_object(py),
         CellValue::Date(d) => d.to_object(py),
+    }
+}
+
+// =====================
+// Style conversion helpers
+// =====================
+
+/// Convert PyFont to Rust Font.
+fn pyfont_to_font(pf: &PyFont) -> Font {
+    Font {
+        name: pf.name.clone(),
+        size: pf.size,
+        bold: pf.bold,
+        italic: pf.italic,
+        underline: pf.underline.is_some(),
+        strike: pf.strike,
+        color: pf.color.clone(),
+        vert_align: pf.vertAlign.clone(),
+    }
+}
+
+/// Convert Rust Font to PyFont.
+fn font_to_pyfont(f: &Font) -> PyFont {
+    PyFont {
+        name: f.name.clone(),
+        size: f.size,
+        bold: f.bold,
+        italic: f.italic,
+        underline: if f.underline { Some("single".to_string()) } else { None },
+        strike: f.strike,
+        color: f.color.clone(),
+        vertAlign: f.vert_align.clone(),
+    }
+}
+
+/// Convert PyPatternFill to Rust Fill.
+fn pyfill_to_fill(pf: &PyPatternFill) -> Fill {
+    Fill {
+        pattern_type: pf.fill_type.clone().or(pf.patternType.clone()),
+        fg_color: pf.fgColor.clone(),
+        bg_color: pf.bgColor.clone(),
+    }
+}
+
+/// Convert Rust Fill to PyPatternFill.
+fn fill_to_pyfill(f: &Fill) -> PyPatternFill {
+    PyPatternFill {
+        fill_type: f.pattern_type.clone(),
+        fgColor: f.fg_color.clone(),
+        bgColor: f.bg_color.clone(),
+        patternType: f.pattern_type.clone(),
+    }
+}
+
+/// Convert PySide to Rust BorderStyle.
+fn pyside_to_borderstyle(ps: &PySide) -> Option<BorderStyle> {
+    ps.style.as_ref().map(|s| BorderStyle {
+        style: s.clone(),
+        color: ps.color.clone(),
+    })
+}
+
+/// Convert Rust BorderStyle to PySide.
+fn borderstyle_to_pyside(bs: &BorderStyle) -> PySide {
+    PySide {
+        style: Some(bs.style.clone()),
+        color: bs.color.clone(),
+    }
+}
+
+/// Convert PyBorder to Rust Border.
+fn pyborder_to_border(pb: &PyBorder) -> Border {
+    Border {
+        left: pb.left.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+        right: pb.right.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+        top: pb.top.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+        bottom: pb.bottom.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+        diagonal: pb.diagonal.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+    }
+}
+
+/// Convert Rust Border to PyBorder.
+fn border_to_pyborder(b: &Border) -> PyBorder {
+    PyBorder {
+        left: b.left.as_ref().map(borderstyle_to_pyside),
+        right: b.right.as_ref().map(borderstyle_to_pyside),
+        top: b.top.as_ref().map(borderstyle_to_pyside),
+        bottom: b.bottom.as_ref().map(borderstyle_to_pyside),
+        diagonal: b.diagonal.as_ref().map(borderstyle_to_pyside),
+        diagonal_direction: None,
+        outline: true,
+    }
+}
+
+/// Convert PyAlignment to Rust Alignment.
+fn pyalignment_to_alignment(pa: &PyAlignment) -> Alignment {
+    Alignment {
+        horizontal: pa.horizontal.clone(),
+        vertical: pa.vertical.clone(),
+        wrap_text: pa.wrap_text,
+        text_rotation: if pa.text_rotation != 0 { Some(pa.text_rotation) } else { None },
+        indent: if pa.indent != 0 { Some(pa.indent) } else { None },
+        shrink_to_fit: pa.shrink_to_fit,
+    }
+}
+
+/// Convert Rust Alignment to PyAlignment.
+fn alignment_to_pyalignment(a: &Alignment) -> PyAlignment {
+    PyAlignment {
+        horizontal: a.horizontal.clone(),
+        vertical: a.vertical.clone(),
+        wrap_text: a.wrap_text,
+        shrink_to_fit: a.shrink_to_fit,
+        indent: a.indent.unwrap_or(0),
+        text_rotation: a.text_rotation.unwrap_or(0),
+    }
+}
+
+/// Convert PyProtection to Rust Protection.
+fn pyprotection_to_protection(pp: &PyProtection) -> Protection {
+    Protection {
+        locked: pp.locked,
+        hidden: pp.hidden,
+    }
+}
+
+/// Convert Rust Protection to PyProtection.
+fn protection_to_pyprotection(p: &Protection) -> PyProtection {
+    PyProtection {
+        locked: p.locked,
+        hidden: p.hidden,
     }
 }

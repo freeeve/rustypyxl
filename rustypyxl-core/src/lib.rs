@@ -46,10 +46,14 @@ pub mod table;
 #[cfg(feature = "parquet")]
 pub mod parquet_import;
 
+// Optional S3 support
+#[cfg(feature = "s3")]
+pub mod s3;
+
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
-pub use style::{Alignment, Border, BorderStyle, CellStyle, Fill, Font};
+pub use style::{Alignment, Border, BorderStyle, CellStyle, Fill, Font, GradientFill, GradientStop, Protection};
 pub use utils::{column_to_letter, coordinate_from_row_col, letter_to_column, parse_coordinate, parse_coordinate_bytes, parse_f64_bytes, parse_u32_bytes, parse_range};
 pub use workbook::{CompressionLevel, NamedRange, Workbook};
 pub use worksheet::{CellData, DataValidation, Worksheet, WorksheetProtection};
@@ -59,3 +63,6 @@ pub use parquet_import::{
     ColumnType, ParquetCompression, ParquetExportOptions, ParquetExportResult,
     ParquetImportOptions, ParquetImportResult,
 };
+
+#[cfg(feature = "s3")]
+pub use s3::S3Config;

@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 #[cfg(not(feature = "fast-hash"))]
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Read};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::sync::Arc;
 use zip::ZipArchive;
 use quick_xml::events::Event;
@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use crate::cell::CellValue;
 use crate::error::{Result, RustypyxlError};
-use crate::style::{Alignment, Border, CellStyle, Fill, Font};
+use crate::style::{Alignment, Border, BorderStyle, CellStyle, CellXf, Fill, Font, Protection, StyleRegistry};
 use crate::utils::{parse_coordinate, parse_coordinate_bytes, parse_u32_bytes, parse_f64_bytes};
 use crate::worksheet::{cell_key, CellData, DataValidation, Worksheet, WorksheetProtection};
 use crate::writer;
@@ -57,6 +57,8 @@ pub struct Workbook {
     pub named_ranges: Vec<NamedRange>,
     /// Compression level for saving.
     pub compression: CompressionLevel,
+    /// Style registry for fonts, fills, borders, number formats, and cell formats.
+    pub styles: StyleRegistry,
 }
 
 impl Workbook {
@@ -67,6 +69,7 @@ impl Workbook {
             sheet_names: Vec::new(),
             named_ranges: Vec::new(),
             compression: CompressionLevel::default(),
+            styles: StyleRegistry::new(),
         }
     }
 
@@ -88,6 +91,18 @@ impl Workbook {
 
         let mut workbook = Workbook::new();
         workbook.compression = CompressionLevel::None; // Default to fast for loaded files
+        workbook.parse_workbook(&mut archive)?;
+
+        Ok(workbook)
+    }
+
+    /// Load a workbook from bytes (e.g., from memory or network).
+    pub fn load_from_bytes(data: &[u8]) -> Result<Self> {
+        let cursor = Cursor::new(data);
+        let mut archive = ZipArchive::new(cursor)?;
+
+        let mut workbook = Workbook::new();
+        workbook.compression = CompressionLevel::None;
         workbook.parse_workbook(&mut archive)?;
 
         Ok(workbook)
@@ -325,15 +340,38 @@ impl Workbook {
 
     /// Save the workbook to a file.
     pub fn save(&self, path: &str) -> Result<()> {
-        use std::io::Write;
-        use zip::write::FileOptions;
-        use zip::{CompressionMethod, ZipWriter};
-
         let file = File::create(path)?;
-        let mut zip = ZipWriter::new(file);
+        self.save_to_writer(file)
+    }
 
-        // Configure compression based on workbook settings
-        let options = match self.compression {
+    /// Save the workbook to an in-memory byte vector.
+    pub fn save_to_bytes(&self) -> Result<Vec<u8>> {
+        let buffer = Cursor::new(Vec::new());
+        let mut zip = self.create_zip_writer(buffer)?;
+        self.write_workbook_contents(&mut zip)?;
+        let cursor = zip.finish()?;
+        Ok(cursor.into_inner())
+    }
+
+    /// Save the workbook to any writer that implements Write + Seek.
+    pub fn save_to_writer<W: std::io::Write + Seek>(&self, writer: W) -> Result<()> {
+        let mut zip = self.create_zip_writer(writer)?;
+        self.write_workbook_contents(&mut zip)?;
+        zip.finish()?;
+        Ok(())
+    }
+
+    /// Create a ZipWriter with the configured compression options.
+    fn create_zip_writer<W: std::io::Write + Seek>(&self, writer: W) -> Result<zip::ZipWriter<W>> {
+        Ok(zip::ZipWriter::new(writer))
+    }
+
+    /// Get the file options based on compression settings.
+    fn get_file_options(&self) -> zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> {
+        use zip::write::FileOptions;
+        use zip::CompressionMethod;
+
+        match self.compression {
             CompressionLevel::None => FileOptions::default()
                 .large_file(false)
                 .compression_method(CompressionMethod::Stored),
@@ -349,20 +387,28 @@ impl Workbook {
                 .large_file(false)
                 .compression_method(CompressionMethod::Deflated)
                 .compression_level(Some(9)),
-        };
+        }
+    }
+
+    /// Write all workbook contents to a ZipWriter.
+    fn write_workbook_contents<W: std::io::Write + Seek>(&self, zip: &mut zip::ZipWriter<W>) -> Result<()> {
+        use std::io::Write;
+        use zip::write::FileOptions;
+
+        let options = self.get_file_options();
 
         // Collect shared strings first to know if we have any
         let (shared_strings_vec, shared_strings_map) = writer::collect_shared_strings(&self.worksheets);
         let has_shared_strings = !shared_strings_vec.is_empty();
 
         // Write [Content_Types].xml
-        writer::write_content_types(&mut zip, &options, self.worksheets.len(), has_shared_strings)?;
+        writer::write_content_types(zip, &options, self.worksheets.len(), has_shared_strings)?;
 
         // Write _rels/.rels
-        writer::write_rels(&mut zip, &options)?;
+        writer::write_rels(zip, &options)?;
 
         // Write docProps files
-        writer::write_doc_props(&mut zip, &options)?;
+        writer::write_doc_props(zip, &options)?;
 
         // Write xl/workbook.xml
         let named_ranges: Vec<(String, String)> = self
@@ -370,18 +416,18 @@ impl Workbook {
             .iter()
             .map(|nr| (nr.name.clone(), nr.range.clone()))
             .collect();
-        writer::write_workbook_xml(&mut zip, &options, &self.sheet_names, &named_ranges)?;
+        writer::write_workbook_xml(zip, &options, &self.sheet_names, &named_ranges)?;
 
         // Write xl/_rels/workbook.xml.rels
-        writer::write_workbook_rels(&mut zip, &options, self.worksheets.len(), has_shared_strings)?;
+        writer::write_workbook_rels(zip, &options, self.worksheets.len(), has_shared_strings)?;
 
         // Write shared strings if we have any
         if has_shared_strings {
-            writer::write_shared_strings(&mut zip, &options, &shared_strings_vec)?;
+            writer::write_shared_strings(zip, &options, &shared_strings_vec)?;
         }
 
         // Write styles.xml
-        writer::write_styles_xml(&mut zip, &options)?;
+        writer::write_styles_xml(zip, &options, &self.styles)?;
 
         // Write each worksheet and comments
         for (idx, worksheet) in self.worksheets.iter().enumerate() {
@@ -391,7 +437,7 @@ impl Workbook {
             let has_comments = worksheet.cells.values().any(|cd| cd.comment.is_some());
 
             writer::write_worksheet_xml(
-                &mut zip,
+                zip,
                 &options,
                 worksheet,
                 sheet_id,
@@ -401,7 +447,7 @@ impl Workbook {
 
             // Write comments if any exist
             if has_comments {
-                writer::write_comments_xml(&mut zip, &options, worksheet, sheet_id)?;
+                writer::write_comments_xml(zip, &options, worksheet, sheet_id)?;
 
                 // Write worksheet relationships for comments
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
@@ -419,27 +465,45 @@ impl Workbook {
             }
         }
 
-        zip.finish()?;
-
         Ok(())
     }
 
     /// Parse workbook from ZIP archive with parallel worksheet parsing.
-    fn parse_workbook(&mut self, archive: &mut ZipArchive<BufReader<File>>) -> Result<()> {
+    fn parse_workbook<R: Read + Seek>(&mut self, archive: &mut ZipArchive<R>) -> Result<()> {
         // Phase 1: Load all file contents into memory (sequential ZIP extraction)
         let workbook_xml = Self::read_zip_file_to_vec(archive, "xl/workbook.xml")?;
+        let workbook_rels_xml = Self::read_zip_file_to_vec(archive, "xl/_rels/workbook.xml.rels").ok();
         let shared_strings_xml = Self::read_zip_file_to_vec(archive, "xl/sharedStrings.xml").ok();
         let styles_xml = Self::read_zip_file_to_vec(archive, "xl/styles.xml").ok();
 
-        // Parse workbook.xml to get sheet names and IDs
+        // Parse workbook.xml to get sheet names, IDs, and relationship IDs
         let (sheet_info, named_ranges) =
             Self::parse_workbook_xml(Cursor::new(&workbook_xml))?;
         self.named_ranges = named_ranges;
 
+        // Parse workbook.xml.rels to get the mapping from rId to actual file paths
+        let rels_map: HashMap<String, String> = if let Some(rels_xml) = workbook_rels_xml {
+            Self::parse_workbook_rels(Cursor::new(&rels_xml))?
+        } else {
+            HashMap::new()
+        };
+
         // Load all worksheet and comments XML into memory
         let mut sheet_data: Vec<(String, u32, Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(sheet_info.len());
-        for (sheet_name, sheet_id) in &sheet_info {
-            let sheet_path = format!("xl/worksheets/sheet{}.xml", sheet_id);
+        for (sheet_name, sheet_id, sheet_rid) in &sheet_info {
+            // Look up the actual sheet path from the relationships, or fall back to sheetId-based path
+            let sheet_path = if let Some(target) = rels_map.get(sheet_rid) {
+                // Target is relative to xl/, e.g., "worksheets/sheet1.xml"
+                if target.starts_with('/') {
+                    // Absolute path within the package (rare)
+                    target[1..].to_string()
+                } else {
+                    format!("xl/{}", target)
+                }
+            } else {
+                // Fallback to legacy behavior if rels file is missing or incomplete
+                format!("xl/worksheets/sheet{}.xml", sheet_id)
+            };
             let sheet_xml = Self::read_zip_file_to_vec(archive, &sheet_path)?;
 
             let comments_path = format!("xl/comments/comment{}.xml", sheet_id);
@@ -455,10 +519,10 @@ impl Workbook {
             Vec::new()
         };
 
-        let styles = if let Some(xml) = styles_xml {
+        let (styles, style_registry) = if let Some(xml) = styles_xml {
             Self::parse_styles_xml(&xml)?
         } else {
-            HashMap::new()
+            (HashMap::new(), StyleRegistry::new())
         };
 
         // Phase 3: Parse worksheets in parallel using Rayon
@@ -514,12 +578,15 @@ impl Workbook {
             self.sheet_names.push(sheet_name);
         }
 
+        // Store the style registry
+        self.styles = style_registry;
+
         Ok(())
     }
 
     /// Read a file from the ZIP archive into a Vec<u8>.
-    fn read_zip_file_to_vec(
-        archive: &mut ZipArchive<BufReader<File>>,
+    fn read_zip_file_to_vec<R: Read + Seek>(
+        archive: &mut ZipArchive<R>,
         path: &str,
     ) -> Result<Vec<u8>> {
         let mut file = archive.by_name(path).map_err(|e| {
@@ -530,9 +597,10 @@ impl Workbook {
         Ok(buf)
     }
 
+    /// Parses workbook.xml and returns sheet info (name, sheetId, rId) and named ranges.
     fn parse_workbook_xml<R: BufRead>(
         reader: R,
-    ) -> Result<(Vec<(String, u32)>, Vec<NamedRange>)> {
+    ) -> Result<(Vec<(String, u32, String)>, Vec<NamedRange>)> {
         let mut reader = Reader::from_reader(reader);
         reader.config_mut().trim_text(true);
 
@@ -541,6 +609,7 @@ impl Workbook {
         let mut buf = Vec::new();
         let mut current_sheet_name: Option<String> = None;
         let mut current_sheet_id: Option<u32> = None;
+        let mut current_sheet_rid: Option<String> = None;
         let mut in_defined_names = false;
         let mut current_name: Option<String> = None;
         let mut current_range: Option<String> = None;
@@ -558,6 +627,7 @@ impl Workbook {
                     if name == b"sheet" || local == b"sheet" {
                         let mut sheet_name: Option<String> = None;
                         let mut sheet_id: Option<u32> = None;
+                        let mut sheet_rid: Option<String> = None;
 
                         for attr in e.attributes() {
                             if let Ok(attr) = attr {
@@ -572,12 +642,16 @@ impl Workbook {
                                 } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
                                     let id_str = String::from_utf8_lossy(&attr.value);
                                     sheet_id = id_str.parse().ok();
+                                } else if attr_local == b"id" {
+                                    // r:id attribute (namespace-qualified)
+                                    sheet_rid =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
                                 }
                             }
                         }
 
-                        if let (Some(name), Some(id)) = (sheet_name, sheet_id) {
-                            sheets.push((name, id));
+                        if let (Some(name), Some(id), Some(rid)) = (sheet_name, sheet_id, sheet_rid) {
+                            sheets.push((name, id, rid));
                         }
                     }
                 }
@@ -620,6 +694,10 @@ impl Workbook {
                                 } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
                                     let id_str = String::from_utf8_lossy(&attr.value);
                                     current_sheet_id = id_str.parse().ok();
+                                } else if attr_local == b"id" {
+                                    // r:id attribute (namespace-qualified)
+                                    current_sheet_rid =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
                                 }
                             }
                         }
@@ -649,10 +727,10 @@ impl Workbook {
                     } else if is_defined_names {
                         in_defined_names = false;
                     } else if is_sheet {
-                        if let (Some(name), Some(id)) =
-                            (current_sheet_name.take(), current_sheet_id.take())
+                        if let (Some(name), Some(id), Some(rid)) =
+                            (current_sheet_name.take(), current_sheet_id.take(), current_sheet_rid.take())
                         {
-                            sheets.push((name, id));
+                            sheets.push((name, id, rid));
                         }
                     }
                 }
@@ -669,6 +747,57 @@ impl Workbook {
         }
 
         Ok((sheets, named_ranges))
+    }
+
+    /// Parses workbook.xml.rels and returns a mapping of relationship IDs to target paths.
+    fn parse_workbook_rels<R: BufRead>(reader: R) -> Result<HashMap<String, String>> {
+        let mut reader = Reader::from_reader(reader);
+        reader.config_mut().trim_text(true);
+
+        let mut rels = HashMap::new();
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                    let name = e.name();
+                    let local = e.local_name();
+                    let name = name.as_ref();
+                    let local = local.as_ref();
+
+                    if name == b"Relationship" || local == b"Relationship" {
+                        let mut rel_id: Option<String> = None;
+                        let mut target: Option<String> = None;
+
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"Id" {
+                                    rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                } else if attr_key == b"Target" {
+                                    target = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+
+                        if let (Some(id), Some(tgt)) = (rel_id, target) {
+                            rels.insert(id, tgt);
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(RustypyxlError::ParseError(format!(
+                        "XML parsing error in workbook.xml.rels: {}",
+                        e
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(rels)
     }
 
     fn parse_shared_strings_xml<R: BufRead>(reader: R) -> Result<Vec<crate::cell::InternedString>> {
@@ -716,7 +845,7 @@ impl Workbook {
         Ok(strings)
     }
 
-    fn parse_styles_xml(xml: &[u8]) -> Result<HashMap<u32, Arc<CellStyle>>> {
+    fn parse_styles_xml(xml: &[u8]) -> Result<(HashMap<u32, Arc<CellStyle>>, StyleRegistry)> {
         let mut reader = Reader::from_reader(Cursor::new(xml));
         reader.config_mut().trim_text(true);
 
@@ -729,12 +858,15 @@ impl Workbook {
 
         let mut in_font = false;
         let mut in_fill = false;
-        let mut _in_border = false;
+        let mut in_border = false;
         let mut _in_num_fmt = false;
+        let mut in_border_side: Option<&'static str> = None; // "left", "right", "top", "bottom", "diagonal"
 
         let mut current_font = Font::default();
         let mut current_fill = Fill::default();
-        let mut _current_border = Border::default();
+        let mut current_border = Border::default();
+        let mut current_border_style: Option<String> = None;
+        let mut current_border_color: Option<String> = None;
         let mut current_num_fmt_id: Option<u32> = None;
         let mut current_num_fmt_code: Option<String> = None;
 
@@ -773,6 +905,119 @@ impl Workbook {
                                     }
                                 }
                             }
+                        } else if name == b"color" {
+                            for attr in e.attributes() {
+                                if let Ok(attr) = attr {
+                                    let attr_key = attr.key.as_ref();
+                                    if attr_key == b"rgb" {
+                                        current_font.color = Some(format!(
+                                            "#{}",
+                                            String::from_utf8_lossy(&attr.value)
+                                        ));
+                                    } else if attr_key == b"theme" {
+                                        current_font.color = Some(format!(
+                                            "theme:{}",
+                                            String::from_utf8_lossy(&attr.value)
+                                        ));
+                                    }
+                                }
+                            }
+                        } else if name == b"strike" {
+                            current_font.strike = true;
+                        } else if name == b"vertAlign" {
+                            for attr in e.attributes() {
+                                if let Ok(attr) = attr {
+                                    let attr_key = attr.key.as_ref();
+                                    if attr_key == b"val" {
+                                        current_font.vert_align =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Handle fill color in empty elements (self-closing tags)
+                    if in_fill && name == b"fgColor" {
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"rgb" {
+                                    current_fill.fg_color = Some(format!(
+                                        "#{}",
+                                        String::from_utf8_lossy(&attr.value)
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if in_fill && name == b"bgColor" {
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"rgb" {
+                                    current_fill.bg_color = Some(format!(
+                                        "#{}",
+                                        String::from_utf8_lossy(&attr.value)
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // Handle self-closing border side elements (e.g., <left style="thin"/>)
+                    if in_border && (name == b"left" || name == b"right" || name == b"top"
+                                     || name == b"bottom" || name == b"diagonal") {
+                        let mut style: Option<String> = None;
+                        let mut color: Option<String> = None;
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                if attr.key.as_ref() == b"style" {
+                                    style = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        if let Some(s) = style {
+                            let border_style = BorderStyle { style: s, color };
+                            match name {
+                                b"left" => current_border.left = Some(border_style),
+                                b"right" => current_border.right = Some(border_style),
+                                b"top" => current_border.top = Some(border_style),
+                                b"bottom" => current_border.bottom = Some(border_style),
+                                b"diagonal" => current_border.diagonal = Some(border_style),
+                                _ => {}
+                            }
+                        }
+                    }
+                    // Handle color inside border side (self-closing)
+                    if in_border && in_border_side.is_some() && name == b"color" {
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                if attr.key.as_ref() == b"rgb" {
+                                    current_border_color = Some(format!(
+                                        "#{}",
+                                        String::from_utf8_lossy(&attr.value)
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // Handle numFmt as empty element (self-closing)
+                    if name == b"numFmt" {
+                        let mut fmt_id: Option<u32> = None;
+                        let mut fmt_code: Option<String> = None;
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"numFmtId" {
+                                    if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                        fmt_id = Some(id);
+                                    }
+                                } else if attr_key == b"formatCode" {
+                                    fmt_code = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        if let (Some(id), Some(code)) = (fmt_id, fmt_code) {
+                            number_formats.insert(id, code);
                         }
                     }
                 }
@@ -787,8 +1032,8 @@ impl Workbook {
                         in_fill = true;
                         current_fill = Fill::default();
                     } else if name == b"border" {
-                        _in_border = true;
-                        _current_border = Border::default();
+                        in_border = true;
+                        current_border = Border::default();
                     } else if name == b"numFmt" {
                         _in_num_fmt = true;
                         current_num_fmt_id = None;
@@ -840,6 +1085,18 @@ impl Workbook {
                             current_font.italic = true;
                         } else if prop_name == b"u" {
                             current_font.underline = true;
+                        } else if prop_name == b"strike" {
+                            current_font.strike = true;
+                        } else if prop_name == b"vertAlign" {
+                            for attr in e.attributes() {
+                                if let Ok(attr) = attr {
+                                    let attr_key = attr.key.as_ref();
+                                    if attr_key == b"val" {
+                                        current_font.vert_align =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    }
+                                }
+                            }
                         } else if prop_name == b"color" {
                             for attr in e.attributes() {
                                 if let Ok(attr) = attr {
@@ -896,6 +1153,45 @@ impl Workbook {
                                 }
                             }
                         }
+                    } else if in_border {
+                        let prop_name = e.name();
+                        let prop_name = prop_name.as_ref();
+                        // Handle border side start elements
+                        if prop_name == b"left" || prop_name == b"right" || prop_name == b"top"
+                           || prop_name == b"bottom" || prop_name == b"diagonal" {
+                            in_border_side = Some(match prop_name {
+                                b"left" => "left",
+                                b"right" => "right",
+                                b"top" => "top",
+                                b"bottom" => "bottom",
+                                b"diagonal" => "diagonal",
+                                _ => "left",
+                            });
+                            current_border_style = None;
+                            current_border_color = None;
+                            // Get style attribute
+                            for attr in e.attributes() {
+                                if let Ok(attr) = attr {
+                                    if attr.key.as_ref() == b"style" {
+                                        current_border_style = Some(
+                                            String::from_utf8_lossy(&attr.value).to_string()
+                                        );
+                                    }
+                                }
+                            }
+                        } else if prop_name == b"color" && in_border_side.is_some() {
+                            // Get color for current border side
+                            for attr in e.attributes() {
+                                if let Ok(attr) = attr {
+                                    if attr.key.as_ref() == b"rgb" {
+                                        current_border_color = Some(format!(
+                                            "#{}",
+                                            String::from_utf8_lossy(&attr.value)
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(Event::End(e)) => {
@@ -909,8 +1205,26 @@ impl Workbook {
                         fills.push(current_fill.clone());
                         in_fill = false;
                     } else if name == b"border" {
-                        borders.push(_current_border.clone());
-                        _in_border = false;
+                        borders.push(current_border.clone());
+                        in_border = false;
+                    } else if in_border && (name == b"left" || name == b"right" || name == b"top"
+                                            || name == b"bottom" || name == b"diagonal") {
+                        // Finalize border side
+                        if let Some(style) = current_border_style.take() {
+                            let border_style = BorderStyle {
+                                style,
+                                color: current_border_color.take(),
+                            };
+                            match name {
+                                b"left" => current_border.left = Some(border_style),
+                                b"right" => current_border.right = Some(border_style),
+                                b"top" => current_border.top = Some(border_style),
+                                b"bottom" => current_border.bottom = Some(border_style),
+                                b"diagonal" => current_border.diagonal = Some(border_style),
+                                _ => {}
+                            }
+                        }
+                        in_border_side = None;
                     } else if name == b"numFmt" {
                         if let (Some(id), Some(code)) =
                             (current_num_fmt_id, current_num_fmt_code.take())
@@ -942,6 +1256,8 @@ impl Workbook {
         let mut in_xf = false;
         let mut has_alignment = false;
         let mut current_align = Alignment::default();
+        let mut has_protection = false;
+        let mut current_protection = Protection::default();
 
         loop {
             match reader2.read_event_into(&mut buf2) {
@@ -1026,6 +1342,32 @@ impl Workbook {
                                 } else if attr_key == b"wrapText" {
                                     current_align.wrap_text =
                                         String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"textRotation" {
+                                    if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                        current_align.text_rotation = Some(rotation);
+                                    }
+                                } else if attr_key == b"shrinkToFit" {
+                                    current_align.shrink_to_fit =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"indent" {
+                                    if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                        current_align.indent = Some(indent);
+                                    }
+                                }
+                            }
+                        }
+                    } else if name == b"protection" && in_xf {
+                        has_protection = true;
+                        current_protection = Protection::default();
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"locked" {
+                                    current_protection.locked =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"hidden" {
+                                    current_protection.hidden =
+                                        String::from_utf8_lossy(&attr.value) == "1";
                                 }
                             }
                         }
@@ -1040,11 +1382,18 @@ impl Workbook {
                         } else {
                             None
                         };
+                        current_xf.protection = if has_protection {
+                            Some(current_protection.clone())
+                        } else {
+                            None
+                        };
                         cell_styles.insert(xf_index, Arc::new(current_xf.clone()));
                         xf_index += 1;
                         in_xf = false;
                         has_alignment = false;
+                        has_protection = false;
                         current_align = Alignment::default();
+                        current_protection = Protection::default();
                     } else if name == b"cellXfs" {
                         in_cell_xfs = false;
                     }
@@ -1066,6 +1415,32 @@ impl Workbook {
                                         Some(String::from_utf8_lossy(&attr.value).to_string());
                                 } else if attr_key == b"wrapText" {
                                     current_align.wrap_text =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"textRotation" {
+                                    if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                        current_align.text_rotation = Some(rotation);
+                                    }
+                                } else if attr_key == b"shrinkToFit" {
+                                    current_align.shrink_to_fit =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"indent" {
+                                    if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                        current_align.indent = Some(indent);
+                                    }
+                                }
+                            }
+                        }
+                    } else if name == b"protection" && in_xf && in_cell_xfs {
+                        has_protection = true;
+                        current_protection = Protection::default();
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                let attr_key = attr.key.as_ref();
+                                if attr_key == b"locked" {
+                                    current_protection.locked =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                } else if attr_key == b"hidden" {
+                                    current_protection.hidden =
                                         String::from_utf8_lossy(&attr.value) == "1";
                                 }
                             }
@@ -1108,7 +1483,15 @@ impl Workbook {
                                         } else {
                                             let builtin = match id {
                                                 0 => Some("General".to_string()),
+                                                1 => Some("0".to_string()),
+                                                2 => Some("0.00".to_string()),
+                                                3 => Some("#,##0".to_string()),
                                                 4 => Some("#,##0.00".to_string()),
+                                                9 => Some("0%".to_string()),
+                                                10 => Some("0.00%".to_string()),
+                                                11 => Some("0.00E+00".to_string()),
+                                                14 => Some("mm/dd/yyyy".to_string()),
+                                                22 => Some("m/d/yy h:mm".to_string()),
                                                 _ => None,
                                             };
                                             if let Some(fmt) = builtin {
@@ -1129,7 +1512,90 @@ impl Workbook {
             buf2.clear();
         }
 
-        Ok(cell_styles)
+        // Build StyleRegistry from parsed data
+        let mut registry = StyleRegistry::default();
+
+        // Add fonts (ensure at least one default)
+        if fonts.is_empty() {
+            registry.fonts.push(Font {
+                name: Some("Calibri".to_string()),
+                size: Some(11.0),
+                ..Default::default()
+            });
+        } else {
+            registry.fonts = fonts;
+        }
+
+        // Add fills (ensure at least two defaults: none and gray125)
+        if fills.is_empty() {
+            registry.fills.push(Fill::default());
+            registry.fills.push(Fill {
+                pattern_type: Some("gray125".to_string()),
+                ..Default::default()
+            });
+        } else {
+            registry.fills = fills;
+        }
+
+        // Add borders (ensure at least one default)
+        if borders.is_empty() {
+            registry.borders.push(Border::default());
+        } else {
+            registry.borders = borders;
+        }
+
+        // Add custom number formats
+        for (id, code) in number_formats {
+            if id >= 164 {
+                registry.num_fmts.push((id as usize, code));
+            }
+        }
+
+        // Build cellXfs from the cell_styles
+        // Iterate in order since cell_styles HashMap keys are indices
+        let max_xf = cell_styles.keys().copied().max().unwrap_or(0);
+        for i in 0..=max_xf {
+            if let Some(style) = cell_styles.get(&i) {
+                let xf = CellXf {
+                    font_id: style.font.as_ref()
+                        .and_then(|f| registry.fonts.iter().position(|rf| rf == f))
+                        .unwrap_or(0),
+                    fill_id: style.fill.as_ref()
+                        .and_then(|f| registry.fills.iter().position(|rf| rf == f))
+                        .unwrap_or(0),
+                    border_id: style.border.as_ref()
+                        .and_then(|b| registry.borders.iter().position(|rb| rb == b))
+                        .unwrap_or(0),
+                    num_fmt_id: style.number_format.as_ref()
+                        .and_then(|nf| StyleRegistry::builtin_num_fmt_id(nf))
+                        .or_else(|| {
+                            style.number_format.as_ref().and_then(|nf| {
+                                registry.num_fmts.iter().find(|(_, code)| code == nf).map(|(id, _)| *id)
+                            })
+                        })
+                        .unwrap_or(0),
+                    alignment: style.alignment.clone(),
+                    protection: style.protection.clone(),
+                    apply_font: style.font.is_some(),
+                    apply_fill: style.fill.is_some(),
+                    apply_border: style.border.is_some(),
+                    apply_number_format: style.number_format.is_some(),
+                    apply_alignment: style.alignment.is_some(),
+                    apply_protection: style.protection.is_some(),
+                };
+                registry.cell_xfs.push(xf);
+            } else {
+                // Fill gaps with default xf
+                registry.cell_xfs.push(CellXf::default());
+            }
+        }
+
+        // Ensure at least one cellXf
+        if registry.cell_xfs.is_empty() {
+            registry.cell_xfs.push(CellXf::default());
+        }
+
+        Ok((cell_styles, registry))
     }
 
     fn estimate_dimension_cells(ref_str: &str) -> Option<usize> {
@@ -1372,6 +1838,7 @@ impl Workbook {
                             let cell_data = CellData {
                                 value: cell_value,
                                 style,
+                                style_index: style_id,
                                 number_format: num_format,
                                 data_type: data_type_str,
                                 hyperlink: None,
@@ -1545,6 +2012,7 @@ impl Workbook {
                                 let cell_data = CellData {
                                     value: CellValue::Empty,
                                     style: None,
+                                    style_index: None,
                                     number_format: None,
                                     data_type: None,
                                     hyperlink: Some(url.clone()),
@@ -1600,6 +2068,7 @@ impl Workbook {
                             let cell_data = CellData {
                                 value: cell_value,
                                 style,
+                                style_index: current_style_id,
                                 number_format: num_format,
                                 data_type: data_type_str,
                                 hyperlink: None,
@@ -1778,5 +2247,108 @@ mod tests {
         wb.create_named_range("MyRange".to_string(), "'Sheet1'!A1:B10".to_string())
             .unwrap();
         assert_eq!(wb.get_named_range("MyRange"), Some("'Sheet1'!A1:B10"));
+    }
+
+    #[test]
+    fn test_parse_workbook_rels() {
+        let rels_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+    <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet5.xml"/>
+    <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+</Relationships>"#;
+
+        let rels = Workbook::parse_workbook_rels(Cursor::new(rels_xml)).unwrap();
+
+        assert_eq!(rels.get("rId1"), Some(&"worksheets/sheet1.xml".to_string()));
+        assert_eq!(rels.get("rId2"), Some(&"worksheets/sheet5.xml".to_string()));
+        assert_eq!(rels.get("rId3"), Some(&"worksheets/sheet3.xml".to_string()));
+    }
+
+    #[test]
+    fn test_parse_workbook_xml_with_rids() {
+        let workbook_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+    <sheets>
+        <sheet name="Data" sheetId="8" r:id="rId1"/>
+        <sheet name="Summary" sheetId="2" r:id="rId2"/>
+    </sheets>
+</workbook>"#;
+
+        let (sheets, _) = Workbook::parse_workbook_xml(Cursor::new(workbook_xml)).unwrap();
+
+        assert_eq!(sheets.len(), 2);
+        assert_eq!(sheets[0], ("Data".to_string(), 8, "rId1".to_string()));
+        assert_eq!(sheets[1], ("Summary".to_string(), 2, "rId2".to_string()));
+    }
+
+    #[test]
+    fn test_save_to_bytes() {
+        let mut wb = Workbook::new();
+        let ws = wb.create_sheet(Some("Test".to_string())).unwrap();
+        ws.set_cell_value(1, 1, CellValue::String(std::sync::Arc::from("Hello")));
+        ws.set_cell_value(1, 2, CellValue::Number(42.0));
+        ws.set_cell_value(2, 1, CellValue::Boolean(true));
+
+        let bytes = wb.save_to_bytes().unwrap();
+
+        // Verify it's a valid ZIP file (starts with PK)
+        assert!(bytes.len() > 4);
+        assert_eq!(&bytes[0..2], b"PK");
+    }
+
+    #[test]
+    fn test_load_from_bytes() {
+        // Create a workbook with data
+        let mut wb = Workbook::new();
+        let ws = wb.create_sheet(Some("TestSheet".to_string())).unwrap();
+        ws.set_cell_value(1, 1, CellValue::String(std::sync::Arc::from("Hello World")));
+        ws.set_cell_value(1, 2, CellValue::Number(123.45));
+
+        // Save to bytes
+        let bytes = wb.save_to_bytes().unwrap();
+
+        // Load from bytes
+        let wb2 = Workbook::load_from_bytes(&bytes).unwrap();
+
+        // Verify the loaded workbook
+        assert_eq!(wb2.sheet_names.len(), 1);
+        assert_eq!(wb2.sheet_names[0], "TestSheet");
+
+        let ws2 = wb2.get_sheet_by_name("TestSheet").unwrap();
+        let cell1 = ws2.get_cell(1, 1).unwrap();
+        let cell2 = ws2.get_cell(1, 2).unwrap();
+
+        match &cell1.value {
+            CellValue::String(s) => assert_eq!(s.as_ref(), "Hello World"),
+            _ => panic!("Expected String value"),
+        }
+
+        match &cell2.value {
+            CellValue::Number(n) => assert!((n - 123.45).abs() < 0.001),
+            _ => panic!("Expected Number value"),
+        }
+    }
+
+    #[test]
+    fn test_bytes_roundtrip_with_multiple_sheets() {
+        let mut wb = Workbook::new();
+
+        // Create multiple sheets with data
+        let ws1 = wb.create_sheet(Some("Sheet1".to_string())).unwrap();
+        ws1.set_cell_value(1, 1, CellValue::String(std::sync::Arc::from("Sheet1 Data")));
+
+        let ws2 = wb.create_sheet(Some("Sheet2".to_string())).unwrap();
+        ws2.set_cell_value(1, 1, CellValue::String(std::sync::Arc::from("Sheet2 Data")));
+        ws2.set_cell_value(2, 2, CellValue::Number(999.0));
+
+        // Roundtrip through bytes
+        let bytes = wb.save_to_bytes().unwrap();
+        let wb2 = Workbook::load_from_bytes(&bytes).unwrap();
+
+        // Verify
+        assert_eq!(wb2.sheet_names.len(), 2);
+        assert!(wb2.sheet_names.contains(&"Sheet1".to_string()));
+        assert!(wb2.sheet_names.contains(&"Sheet2".to_string()));
     }
 }

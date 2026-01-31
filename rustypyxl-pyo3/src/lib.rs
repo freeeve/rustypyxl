@@ -13,23 +13,26 @@ mod worksheet;
 
 use cell::PyCell;
 use streaming::PyStreamingWorkbook;
-use style::{PyFont, PyAlignment, PyPatternFill, PyBorder};
+use style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection, PyGradientFill, PyGradientStop};
 use workbook::PyWorkbook;
 use worksheet::PyWorksheet;
 
-/// Load a workbook from a file path.
+/// Load a workbook from a file path, bytes, or file-like object.
 ///
 /// Args:
-///     filename: Path to the Excel file (.xlsx)
+///     source: File path (str), bytes, or file-like object with .read() method
 ///
 /// Returns:
 ///     Workbook: The loaded workbook
 ///
 /// Example:
 ///     wb = load_workbook('file.xlsx')
+///     wb = load_workbook(file_bytes)
+///     wb = load_workbook(io.BytesIO(file_bytes))
 #[pyfunction]
-fn load_workbook(filename: &str) -> PyResult<PyWorkbook> {
-    PyWorkbook::load(filename)
+#[pyo3(signature = (source))]
+fn load_workbook(source: &Bound<'_, PyAny>) -> PyResult<PyWorkbook> {
+    PyWorkbook::load(source)
 }
 
 /// The rustypyxl Python module.
@@ -48,6 +51,10 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAlignment>()?;
     m.add_class::<PyPatternFill>()?;
     m.add_class::<PyBorder>()?;
+    m.add_class::<PySide>()?;
+    m.add_class::<PyProtection>()?;
+    m.add_class::<PyGradientFill>()?;
+    m.add_class::<PyGradientStop>()?;
 
     // Functions
     m.add_function(wrap_pyfunction!(load_workbook, m)?)?;
@@ -58,6 +65,10 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     styles.add_class::<PyAlignment>()?;
     styles.add_class::<PyPatternFill>()?;
     styles.add_class::<PyBorder>()?;
+    styles.add_class::<PySide>()?;
+    styles.add_class::<PyProtection>()?;
+    styles.add_class::<PyGradientFill>()?;
+    styles.add_class::<PyGradientStop>()?;
     m.add_submodule(&styles)?;
 
     Ok(())

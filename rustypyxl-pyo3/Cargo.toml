@@ -18,3 +18,4 @@ pyo3 = { workspace = true }
 default = ["extension-module", "parquet"]
 extension-module = ["pyo3/extension-module"]
 parquet = ["rustypyxl-core/parquet"]
+s3 = ["rustypyxl-core/s3"]

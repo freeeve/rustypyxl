@@ -34,6 +34,8 @@ pub struct CellData {
     pub value: CellValue,
     /// Cell style (font, alignment, etc.) - Arc for cheap cloning.
     pub style: Option<Arc<CellStyle>>,
+    /// Style index for writing (preserves original style during roundtrip).
+    pub style_index: Option<u32>,
     /// Number format string.
     pub number_format: Option<String>,
     /// Data type (s=string, n=number, b=boolean, d=date).
@@ -244,6 +246,14 @@ impl Worksheet {
             .or_insert_with(CellData::new);
         cell_data.value = value.into();
         self.update_dimensions(row, column);
+    }
+
+    /// Get a mutable reference to a cell, creating it if it doesn't exist.
+    pub fn get_or_create_cell_mut(&mut self, row: u32, column: u32) -> &mut CellData {
+        self.update_dimensions(row, column);
+        self.cells
+            .entry(cell_key(row, column))
+            .or_insert_with(CellData::new)
     }
 
     /// Set complete cell data at the specified position.

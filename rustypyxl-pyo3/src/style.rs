@@ -358,3 +358,94 @@ impl PyProtection {
         self.__str__()
     }
 }
+
+/// Gradient stop for gradient fills.
+#[pyclass(name = "GradientStop")]
+#[derive(Clone, Debug, Default)]
+pub struct PyGradientStop {
+    #[pyo3(get, set)]
+    pub position: f64,
+    #[pyo3(get, set)]
+    pub color: Option<String>,
+}
+
+#[pymethods]
+impl PyGradientStop {
+    #[new]
+    #[pyo3(signature = (position=0.0, color=None))]
+    fn new(position: f64, color: Option<String>) -> Self {
+        PyGradientStop { position, color }
+    }
+
+    fn copy(&self) -> PyGradientStop {
+        self.clone()
+    }
+
+    fn __str__(&self) -> String {
+        format!("<GradientStop position={} color={:?}>", self.position, self.color)
+    }
+
+    fn __repr__(&self) -> String {
+        self.__str__()
+    }
+}
+
+/// Gradient fill (openpyxl-compatible).
+#[pyclass(name = "GradientFill")]
+#[derive(Clone, Debug, Default)]
+pub struct PyGradientFill {
+    #[pyo3(get, set)]
+    pub fill_type: Option<String>,
+    #[pyo3(get, set)]
+    pub degree: Option<f64>,
+    #[pyo3(get, set)]
+    pub left: Option<f64>,
+    #[pyo3(get, set)]
+    pub right: Option<f64>,
+    #[pyo3(get, set)]
+    pub top: Option<f64>,
+    #[pyo3(get, set)]
+    pub bottom: Option<f64>,
+    #[pyo3(get, set)]
+    pub stop: Vec<PyGradientStop>,
+}
+
+#[pymethods]
+impl PyGradientFill {
+    #[new]
+    #[pyo3(signature = (fill_type=None, degree=None, left=None, right=None, top=None, bottom=None, stop=None))]
+    fn new(
+        fill_type: Option<String>,
+        degree: Option<f64>,
+        left: Option<f64>,
+        right: Option<f64>,
+        top: Option<f64>,
+        bottom: Option<f64>,
+        stop: Option<Vec<PyGradientStop>>,
+    ) -> Self {
+        PyGradientFill {
+            fill_type: fill_type.or(Some("linear".to_string())),
+            degree: degree.or(Some(0.0)),
+            left,
+            right,
+            top,
+            bottom,
+            stop: stop.unwrap_or_default(),
+        }
+    }
+
+    fn copy(&self) -> PyGradientFill {
+        self.clone()
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "<GradientFill type={:?} degree={:?} stops={}>",
+            self.fill_type, self.degree, self.stop.len()
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        self.__str__()
+    }
+}

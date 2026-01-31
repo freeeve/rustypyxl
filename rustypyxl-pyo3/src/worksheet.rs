@@ -17,6 +17,8 @@ pub struct PyWorksheet {
     pub(crate) index: usize,
     /// Cached title (for when we can't access workbook).
     cached_title: String,
+    /// Reference to parent workbook (for connected operations).
+    pub(crate) workbook: Option<Py<PyWorkbook>>,
 }
 
 impl PyWorksheet {
@@ -25,7 +27,16 @@ impl PyWorksheet {
         let title = wb.inner.sheet_names.get(index)
             .cloned()
             .unwrap_or_else(|| format!("Sheet{}", index + 1));
-        PyWorksheet { index, cached_title: title }
+        PyWorksheet { index, cached_title: title, workbook: None }
+    }
+
+    /// Create a connected PyWorksheet with a workbook reference.
+    pub fn connected(wb_ref: Py<PyWorkbook>, index: usize, title: String) -> Self {
+        PyWorksheet {
+            index,
+            cached_title: title,
+            workbook: Some(wb_ref),
+        }
     }
 }
 
@@ -60,7 +71,14 @@ impl PyWorksheet {
         let (row, col) = parse_coordinate(key)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        Ok(Py::new(py, PyCell::new(row, col))?.into_any())
+        // Create a connected cell if we have a workbook reference
+        let cell = if let Some(ref wb) = self.workbook {
+            PyCell::connected(row, col, wb.clone_ref(py), self.cached_title.clone())
+        } else {
+            PyCell::new(row, col)
+        };
+
+        Ok(Py::new(py, cell)?.into_any())
     }
 
     /// Set a cell value using subscript notation: ws['A1'] = 'Hello'.
@@ -81,12 +99,17 @@ impl PyWorksheet {
     /// Returns:
     ///     Cell: The cell at the specified position
     #[pyo3(signature = (row, column=None))]
-    fn cell(&self, row: u32, column: Option<u32>) -> PyResult<PyCell> {
+    fn cell(&self, row: u32, column: Option<u32>, py: Python<'_>) -> PyResult<PyCell> {
         let col = column.unwrap_or(1);
         if row == 0 || col == 0 {
             return Err(PyValueError::new_err("Row and column must be at least 1"));
         }
-        Ok(PyCell::new(row, col))
+        // Create a connected cell if we have a workbook reference
+        if let Some(ref wb) = self.workbook {
+            Ok(PyCell::connected(row, col, wb.clone_ref(py), self.cached_title.clone()))
+        } else {
+            Ok(PyCell::new(row, col))
+        }
     }
 
     /// Iterate over rows.
