@@ -8,8 +8,15 @@ use crate::error::{Result, RustypyxlError};
 use crate::worksheet::Worksheet;
 use crate::Workbook;
 
-use arrow::array::*;
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+    Float16Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
+    LargeStringArray, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+    TimestampNanosecondArray, TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array,
+    UInt8Array,
+};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -216,7 +223,7 @@ impl Workbook {
             current_row += 1;
         }
 
-        let data_start_row = current_row;
+        let _data_start_row = current_row;
         let mut total_rows: u32 = 0;
 
         // Read batches and write to worksheet

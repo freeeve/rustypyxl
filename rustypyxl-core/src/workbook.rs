@@ -967,7 +967,7 @@ impl Workbook {
                     if in_border && (name == b"left" || name == b"right" || name == b"top"
                                      || name == b"bottom" || name == b"diagonal") {
                         let mut style: Option<String> = None;
-                        let mut color: Option<String> = None;
+                        let color: Option<String> = None;
                         for attr in e.attributes() {
                             if let Ok(attr) = attr {
                                 if attr.key.as_ref() == b"style" {

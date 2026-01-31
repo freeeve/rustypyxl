@@ -15,6 +15,7 @@ use zip::{CompressionMethod, ZipWriter};
 
 /// A streaming sheet that writes rows directly to the ZIP file.
 pub struct StreamingSheet {
+    #[allow(dead_code)]
     name: String,
     current_row: u32,
     max_col: u32,
@@ -143,7 +144,7 @@ impl StreamingWorkbook {
     }
 
     /// Finalize the current sheet.
-    fn finalize_sheet(&mut self, sheet: &StreamingSheet) -> Result<()> {
+    fn finalize_sheet(&mut self, _sheet: &StreamingSheet) -> Result<()> {
         if !self.sheet_xml_started {
             return Ok(());
         }
