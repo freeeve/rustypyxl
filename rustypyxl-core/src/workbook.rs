@@ -856,6 +856,7 @@ impl Workbook {
     }
 
     /// Get an optional u32 attribute value from an XML element.
+    #[allow(dead_code)]
     fn get_attr_u32(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<u32> {
         Self::get_attr_str(e, key).and_then(|s| s.parse().ok())
     }
@@ -866,6 +867,7 @@ impl Workbook {
     }
 
     /// Check if an attribute equals "1" or "true".
+    #[allow(dead_code)]
     fn get_attr_bool(e: &quick_xml::events::BytesStart, key: &[u8]) -> bool {
         Self::get_attr_str(e, key)
             .map(|s| s == "1" || s == "true")
@@ -922,6 +924,7 @@ impl Workbook {
     }
 
     /// Parse border side properties and return (style, color).
+    #[allow(dead_code)]
     fn parse_border_side_attrs(e: &quick_xml::events::BytesStart) -> (Option<String>, Option<String>) {
         let style = Self::get_attr_str(e, b"style");
         let color = None; // Color comes from nested element
@@ -929,6 +932,7 @@ impl Workbook {
     }
 
     /// Parse a color element and return the color string.
+    #[allow(dead_code)]
     fn parse_color_element(e: &quick_xml::events::BytesStart) -> Option<String> {
         if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
             Some(format!("#{}", rgb))

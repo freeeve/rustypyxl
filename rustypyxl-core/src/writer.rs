@@ -432,6 +432,138 @@ pub fn write_shared_strings<W: Write + Seek>(
     Ok(())
 }
 
+/// Write a single font element to the XML string.
+fn write_font_xml(xml: &mut String, font: &crate::style::Font) {
+    xml.push_str("<font>");
+    if font.bold {
+        xml.push_str("<b/>");
+    }
+    if font.italic {
+        xml.push_str("<i/>");
+    }
+    if font.underline {
+        xml.push_str("<u/>");
+    }
+    if font.strike {
+        xml.push_str("<strike/>");
+    }
+    if let Some(ref va) = font.vert_align {
+        xml.push_str(&format!(r#"<vertAlign val="{}"/>"#, va));
+    }
+    if let Some(size) = font.size {
+        xml.push_str(&format!(r#"<sz val="{}"/>"#, size));
+    }
+    if let Some(ref color) = font.color {
+        if color.starts_with("theme:") {
+            xml.push_str(&format!(r#"<color theme="{}"/>"#, &color[6..]));
+        } else if color.starts_with('#') {
+            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, &color[1..]));
+        } else {
+            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
+        }
+    } else {
+        xml.push_str(r#"<color theme="1"/>"#);
+    }
+    if let Some(ref name) = font.name {
+        xml.push_str(&format!(r#"<name val="{}"/>"#, escape_xml(name)));
+    } else {
+        xml.push_str(r#"<name val="Calibri"/>"#);
+    }
+    xml.push_str(r#"<family val="2"/>"#);
+    xml.push_str("</font>");
+}
+
+/// Write a single fill element to the XML string.
+fn write_fill_xml(xml: &mut String, fill: &crate::style::Fill) {
+    xml.push_str("<fill>");
+    if let Some(ref pattern) = fill.pattern_type {
+        xml.push_str(&format!(r#"<patternFill patternType="{}">"#, pattern));
+        if let Some(ref fg) = fill.fg_color {
+            let color = if fg.starts_with('#') { &fg[1..] } else { fg.as_str() };
+            xml.push_str(&format!(r#"<fgColor rgb="FF{}"/>"#, color));
+        }
+        if let Some(ref bg) = fill.bg_color {
+            let color = if bg.starts_with('#') { &bg[1..] } else { bg.as_str() };
+            xml.push_str(&format!(r#"<bgColor rgb="FF{}"/>"#, color));
+        }
+        xml.push_str("</patternFill>");
+    } else {
+        xml.push_str("<patternFill/>");
+    }
+    xml.push_str("</fill>");
+}
+
+/// Write alignment element to the XML string.
+fn write_alignment_xml(xml: &mut String, align: &crate::style::Alignment) {
+    xml.push_str("<alignment");
+    if let Some(ref h) = align.horizontal {
+        xml.push_str(&format!(r#" horizontal="{}""#, h));
+    }
+    if let Some(ref v) = align.vertical {
+        xml.push_str(&format!(r#" vertical="{}""#, v));
+    }
+    if align.wrap_text {
+        xml.push_str(r#" wrapText="1""#);
+    }
+    if let Some(rot) = align.text_rotation {
+        xml.push_str(&format!(r#" textRotation="{}""#, rot));
+    }
+    if align.shrink_to_fit {
+        xml.push_str(r#" shrinkToFit="1""#);
+    }
+    xml.push_str("/>");
+}
+
+/// Write protection element to the XML string.
+fn write_protection_xml(xml: &mut String, prot: &crate::style::Protection) {
+    xml.push_str("<protection");
+    xml.push_str(&format!(r#" locked="{}""#, if prot.locked { "1" } else { "0" }));
+    if prot.hidden {
+        xml.push_str(r#" hidden="1""#);
+    }
+    xml.push_str("/>");
+}
+
+/// Write a single cellXf element to the XML string.
+fn write_cell_xf_xml(xml: &mut String, xf: &crate::style::CellXf) {
+    xml.push_str(&format!(
+        r#"<xf numFmtId="{}" fontId="{}" fillId="{}" borderId="{}""#,
+        xf.num_fmt_id, xf.font_id, xf.fill_id, xf.border_id
+    ));
+    if xf.apply_font {
+        xml.push_str(r#" applyFont="1""#);
+    }
+    if xf.apply_fill {
+        xml.push_str(r#" applyFill="1""#);
+    }
+    if xf.apply_border {
+        xml.push_str(r#" applyBorder="1""#);
+    }
+    if xf.apply_number_format {
+        xml.push_str(r#" applyNumberFormat="1""#);
+    }
+    if xf.alignment.is_some() {
+        xml.push_str(r#" applyAlignment="1""#);
+    }
+    if xf.protection.is_some() {
+        xml.push_str(r#" applyProtection="1""#);
+    }
+
+    let has_children = xf.alignment.is_some() || xf.protection.is_some();
+    if has_children {
+        xml.push_str(">");
+        if let Some(ref align) = xf.alignment {
+            write_alignment_xml(xml, align);
+        }
+        if let Some(ref prot) = xf.protection {
+            write_protection_xml(xml, prot);
+        }
+        xml.push_str("</xf>");
+    } else {
+        xml.push_str("/>");
+    }
+}
+
 pub fn write_styles_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
@@ -457,66 +589,14 @@ pub fn write_styles_xml<W: Write + Seek>(
     // Fonts
     xml.push_str(&format!(r#"<fonts count="{}">"#, styles.fonts.len()));
     for font in &styles.fonts {
-        xml.push_str("<font>");
-        if font.bold {
-            xml.push_str("<b/>");
-        }
-        if font.italic {
-            xml.push_str("<i/>");
-        }
-        if font.underline {
-            xml.push_str("<u/>");
-        }
-        if font.strike {
-            xml.push_str("<strike/>");
-        }
-        if let Some(ref va) = font.vert_align {
-            xml.push_str(&format!(r#"<vertAlign val="{}"/>"#, va));
-        }
-        if let Some(size) = font.size {
-            xml.push_str(&format!(r#"<sz val="{}"/>"#, size));
-        }
-        if let Some(ref color) = font.color {
-            // Handle both rgb and theme colors
-            if color.starts_with("theme:") {
-                xml.push_str(&format!(r#"<color theme="{}"/>"#, &color[6..]));
-            } else if color.starts_with('#') {
-                xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, &color[1..]));
-            } else {
-                xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
-            }
-        } else {
-            xml.push_str(r#"<color theme="1"/>"#);
-        }
-        if let Some(ref name) = font.name {
-            xml.push_str(&format!(r#"<name val="{}"/>"#, escape_xml(name)));
-        } else {
-            xml.push_str(r#"<name val="Calibri"/>"#);
-        }
-        xml.push_str(r#"<family val="2"/>"#);
-        xml.push_str("</font>");
+        write_font_xml(&mut xml, font);
     }
     xml.push_str("</fonts>");
 
     // Fills
     xml.push_str(&format!(r#"<fills count="{}">"#, styles.fills.len()));
     for fill in &styles.fills {
-        xml.push_str("<fill>");
-        if let Some(ref pattern) = fill.pattern_type {
-            xml.push_str(&format!(r#"<patternFill patternType="{}">"#, pattern));
-            if let Some(ref fg) = fill.fg_color {
-                let color = if fg.starts_with('#') { &fg[1..] } else { fg.as_str() };
-                xml.push_str(&format!(r#"<fgColor rgb="FF{}"/>"#, color));
-            }
-            if let Some(ref bg) = fill.bg_color {
-                let color = if bg.starts_with('#') { &bg[1..] } else { bg.as_str() };
-                xml.push_str(&format!(r#"<bgColor rgb="FF{}"/>"#, color));
-            }
-            xml.push_str("</patternFill>");
-        } else {
-            xml.push_str("<patternFill/>");
-        }
-        xml.push_str("</fill>");
+        write_fill_xml(&mut xml, fill);
     }
     xml.push_str("</fills>");
 
@@ -541,66 +621,7 @@ pub fn write_styles_xml<W: Write + Seek>(
     // Cell XFs
     xml.push_str(&format!(r#"<cellXfs count="{}">"#, styles.cell_xfs.len()));
     for xf in &styles.cell_xfs {
-        xml.push_str(&format!(
-            r#"<xf numFmtId="{}" fontId="{}" fillId="{}" borderId="{}""#,
-            xf.num_fmt_id, xf.font_id, xf.fill_id, xf.border_id
-        ));
-        if xf.apply_font {
-            xml.push_str(r#" applyFont="1""#);
-        }
-        if xf.apply_fill {
-            xml.push_str(r#" applyFill="1""#);
-        }
-        if xf.apply_border {
-            xml.push_str(r#" applyBorder="1""#);
-        }
-        if xf.apply_number_format {
-            xml.push_str(r#" applyNumberFormat="1""#);
-        }
-        if xf.alignment.is_some() {
-            xml.push_str(r#" applyAlignment="1""#);
-        }
-        if xf.protection.is_some() {
-            xml.push_str(r#" applyProtection="1""#);
-        }
-
-        let has_children = xf.alignment.is_some() || xf.protection.is_some();
-        if has_children {
-            xml.push_str(">");
-
-            if let Some(ref align) = xf.alignment {
-                xml.push_str("<alignment");
-                if let Some(ref h) = align.horizontal {
-                    xml.push_str(&format!(r#" horizontal="{}""#, h));
-                }
-                if let Some(ref v) = align.vertical {
-                    xml.push_str(&format!(r#" vertical="{}""#, v));
-                }
-                if align.wrap_text {
-                    xml.push_str(r#" wrapText="1""#);
-                }
-                if let Some(rot) = align.text_rotation {
-                    xml.push_str(&format!(r#" textRotation="{}""#, rot));
-                }
-                if align.shrink_to_fit {
-                    xml.push_str(r#" shrinkToFit="1""#);
-                }
-                xml.push_str("/>");
-            }
-
-            if let Some(ref prot) = xf.protection {
-                xml.push_str("<protection");
-                xml.push_str(&format!(r#" locked="{}""#, if prot.locked { "1" } else { "0" }));
-                if prot.hidden {
-                    xml.push_str(r#" hidden="1""#);
-                }
-                xml.push_str("/>");
-            }
-
-            xml.push_str("</xf>");
-        } else {
-            xml.push_str("/>");
-        }
+        write_cell_xf_xml(&mut xml, xf);
     }
     xml.push_str("</cellXfs>");
 
