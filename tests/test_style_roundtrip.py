@@ -468,3 +468,165 @@ class TestExistingFileRoundtrip:
         wb3 = rustypyxl.load_workbook(str(path2))
         assert wb3["Data"].cell(row=1, column=1).font.bold is True
         assert wb3["Data"].cell(row=2, column=2).number_format == "#,##0"
+
+
+class TestThemeColorRoundtrip:
+    """Tests for theme color preservation in fills and borders."""
+
+    def test_theme_fill_not_corrupted_to_black(self, tmp_path):
+        """Theme-colored fills should not become black on roundtrip.
+
+        Regression test: write_fill_xml was emitting <fgColor rgb="FFtheme:0"/>
+        instead of <fgColor theme="0"/>, causing Excel to interpret as black.
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill
+        except ImportError:
+            pytest.skip("openpyxl not installed")
+
+        # Create file with theme fill using openpyxl
+        path1 = tmp_path / "theme_fill.xlsx"
+        wb_openpyxl = openpyxl.Workbook()
+        ws = wb_openpyxl.active
+        ws["A1"].value = "Theme Fill"
+        ws["A1"].fill = PatternFill(start_color="00FF00", fill_type="solid")
+        ws["B1"].value = "Another Fill"
+        ws["B1"].fill = PatternFill(start_color="0000FF", fill_type="solid")
+        wb_openpyxl.save(str(path1))
+
+        # Roundtrip through rustypyxl
+        path2 = tmp_path / "theme_fill_roundtrip.xlsx"
+        wb2 = rustypyxl.load_workbook(str(path1))
+        wb2.save(str(path2))
+
+        # Reload with openpyxl and verify colors are not corrupted
+        wb3 = openpyxl.load_workbook(str(path2))
+        ws3 = wb3.active
+        fill_a1 = ws3["A1"].fill
+        assert fill_a1.fgColor is not None
+        # The color should not contain "theme:" as a raw string in rgb
+        fg_rgb = fill_a1.fgColor.rgb if fill_a1.fgColor.rgb else ""
+        assert "theme" not in fg_rgb.lower(), (
+            f"Theme color was corrupted to rgb value: {fg_rgb}"
+        )
+
+    def test_theme_fill_roundtrip_rustypyxl_only(self, tmp_path):
+        """Fill with theme color string should roundtrip correctly in rustypyxl."""
+        path1 = tmp_path / "fill_rgb.xlsx"
+        wb = rustypyxl.Workbook()
+        ws = wb.create_sheet("Test")
+        ws["A1"].value = "Red Fill"
+        ws["A1"].fill = rustypyxl.PatternFill(fill_type="solid", fgColor="FF0000")
+        ws["B1"].value = "Green Fill"
+        ws["B1"].fill = rustypyxl.PatternFill(fill_type="solid", fgColor="00FF00")
+        wb.save(str(path1))
+
+        # Roundtrip
+        path2 = tmp_path / "fill_rgb_roundtrip.xlsx"
+        wb2 = rustypyxl.load_workbook(str(path1))
+        wb2.save(str(path2))
+
+        # Verify fills preserved
+        wb3 = rustypyxl.load_workbook(str(path2))
+        assert wb3["Test"]["A1"].fill is not None
+        assert wb3["Test"]["A1"].fill.fill_type == "solid"
+        fg_a1 = wb3["Test"]["A1"].fill.fgColor
+        assert fg_a1 is not None
+        assert "FF0000" in fg_a1.upper()
+        assert "theme" not in fg_a1.lower()
+
+        fg_b1 = wb3["Test"]["B1"].fill.fgColor
+        assert fg_b1 is not None
+        assert "00FF00" in fg_b1.upper()
+
+    def test_colored_border_not_corrupted(self, tmp_path):
+        """Borders with colors should not become black on roundtrip."""
+        path1 = tmp_path / "border_color.xlsx"
+        wb = rustypyxl.Workbook()
+        ws = wb.create_sheet("Test")
+        ws["A1"].value = "Bordered"
+        ws["A1"].border = rustypyxl.Border(
+            left=rustypyxl.Side(style="thin", color="FF0000"),
+            top=rustypyxl.Side(style="thin", color="00FF00"),
+        )
+        wb.save(str(path1))
+
+        # Roundtrip
+        path2 = tmp_path / "border_color_roundtrip.xlsx"
+        wb2 = rustypyxl.load_workbook(str(path1))
+        wb2.save(str(path2))
+
+        wb3 = rustypyxl.load_workbook(str(path2))
+        border = wb3["Test"]["A1"].border
+        assert border is not None
+        assert border.left.style == "thin"
+        assert "FF0000" in border.left.color.upper()
+        assert border.top.style == "thin"
+        assert "00FF00" in border.top.color.upper()
+
+
+class TestMultiSheetRoundtrip:
+    """Tests for multi-sheet workbook roundtrip preservation."""
+
+    def test_five_sheets_preserved(self, tmp_path):
+        """Workbook with 5+ sheets should preserve all sheets on roundtrip."""
+        sheet_names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]
+        path1 = tmp_path / "multi_sheet.xlsx"
+        wb = rustypyxl.Workbook()
+        for i, name in enumerate(sheet_names):
+            ws = wb.create_sheet(name)
+            for row in range(1, 4):
+                ws.cell(row=row, column=1).value = f"{name}_R{row}"
+                ws.cell(row=row, column=2).value = (i + 1) * row
+        wb.save(str(path1))
+
+        # Roundtrip
+        path2 = tmp_path / "multi_sheet_roundtrip.xlsx"
+        wb2 = rustypyxl.load_workbook(str(path1))
+        wb2.save(str(path2))
+
+        # Verify all sheets present with correct data
+        wb3 = rustypyxl.load_workbook(str(path2))
+        assert len(wb3.sheetnames) == len(sheet_names)
+        for i, name in enumerate(sheet_names):
+            assert name in wb3.sheetnames, f"Sheet '{name}' missing after roundtrip"
+            ws = wb3[name]
+            for row in range(1, 4):
+                assert ws.cell(row=row, column=1).value == f"{name}_R{row}"
+                assert ws.cell(row=row, column=2).value == (i + 1) * row
+
+    def test_multi_sheet_zip_structure(self, tmp_path):
+        """Roundtripped multi-sheet workbook should have correct ZIP structure."""
+        import zipfile
+
+        sheet_names = ["Sheet1", "Sheet2", "Sheet3", "Sheet4", "Sheet5"]
+        path1 = tmp_path / "zip_check.xlsx"
+        wb = rustypyxl.Workbook()
+        for name in sheet_names:
+            ws = wb.create_sheet(name)
+            ws["A1"].value = name
+        wb.save(str(path1))
+
+        # Roundtrip
+        path2 = tmp_path / "zip_check_roundtrip.xlsx"
+        wb2 = rustypyxl.load_workbook(str(path1))
+        wb2.save(str(path2))
+
+        # Inspect ZIP contents
+        with zipfile.ZipFile(str(path2), "r") as zf:
+            names = zf.namelist()
+            # Verify all sheet XML files exist
+            for i in range(1, len(sheet_names) + 1):
+                sheet_path = f"xl/worksheets/sheet{i}.xml"
+                assert sheet_path in names, f"{sheet_path} missing from ZIP"
+
+            # Verify Content_Types lists all sheets
+            content_types = zf.read("[Content_Types].xml").decode()
+            for i in range(1, len(sheet_names) + 1):
+                assert f"/xl/worksheets/sheet{i}.xml" in content_types
+
+            # Verify workbook.xml.rels has all relationships
+            rels = zf.read("xl/_rels/workbook.xml.rels").decode()
+            for i in range(1, len(sheet_names) + 1):
+                assert f"worksheets/sheet{i}.xml" in rels

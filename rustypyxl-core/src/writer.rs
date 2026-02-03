@@ -432,6 +432,25 @@ pub fn write_shared_strings<W: Write + Seek>(
     Ok(())
 }
 
+/// Write a color element to the XML string, handling theme and RGB colors.
+///
+/// Colors are stored internally as:
+/// - `"theme:N"` for theme colors
+/// - `"#AARRGGBB"` or `"AARRGGBB"` (8-char aRGB from XML roundtrip)
+/// - `"#RRGGBB"` or `"RRGGBB"` (6-char RGB, needs FF alpha prefix)
+fn write_color_attr(xml: &mut String, element: &str, color: &str) {
+    if color.starts_with("theme:") {
+        xml.push_str(&format!(r#"<{} theme="{}"/>"#, element, &color[6..]));
+    } else {
+        let hex = if color.starts_with('#') { &color[1..] } else { color };
+        if hex.len() >= 8 {
+            xml.push_str(&format!(r#"<{} rgb="{}"/>"#, element, hex));
+        } else {
+            xml.push_str(&format!(r#"<{} rgb="FF{}"/>"#, element, hex));
+        }
+    }
+}
+
 /// Write a single font element to the XML string.
 fn write_font_xml(xml: &mut String, font: &crate::style::Font) {
     xml.push_str("<font>");
@@ -454,13 +473,7 @@ fn write_font_xml(xml: &mut String, font: &crate::style::Font) {
         xml.push_str(&format!(r#"<sz val="{}"/>"#, size));
     }
     if let Some(ref color) = font.color {
-        if color.starts_with("theme:") {
-            xml.push_str(&format!(r#"<color theme="{}"/>"#, &color[6..]));
-        } else if color.starts_with('#') {
-            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, &color[1..]));
-        } else {
-            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
-        }
+        write_color_attr(xml, "color", color);
     } else {
         xml.push_str(r#"<color theme="1"/>"#);
     }
@@ -479,12 +492,10 @@ fn write_fill_xml(xml: &mut String, fill: &crate::style::Fill) {
     if let Some(ref pattern) = fill.pattern_type {
         xml.push_str(&format!(r#"<patternFill patternType="{}">"#, pattern));
         if let Some(ref fg) = fill.fg_color {
-            let color = if fg.starts_with('#') { &fg[1..] } else { fg.as_str() };
-            xml.push_str(&format!(r#"<fgColor rgb="FF{}"/>"#, color));
+            write_color_attr(xml, "fgColor", fg);
         }
         if let Some(ref bg) = fill.bg_color {
-            let color = if bg.starts_with('#') { &bg[1..] } else { bg.as_str() };
-            xml.push_str(&format!(r#"<bgColor rgb="FF{}"/>"#, color));
+            write_color_attr(xml, "bgColor", bg);
         }
         xml.push_str("</patternFill>");
     } else {
@@ -641,8 +652,7 @@ fn write_border_side(xml: &mut String, name: &str, side: &Option<crate::style::B
     if let Some(ref s) = side {
         xml.push_str(&format!(r#"<{} style="{}">"#, name, s.style));
         if let Some(ref color) = s.color {
-            let color = if color.starts_with('#') { &color[1..] } else { color.as_str() };
-            xml.push_str(&format!(r#"<color rgb="FF{}"/>"#, color));
+            write_color_attr(xml, "color", color);
         }
         xml.push_str(&format!("</{}>", name));
     } else {
@@ -1535,4 +1545,114 @@ pub fn write_table_xml<W: Write + Seek>(
     let result = writer.into_inner().into_inner();
     zip.write_all(&result)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::{Fill, BorderStyle};
+
+    #[test]
+    fn test_write_color_attr_theme() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "fgColor", "theme:0");
+        assert_eq!(xml, r#"<fgColor theme="0"/>"#);
+    }
+
+    #[test]
+    fn test_write_color_attr_theme_with_index() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "color", "theme:4");
+        assert_eq!(xml, r#"<color theme="4"/>"#);
+    }
+
+    #[test]
+    fn test_write_color_attr_rgb_hex() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "fgColor", "FF0000");
+        assert_eq!(xml, r#"<fgColor rgb="FFFF0000"/>"#);
+    }
+
+    #[test]
+    fn test_write_color_attr_rgb_with_hash() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "bgColor", "#00FF00");
+        assert_eq!(xml, r#"<bgColor rgb="FF00FF00"/>"#);
+    }
+
+    #[test]
+    fn test_write_color_attr_argb_8char() {
+        // 8-char aRGB values from XML roundtrip should not get double-prefixed
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "fgColor", "#0000FF00");
+        assert_eq!(xml, r#"<fgColor rgb="0000FF00"/>"#);
+    }
+
+    #[test]
+    fn test_write_color_attr_argb_8char_no_hash() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "fgColor", "FF00FF00");
+        assert_eq!(xml, r#"<fgColor rgb="FF00FF00"/>"#);
+    }
+
+    #[test]
+    fn test_write_fill_xml_theme_fg_color() {
+        let fill = Fill {
+            pattern_type: Some("solid".to_string()),
+            fg_color: Some("theme:0".to_string()),
+            bg_color: None,
+        };
+        let mut xml = String::new();
+        write_fill_xml(&mut xml, &fill);
+        assert!(xml.contains(r#"<fgColor theme="0"/>"#));
+        assert!(!xml.contains("FFtheme"));
+    }
+
+    #[test]
+    fn test_write_fill_xml_theme_bg_color() {
+        let fill = Fill {
+            pattern_type: Some("solid".to_string()),
+            fg_color: None,
+            bg_color: Some("theme:2".to_string()),
+        };
+        let mut xml = String::new();
+        write_fill_xml(&mut xml, &fill);
+        assert!(xml.contains(r#"<bgColor theme="2"/>"#));
+        assert!(!xml.contains("FFtheme"));
+    }
+
+    #[test]
+    fn test_write_fill_xml_rgb_color() {
+        let fill = Fill {
+            pattern_type: Some("solid".to_string()),
+            fg_color: Some("FFFF00".to_string()),
+            bg_color: None,
+        };
+        let mut xml = String::new();
+        write_fill_xml(&mut xml, &fill);
+        assert!(xml.contains(r#"<fgColor rgb="FFFFFF00"/>"#));
+    }
+
+    #[test]
+    fn test_write_border_side_theme_color() {
+        let side = Some(BorderStyle {
+            style: "thin".to_string(),
+            color: Some("theme:1".to_string()),
+        });
+        let mut xml = String::new();
+        write_border_side(&mut xml, "left", &side);
+        assert!(xml.contains(r#"<color theme="1"/>"#));
+        assert!(!xml.contains("FFtheme"));
+    }
+
+    #[test]
+    fn test_write_border_side_rgb_color() {
+        let side = Some(BorderStyle {
+            style: "thick".to_string(),
+            color: Some("FF0000".to_string()),
+        });
+        let mut xml = String::new();
+        write_border_side(&mut xml, "left", &side);
+        assert!(xml.contains(r#"<color rgb="FFFF0000"/>"#));
+    }
 }
