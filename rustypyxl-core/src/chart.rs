@@ -1,6 +1,10 @@
 //! Chart support for Excel workbooks.
 //!
 //! This module provides structures for creating and manipulating charts in Excel files.
+//!
+//! **Status: partial.** These types model chart data in memory, but the writer does
+//! not yet serialize charts into the saved workbook. Building a [`Chart`] has no effect
+//! on output until writer support lands. Not yet exposed through the Python bindings.
 
 use std::collections::HashMap;
 

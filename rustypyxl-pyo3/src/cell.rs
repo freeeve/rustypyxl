@@ -238,25 +238,45 @@ impl PyCell {
 
     /// Get the cell's hyperlink.
     #[getter]
-    fn hyperlink(&self) -> Option<String> {
-        self.hyperlink_internal.clone()
+    fn hyperlink(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
+            let wb_ref = wb.borrow(py);
+            return wb_ref.get_cell_hyperlink(sheet, self.row, self.column);
+        }
+        Ok(self.hyperlink_internal.clone())
     }
 
     /// Set the cell's hyperlink.
     #[setter]
     fn set_hyperlink(&mut self, hyperlink: Option<String>) {
+        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
+            Python::with_gil(|py| {
+                let mut wb_ref = wb.borrow_mut(py);
+                let _ = wb_ref.set_cell_hyperlink(sheet, self.row, self.column, hyperlink.clone());
+            });
+        }
         self.hyperlink_internal = hyperlink;
     }
 
     /// Get the cell's comment.
     #[getter]
-    fn comment(&self) -> Option<String> {
-        self.comment_internal.clone()
+    fn comment(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
+            let wb_ref = wb.borrow(py);
+            return wb_ref.get_cell_comment(sheet, self.row, self.column);
+        }
+        Ok(self.comment_internal.clone())
     }
 
     /// Set the cell's comment.
     #[setter]
     fn set_comment(&mut self, comment: Option<String>) {
+        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
+            Python::with_gil(|py| {
+                let mut wb_ref = wb.borrow_mut(py);
+                let _ = wb_ref.set_cell_comment(sheet, self.row, self.column, comment.clone());
+            });
+        }
         self.comment_internal = comment;
     }
 
@@ -284,62 +304,56 @@ impl PyCell {
         self.number_format_internal = format;
     }
 
-    /// Get the data type of the cell.
+    /// Get the data type of the cell: 'n' number, 's' string, 'b' bool, 'f' formula.
     #[getter]
-    fn data_type(&self, py: Python<'_>) -> &str {
-        if let Some(ref val) = self.value_internal {
-            if val.is_none(py) {
-                "n"
-            } else if val.extract::<String>(py).is_ok() {
-                "s"
-            } else if val.extract::<f64>(py).is_ok() || val.extract::<i64>(py).is_ok() {
-                "n"
-            } else if val.extract::<bool>(py).is_ok() {
-                "b"
-            } else {
-                "s"
-            }
-        } else {
-            "n"
+    fn data_type(&self, py: Python<'_>) -> PyResult<&'static str> {
+        let val = self.value(py)?;
+        let bound = val.bind(py);
+        if bound.is_none() {
+            return Ok("n");
         }
+        if let Ok(s) = bound.extract::<String>() {
+            return Ok(if s.starts_with('=') { "f" } else { "s" });
+        }
+        if bound.extract::<bool>().is_ok() {
+            return Ok("b");
+        }
+        if bound.extract::<f64>().is_ok() {
+            return Ok("n");
+        }
+        Ok("s")
     }
 
     /// Check if the cell contains a formula.
     #[getter]
-    fn is_formula(&self, py: Python<'_>) -> bool {
-        if let Some(ref val) = self.value_internal {
-            if let Ok(s) = val.extract::<String>(py) {
-                return s.starts_with('=');
-            }
+    fn is_formula(&self, py: Python<'_>) -> PyResult<bool> {
+        let val = self.value(py)?;
+        let bound = val.bind(py);
+        if let Ok(s) = bound.extract::<String>() {
+            return Ok(s.starts_with('='));
         }
-        false
+        Ok(false)
     }
 
-    /// Offset returns a cell at a relative position.
-    fn offset(&self, row: i32, column: i32) -> PyResult<PyCell> {
+    /// Offset returns a cell at a relative position, preserving the workbook link.
+    fn offset(&self, row: i32, column: i32, py: Python<'_>) -> PyResult<PyCell> {
         let new_row = (self.row as i32 + row).max(1) as u32;
         let new_col = (self.column as i32 + column).max(1) as u32;
-        Ok(PyCell::new(new_row, new_col))
-    }
-
-    fn __str__(&self, py: Python<'_>) -> String {
-        let val_str = if let Some(ref v) = self.value_internal {
-            if let Ok(s) = v.extract::<String>(py) {
-                s
-            } else if let Ok(n) = v.extract::<f64>(py) {
-                n.to_string()
-            } else if let Ok(b) = v.extract::<bool>(py) {
-                b.to_string()
-            } else {
-                "None".to_string()
-            }
+        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
+            Ok(PyCell::connected(new_row, new_col, wb.clone_ref(py), sheet.clone()))
         } else {
-            "None".to_string()
-        };
-        format!("<Cell {}.{}>", self.coordinate(), val_str)
+            Ok(PyCell::new(new_row, new_col))
+        }
     }
 
-    fn __repr__(&self, py: Python<'_>) -> String {
-        self.__str__(py)
+    fn __str__(&self) -> String {
+        match &self.sheet_name {
+            Some(sheet) => format!("<Cell '{}'.{}>", sheet, self.coordinate()),
+            None => format!("<Cell {}>", self.coordinate()),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        self.__str__()
     }
 }

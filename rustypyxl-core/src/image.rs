@@ -1,6 +1,10 @@
 //! Image support for Excel workbooks.
 //!
 //! This module provides structures for inserting and managing images in Excel files.
+//!
+//! **Status: partial.** These types load and model image data in memory, but the writer
+//! does not yet embed images into the saved workbook. Not yet exposed through the Python
+//! bindings.
 
 use std::path::PathBuf;
 

@@ -140,22 +140,29 @@ impl PyWorkbook {
     ///     Worksheet: The newly created worksheet
     #[pyo3(signature = (title=None, index=None))]
     fn create_sheet(self_: Py<Self>, title: Option<String>, index: Option<usize>, py: Python<'_>) -> PyResult<PyWorksheet> {
-        // Note: index is currently ignored for simplicity
-        let _ = index;
-
+        let final_idx;
+        let sheet_title;
         {
             let mut this = self_.borrow_mut(py);
             this.inner
                 .create_sheet(title)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        }
 
-        let this = self_.borrow(py);
-        let idx = this.inner.worksheets.len() - 1;
-        let sheet_title = this.inner.sheet_names.get(idx)
-            .cloned()
-            .unwrap_or_else(|| format!("Sheet{}", idx + 1));
-        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, sheet_title))
+            // The sheet was appended at the end; move it to `index` if requested.
+            let last = this.inner.worksheets.len() - 1;
+            final_idx = match index {
+                Some(i) if i < last => {
+                    let ws = this.inner.worksheets.remove(last);
+                    let name = this.inner.sheet_names.remove(last);
+                    this.inner.worksheets.insert(i, ws);
+                    this.inner.sheet_names.insert(i, name);
+                    i
+                }
+                _ => last,
+            };
+            sheet_title = this.inner.sheet_names[final_idx].clone();
+        }
+        Ok(PyWorksheet::connected(self_.clone_ref(py), final_idx, sheet_title))
     }
 
     /// Remove a worksheet.
@@ -646,6 +653,54 @@ impl PyWorkbook {
         Ok(None)
     }
 
+    /// Set a cell's hyperlink URL.
+    pub fn set_cell_hyperlink(&mut self, sheet_name: &str, row: u32, column: u32, url: Option<String>) -> PyResult<()> {
+        let ws = self.inner
+            .get_sheet_by_name_mut(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        match url {
+            Some(u) => ws.set_cell_hyperlink(row, column, u),
+            None => {
+                if let Some(cell) = ws.get_cell_mut(row, column) {
+                    cell.hyperlink = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a cell's hyperlink URL, or None.
+    pub fn get_cell_hyperlink(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<String>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(ws.get_cell(row, column).and_then(|c| c.hyperlink.clone()))
+    }
+
+    /// Set a cell's comment text.
+    pub fn set_cell_comment(&mut self, sheet_name: &str, row: u32, column: u32, comment: Option<String>) -> PyResult<()> {
+        let ws = self.inner
+            .get_sheet_by_name_mut(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        match comment {
+            Some(c) => ws.set_cell_comment(row, column, c),
+            None => {
+                if let Some(cell) = ws.get_cell_mut(row, column) {
+                    cell.comment = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a cell's comment text, or None.
+    pub fn get_cell_comment(&self, sheet_name: &str, row: u32, column: u32) -> PyResult<Option<String>> {
+        let ws = self.inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(ws.get_cell(row, column).and_then(|c| c.comment.clone()))
+    }
+
     /// Import data from a Parquet file directly into a worksheet.
     ///
     /// This is the fastest way to load large datasets, as it bypasses
@@ -1001,7 +1056,7 @@ impl PySheetNameIterator {
 }
 
 /// Convert a Python value to a CellValue.
-fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellValue> {
+pub(crate) fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellValue> {
     if value.is_none() {
         Ok(CellValue::Empty)
     } else if let Ok(s) = value.extract::<String>() {
@@ -1024,7 +1079,7 @@ fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellValue> {
 }
 
 /// Convert a CellValue to a Python object.
-fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObject {
+pub(crate) fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObject {
     match value {
         CellValue::Empty => py.None(),
         CellValue::String(s) => s.as_ref().to_object(py),
@@ -1046,7 +1101,7 @@ fn pyfont_to_font(pf: &PyFont) -> Font {
         size: pf.size,
         bold: pf.bold,
         italic: pf.italic,
-        underline: pf.underline.is_some(),
+        underline: pf.underline.clone(),
         strike: pf.strike,
         color: pf.color.clone(),
         vert_align: pf.vertAlign.clone(),
@@ -1060,7 +1115,7 @@ fn font_to_pyfont(f: &Font) -> PyFont {
         size: f.size,
         bold: f.bold,
         italic: f.italic,
-        underline: if f.underline { Some("single".to_string()) } else { None },
+        underline: f.underline.clone(),
         strike: f.strike,
         color: f.color.clone(),
         vertAlign: f.vert_align.clone(),

@@ -881,7 +881,10 @@ impl Workbook {
         match name {
             b"b" => font.bold = true,
             b"i" => font.italic = true,
-            b"u" => font.underline = true,
+            b"u" => {
+                font.underline =
+                    Some(Self::get_attr_str(e, b"val").unwrap_or_else(|| "single".to_string()))
+            }
             b"strike" => font.strike = true,
             b"sz" => font.size = Self::get_attr_f64(e, b"val"),
             b"name" => font.name = Self::get_attr_str(e, b"val"),

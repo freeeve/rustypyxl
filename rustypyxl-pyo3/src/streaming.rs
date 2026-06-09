@@ -118,10 +118,11 @@ fn python_to_cell_value(obj: PyObject, py: Python<'_>) -> CellValue {
         return CellValue::Number(f);
     }
 
-    // Try string
+    // Try string. Formulas are stored without the leading '=' (added back on write),
+    // matching the non-streaming write path.
     if let Ok(s) = obj.extract::<String>(py) {
-        if s.starts_with('=') {
-            return CellValue::Formula(s);
+        if let Some(formula) = s.strip_prefix('=') {
+            return CellValue::Formula(formula.to_string());
         }
         return CellValue::String(Arc::from(s.as_str()));
     }
@@ -129,7 +130,3 @@ fn python_to_cell_value(obj: PyObject, py: Python<'_>) -> CellValue {
     // Default to empty
     CellValue::Empty
 }
-
-/// Placeholder for sheet handle (not currently used).
-#[pyclass(name = "WriteOnlySheet")]
-pub struct PyStreamingSheet {}

@@ -11,8 +11,9 @@ pub struct Font {
     pub bold: bool,
     /// Italic text.
     pub italic: bool,
-    /// Underline text.
-    pub underline: bool,
+    /// Underline style: `None`, or one of "single", "double", "singleAccounting",
+    /// "doubleAccounting". An empty `<u/>` element is treated as "single".
+    pub underline: Option<String>,
     /// Strikethrough text.
     pub strike: bool,
     /// Font color as RGB hex (e.g., "#FF0000") or theme reference.
@@ -51,9 +52,9 @@ impl Font {
         self
     }
 
-    /// Set underline style.
-    pub fn with_underline(mut self, underline: bool) -> Self {
-        self.underline = underline;
+    /// Set underline style (e.g. "single" or "double").
+    pub fn with_underline<S: Into<String>>(mut self, underline: S) -> Self {
+        self.underline = Some(underline.into());
         self
     }
 

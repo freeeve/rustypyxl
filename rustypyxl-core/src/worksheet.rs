@@ -171,6 +171,8 @@ pub struct Worksheet {
     pub tables: Vec<Table>,
     /// Page setup and print settings.
     pub page_setup: Option<PageSetup>,
+    /// Freeze panes anchor cell (e.g. "B2"); rows above and columns left of it stay frozen.
+    pub freeze_panes: Option<String>,
 }
 
 impl Worksheet {
@@ -190,7 +192,13 @@ impl Worksheet {
             conditional_formatting: Vec::new(),
             tables: Vec::new(),
             page_setup: None,
+            freeze_panes: None,
         }
+    }
+
+    /// Freeze panes at the given anchor cell (e.g. "B2"). Pass `None` to unfreeze.
+    pub fn set_freeze_panes(&mut self, cell: Option<String>) {
+        self.freeze_panes = cell;
     }
 
     /// Set an AutoFilter for this worksheet.

@@ -18,39 +18,54 @@ pip install rustypyxl
 ```python
 import rustypyxl
 
-# Load a workbook
-wb = rustypyxl.load_workbook('input.xlsx')
-ws = wb.active
+# Create or load a workbook
+wb = rustypyxl.Workbook()
+ws = wb.create_sheet('Sheet1')          # or: wb = rustypyxl.load_workbook('input.xlsx'); ws = wb.active
 
-# Read values
-value = wb.get_cell_value('Sheet1', 1, 1)
+# openpyxl-style cell access
+ws['A1'] = 'Hello'
+ws['A2'] = 42.5
+ws['A3'] = '=SUM(A1:A2)'
+ws.cell(row=4, column=1).value = 'world'
+print(ws['A1'].value)                   # -> "Hello"
 
-# Write values
-wb.set_cell_value('Sheet1', 1, 1, 'Hello')
-wb.set_cell_value('Sheet1', 2, 1, 42.5)
-wb.set_cell_value('Sheet1', 3, 1, '=SUM(A1:A2)')
+# Append rows, merge, freeze, rename
+ws.append(['Name', 'Age', 'Score'])
+ws.merge_cells('A1:C1')
+ws.freeze_panes = 'A2'
+ws.title = 'Data'
 
-# Bulk operations
-wb.write_rows('Sheet1', [
+# Iterate
+for row in ws.iter_rows(values_only=True):
+    print(row)
+
+wb.save('output.xlsx')
+```
+
+### Bulk API (fastest for large grids)
+
+When writing or reading many rows at once, the workbook-level bulk methods avoid
+per-cell Python overhead:
+
+```python
+wb.write_rows('Data', [
     ['Name', 'Age', 'Score'],
     ['Alice', 30, 95.5],
     ['Bob', 25, 87.3],
 ])
-
-data = wb.read_rows('Sheet1', min_row=1, max_row=100)
-
-# Save
-wb.save('output.xlsx')
+data = wb.read_rows('Data', min_row=1, max_row=100)
 ```
 
 ## Features
 
-- **openpyxl-compatible API**: Familiar patterns for easy migration
+- **openpyxl-compatible API**: Familiar patterns (`ws['A1']`, `ws.cell()`, `ws.append()`, `iter_rows()`) for easy migration
 - **Read and write support**: Full round-trip capability
 - **Cell values**: Strings, numbers, booleans, dates, formulas
-- **Formatting**: Fonts, alignment, fills, borders, number formats
-- **Workbook features**: Comments, hyperlinks, named ranges, merged cells
-- **Sheet features**: Protection, data validation, column/row dimensions
+- **Formatting**: Fonts (incl. underline styles), alignment, fills, borders, number formats
+- **Workbook features**: Hyperlinks, comments, named ranges, merged cells, freeze panes
+- **Sheet protection**: Cell locking and worksheet protection
+
+Not yet supported through the Python API: inserting/deleting rows and columns, charts, and images.
 - **Parquet import/export**: Direct Parquet ↔ Excel conversion (bypasses Python FFI)
 - **S3 support**: Works with boto3 via bytes I/O
 - **Bytes I/O**: Load from bytes or file-like objects, save to bytes
@@ -78,7 +93,7 @@ result = wb.insert_from_parquet(
 )
 
 print(f"Imported {result['rows_imported']} rows")
-print(f"Data range: {result['range_with_headers']}")
+print(f"Data range: {result['range']}")
 
 wb.save("output.xlsx")
 ```

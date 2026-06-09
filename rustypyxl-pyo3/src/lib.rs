@@ -13,7 +13,7 @@ mod worksheet;
 
 use cell::PyCell;
 use streaming::PyStreamingWorkbook;
-use style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection, PyGradientFill, PyGradientStop};
+use style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection, PyColor, PyGradientFill, PyGradientStop};
 use workbook::PyWorkbook;
 use worksheet::PyWorksheet;
 
@@ -53,6 +53,7 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBorder>()?;
     m.add_class::<PySide>()?;
     m.add_class::<PyProtection>()?;
+    m.add_class::<PyColor>()?;
     m.add_class::<PyGradientFill>()?;
     m.add_class::<PyGradientStop>()?;
 
@@ -67,6 +68,7 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     styles.add_class::<PyBorder>()?;
     styles.add_class::<PySide>()?;
     styles.add_class::<PyProtection>()?;
+    styles.add_class::<PyColor>()?;
     styles.add_class::<PyGradientFill>()?;
     styles.add_class::<PyGradientStop>()?;
     m.add_submodule(&styles)?;

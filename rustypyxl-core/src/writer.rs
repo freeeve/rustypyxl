@@ -460,8 +460,12 @@ fn write_font_xml(xml: &mut String, font: &crate::style::Font) {
     if font.italic {
         xml.push_str("<i/>");
     }
-    if font.underline {
-        xml.push_str("<u/>");
+    if let Some(ref u) = font.underline {
+        if u == "single" {
+            xml.push_str("<u/>");
+        } else {
+            xml.push_str(&format!(r#"<u val="{}"/>"#, u));
+        }
     }
     if font.strike {
         xml.push_str("<strike/>");
@@ -727,9 +731,46 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     
     // sheetViews
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheetViews")))?;
-    let mut view = BytesStart::new("sheetView");
-    view.push_attribute(("workbookViewId", "0"));
-    writer.write_event(quick_xml::events::Event::Empty(view))?;
+    let frozen = worksheet
+        .freeze_panes
+        .as_deref()
+        .and_then(|cell| crate::utils::parse_coordinate(cell).ok().map(|(row, col)| (cell, row, col)))
+        .filter(|&(_, row, col)| row > 1 || col > 1);
+    if let Some((cell, row, col)) = frozen {
+        let x_split = col - 1;
+        let y_split = row - 1;
+        let active_pane = if x_split > 0 && y_split > 0 {
+            "bottomRight"
+        } else if y_split > 0 {
+            "bottomLeft"
+        } else {
+            "topRight"
+        };
+        let mut view = BytesStart::new("sheetView");
+        view.push_attribute(("workbookViewId", "0"));
+        writer.write_event(quick_xml::events::Event::Start(view))?;
+        let mut pane = BytesStart::new("pane");
+        if x_split > 0 {
+            pane.push_attribute(("xSplit", x_split.to_string().as_str()));
+        }
+        if y_split > 0 {
+            pane.push_attribute(("ySplit", y_split.to_string().as_str()));
+        }
+        pane.push_attribute(("topLeftCell", cell));
+        pane.push_attribute(("activePane", active_pane));
+        pane.push_attribute(("state", "frozen"));
+        writer.write_event(quick_xml::events::Event::Empty(pane))?;
+        let mut selection = BytesStart::new("selection");
+        selection.push_attribute(("pane", active_pane));
+        selection.push_attribute(("activeCell", cell));
+        selection.push_attribute(("sqref", cell));
+        writer.write_event(quick_xml::events::Event::Empty(selection))?;
+        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheetView")))?;
+    } else {
+        let mut view = BytesStart::new("sheetView");
+        view.push_attribute(("workbookViewId", "0"));
+        writer.write_event(quick_xml::events::Event::Empty(view))?;
+    }
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheetViews")))?;
     
     // sheetFormatPr
