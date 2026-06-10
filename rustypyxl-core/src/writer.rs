@@ -15,10 +15,49 @@ use std::io::{Write, Cursor, Seek};
 use std::collections::HashMap;
 use rayon::prelude::*;
 
+/// Returns true for C0 control characters that are illegal in XML 1.0
+/// (everything below 0x20 except tab, line feed, and carriage return).
+#[inline]
+fn is_illegal_xml_char(b: u8) -> bool {
+    b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')
+}
+
+/// Strip control characters that are illegal in XML 1.0 without escaping.
+/// Used before handing text to quick-xml, which performs entity escaping itself.
+#[inline]
+pub(crate) fn strip_illegal_xml_chars(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.bytes().any(is_illegal_xml_char) {
+        std::borrow::Cow::Owned(
+            s.chars()
+                .filter(|&c| (c as u32) >= 0x20 || !is_illegal_xml_char(c as u8))
+                .collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Compute the legacy 16-bit Excel sheet-protection password verifier
+/// (CreatePasswordVerifier_Method1 from MS-XLS 2.2.9), as stored in the
+/// `password` attribute of `sheetProtection`.
+pub(crate) fn legacy_password_hash(password: &str) -> u16 {
+    let bytes = password.as_bytes();
+    let mut verifier: u16 = 0;
+    for &b in bytes.iter().rev().chain(std::iter::once(&(bytes.len() as u8))) {
+        verifier = ((verifier >> 14) & 0x0001) | ((verifier << 1) & 0x7fff);
+        verifier ^= b as u16;
+    }
+    verifier ^ 0xCE4B
+}
+
 /// Escape XML special characters in text content.
+/// Control characters that are illegal in XML 1.0 are stripped, since
+/// emitting them produces files Excel refuses to open.
 #[inline]
 pub fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+    if s.bytes()
+        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'') || is_illegal_xml_char(b))
+    {
         let mut escaped = String::with_capacity(s.len() + 8);
         for c in s.chars() {
             match c {
@@ -27,6 +66,7 @@ pub fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
                 '&' => escaped.push_str("&amp;"),
                 '"' => escaped.push_str("&quot;"),
                 '\'' => escaped.push_str("&apos;"),
+                c if (c as u32) < 0x20 && is_illegal_xml_char(c as u8) => {}
                 _ => escaped.push(c),
             }
         }
@@ -50,6 +90,13 @@ pub fn format_cell_value(buf: &mut String, coord: &str, value: &CellValue) {
             buf.push_str("</t></is></c>");
         }
         CellValue::Number(n) => {
+            if !n.is_finite() {
+                // NaN/Infinity are not valid SpreadsheetML numbers; emit an error cell.
+                buf.push_str("<c r=\"");
+                buf.push_str(coord);
+                buf.push_str("\" t=\"e\"><v>#NUM!</v></c>");
+                return;
+            }
             buf.push_str("<c r=\"");
             buf.push_str(coord);
             buf.push_str("\"><v>");
@@ -72,10 +119,11 @@ pub fn format_cell_value(buf: &mut String, coord: &str, value: &CellValue) {
             buf.push_str("</f></c>");
         }
         CellValue::Date(d) => {
+            let escaped = escape_xml(d);
             buf.push_str("<c r=\"");
             buf.push_str(coord);
             buf.push_str("\" t=\"d\"><v>");
-            buf.push_str(d);
+            buf.push_str(&escaped);
             buf.push_str("</v></c>");
         }
         CellValue::Empty => {
@@ -127,6 +175,15 @@ fn write_cell_direct(
             }
         }
         CellValue::Number(n) => {
+            if !n.is_finite() {
+                // NaN/Infinity are not valid SpreadsheetML numbers; emit an error cell.
+                buf.push_str("<c r=\"");
+                buf.push_str(coord);
+                buf.push('"');
+                buf.push_str(style_str);
+                buf.push_str(" t=\"e\"><v>#NUM!</v></c>");
+                return;
+            }
             // Use ryu for fast float formatting
             buf.push_str("<c r=\"");
             buf.push_str(coord);
@@ -156,12 +213,13 @@ fn write_cell_direct(
             buf.push_str("</f></c>");
         }
         CellValue::Date(d) => {
+            let escaped = escape_xml(d);
             buf.push_str("<c r=\"");
             buf.push_str(coord);
             buf.push('"');
             buf.push_str(style_str);
             buf.push_str(" t=\"d\"><v>");
-            buf.push_str(d);
+            buf.push_str(&escaped);
             buf.push_str("</v></c>");
         }
         CellValue::Empty => {
@@ -420,7 +478,9 @@ pub fn write_shared_strings<W: Write + Seek>(
     for s in strings {
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("si")))?;
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("t")))?;
-        writer.write_event(quick_xml::events::Event::Text(BytesText::new(s.as_ref())))?;
+        writer.write_event(quick_xml::events::Event::Text(BytesText::new(
+            &strip_illegal_xml_chars(s.as_ref()),
+        )))?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("t")))?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("si")))?;
     }
@@ -691,35 +751,6 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     writer.write_event(quick_xml::events::Event::Empty(BytesStart::new("pageSetUpPr")))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheetPr")))?;
     
-    // sheetProtection (if enabled)
-    if let Some(ref protection) = worksheet.protection {
-        if protection.sheet {
-            let mut sheet_protection = BytesStart::new("sheetProtection");
-            sheet_protection.push_attribute(("sheet", "1"));
-            sheet_protection.push_attribute(("selectLockedCells", if protection.select_locked_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("selectUnlockedCells", if protection.select_unlocked_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatCells", if protection.format_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatColumns", if protection.format_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatRows", if protection.format_rows { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertColumns", if protection.insert_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertRows", if protection.insert_rows { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertHyperlinks", if protection.insert_hyperlinks { "1" } else { "0" }));
-            sheet_protection.push_attribute(("deleteColumns", if protection.delete_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("deleteRows", if protection.delete_rows { "1" } else { "0" }));
-            sheet_protection.push_attribute(("sort", if protection.sort { "1" } else { "0" }));
-            sheet_protection.push_attribute(("autoFilter", if protection.auto_filter { "1" } else { "0" }));
-            sheet_protection.push_attribute(("pivotTables", if protection.pivot_tables { "1" } else { "0" }));
-            sheet_protection.push_attribute(("objects", if protection.objects { "1" } else { "0" }));
-            sheet_protection.push_attribute(("scenarios", if protection.scenarios { "1" } else { "0" }));
-            if let Some(ref pwd) = protection.password {
-                // Excel stores password as a hash, but for now we'll just store it
-                // In a real implementation, you'd hash it properly
-                sheet_protection.push_attribute(("password", pwd.as_str()));
-            }
-            writer.write_event(quick_xml::events::Event::Empty(sheet_protection))?;
-        }
-    }
-    
     // dimension (if we have cells)
     if worksheet.max_row > 0 && worksheet.max_column > 0 {
         let start = "A1";
@@ -899,8 +930,37 @@ pub fn write_worksheet_xml<W: Write + Seek>(
 
     writer.write_event(Event::End(BytesEnd::new("sheetData")))?;
 
-    // sheetProtection (moved to correct position per OOXML spec)
-    // Note: We handle protection earlier but per spec it should be after sheetData
+    // sheetProtection (per CT_Worksheet schema order: directly after sheetData)
+    if let Some(ref protection) = worksheet.protection {
+        if protection.sheet {
+            let mut sheet_protection = BytesStart::new("sheetProtection");
+            sheet_protection.push_attribute(("sheet", "1"));
+            sheet_protection.push_attribute(("selectLockedCells", if protection.select_locked_cells { "1" } else { "0" }));
+            sheet_protection.push_attribute(("selectUnlockedCells", if protection.select_unlocked_cells { "1" } else { "0" }));
+            sheet_protection.push_attribute(("formatCells", if protection.format_cells { "1" } else { "0" }));
+            sheet_protection.push_attribute(("formatColumns", if protection.format_columns { "1" } else { "0" }));
+            sheet_protection.push_attribute(("formatRows", if protection.format_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute(("insertColumns", if protection.insert_columns { "1" } else { "0" }));
+            sheet_protection.push_attribute(("insertRows", if protection.insert_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute(("insertHyperlinks", if protection.insert_hyperlinks { "1" } else { "0" }));
+            sheet_protection.push_attribute(("deleteColumns", if protection.delete_columns { "1" } else { "0" }));
+            sheet_protection.push_attribute(("deleteRows", if protection.delete_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute(("sort", if protection.sort { "1" } else { "0" }));
+            sheet_protection.push_attribute(("autoFilter", if protection.auto_filter { "1" } else { "0" }));
+            sheet_protection.push_attribute(("pivotTables", if protection.pivot_tables { "1" } else { "0" }));
+            sheet_protection.push_attribute(("objects", if protection.objects { "1" } else { "0" }));
+            sheet_protection.push_attribute(("scenarios", if protection.scenarios { "1" } else { "0" }));
+            // The password attribute holds the legacy 16-bit verifier hash, never
+            // the plaintext. A value loaded from an existing file is already hashed.
+            if let Some(ref hash) = protection.password_hash {
+                sheet_protection.push_attribute(("password", hash.as_str()));
+            } else if let Some(ref pwd) = protection.password {
+                let hash = format!("{:04X}", legacy_password_hash(pwd));
+                sheet_protection.push_attribute(("password", hash.as_str()));
+            }
+            writer.write_event(quick_xml::events::Event::Empty(sheet_protection))?;
+        }
+    }
 
     // autoFilter
     if let Some(ref auto_filter) = worksheet.auto_filter {
@@ -925,6 +985,36 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         for cf in &worksheet.conditional_formatting {
             write_conditional_formatting(&mut writer, cf)?;
         }
+    }
+
+    // dataValidations (per schema order: after conditionalFormatting, before hyperlinks)
+    if !worksheet.data_validations.is_empty() {
+        let mut data_validations = BytesStart::new("dataValidations");
+        data_validations.push_attribute(("count", worksheet.data_validations.len().to_string().as_str()));
+        writer.write_event(quick_xml::events::Event::Start(data_validations))?;
+
+        for ((row, col), validation) in &worksheet.data_validations {
+            let coord = format!("{}{}", column_to_letter(*col), row);
+            let mut dv = BytesStart::new("dataValidation");
+            dv.push_attribute(("type", validation.validation_type.as_str()));
+            dv.push_attribute(("allowBlank", if validation.allow_blank { "1" } else { "0" }));
+            dv.push_attribute(("showErrorMessage", if validation.show_error { "1" } else { "0" }));
+            dv.push_attribute(("showInputMessage", if validation.show_input { "1" } else { "0" }));
+            dv.push_attribute(("sqref", coord.as_str()));
+            writer.write_event(quick_xml::events::Event::Start(dv))?;
+            if let Some(ref f1) = validation.formula1 {
+                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula1")))?;
+                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f1)))?;
+                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula1")))?;
+            }
+            if let Some(ref f2) = validation.formula2 {
+                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula2")))?;
+                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f2)))?;
+                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula2")))?;
+            }
+            writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidation")))?;
+        }
+        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidations")))?;
     }
 
     // hyperlinks
@@ -967,6 +1057,11 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("hyperlinks")))?;
     }
     
+    // printOptions (per schema order: after hyperlinks, before pageMargins)
+    if let Some(ref ps) = worksheet.page_setup {
+        write_print_options(&mut writer, ps)?;
+    }
+
     // pageMargins - use PageSetup values if available
     let mut margins = BytesStart::new("pageMargins");
     if let Some(ref ps) = worksheet.page_setup {
@@ -991,36 +1086,6 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         write_page_setup(&mut writer, ps)?;
     }
 
-    // dataValidations
-    if !worksheet.data_validations.is_empty() {
-        let mut data_validations = BytesStart::new("dataValidations");
-        data_validations.push_attribute(("count", worksheet.data_validations.len().to_string().as_str()));
-        writer.write_event(quick_xml::events::Event::Start(data_validations))?;
-        
-        for ((row, col), validation) in &worksheet.data_validations {
-            let coord = format!("{}{}", column_to_letter(*col), row);
-            let mut dv = BytesStart::new("dataValidation");
-            dv.push_attribute(("type", validation.validation_type.as_str()));
-            dv.push_attribute(("allowBlank", if validation.allow_blank { "1" } else { "0" }));
-            dv.push_attribute(("showErrorMessage", if validation.show_error { "1" } else { "0" }));
-            dv.push_attribute(("showInputMessage", if validation.show_input { "1" } else { "0" }));
-            dv.push_attribute(("sqref", coord.as_str()));
-            writer.write_event(quick_xml::events::Event::Start(dv))?;
-            if let Some(ref f1) = validation.formula1 {
-                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula1")))?;
-                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f1)))?;
-                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula1")))?;
-            }
-            if let Some(ref f2) = validation.formula2 {
-                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula2")))?;
-                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f2)))?;
-                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula2")))?;
-            }
-            writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidation")))?;
-        }
-        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidations")))?;
-    }
-    
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("worksheet")))?;
 
     let result = writer.into_inner().into_inner();
@@ -1484,7 +1549,15 @@ fn write_page_setup<W: std::io::Write>(
         writer.write_event(Event::End(BytesEnd::new("headerFooter")))?;
     }
 
-    // printOptions
+    Ok(())
+}
+
+/// Write the printOptions element (per CT_Worksheet schema order it must
+/// precede pageMargins, so it cannot live inside write_page_setup).
+fn write_print_options<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    ps: &crate::pagesetup::PageSetup,
+) -> Result<()> {
     if ps.print_gridlines || ps.print_headings || ps.center_horizontally || ps.center_vertically {
         let mut print_options = BytesStart::new("printOptions");
         if ps.print_gridlines {
@@ -1592,6 +1665,52 @@ pub fn write_table_xml<W: Write + Seek>(
 mod tests {
     use super::*;
     use crate::style::{Fill, BorderStyle};
+
+    #[test]
+    fn test_escape_xml_strips_illegal_control_chars() {
+        assert_eq!(escape_xml("a\x01b\x08c\x0bd\x1fe"), "abcde");
+        assert_eq!(escape_xml("tab\tnl\ncr\r"), "tab\tnl\ncr\r");
+        assert_eq!(escape_xml("a<b\x02&c"), "a&lt;b&amp;c");
+    }
+
+    #[test]
+    fn test_strip_illegal_xml_chars() {
+        assert_eq!(strip_illegal_xml_chars("a\x00b\x1fc"), "abc");
+        assert_eq!(strip_illegal_xml_chars("plain <kept> &"), "plain <kept> &");
+    }
+
+    #[test]
+    fn test_legacy_password_hash_known_vectors() {
+        // Reference values from openpyxl's hash_password / MS-XLS Method1.
+        assert_eq!(legacy_password_hash("test"), 0xCBEB);
+        assert_eq!(legacy_password_hash(""), 0xCE4B);
+        assert_eq!(legacy_password_hash("password"), 0x83AF);
+    }
+
+    #[test]
+    fn test_non_finite_numbers_become_error_cells() {
+        let map = HashMap::new();
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut buf = String::new();
+            let cell = CellData {
+                value: CellValue::Number(v),
+                ..Default::default()
+            };
+            write_cell_direct(&mut buf, "A1", &cell, &map);
+            assert_eq!(buf, r#"<c r="A1" t="e"><v>#NUM!</v></c>"#);
+
+            let mut buf2 = String::new();
+            format_cell_value(&mut buf2, "A1", &CellValue::Number(v));
+            assert_eq!(buf2, r#"<c r="A1" t="e"><v>#NUM!</v></c>"#);
+        }
+    }
+
+    #[test]
+    fn test_date_value_is_escaped() {
+        let mut buf = String::new();
+        format_cell_value(&mut buf, "A1", &CellValue::Date("<bad>&".to_string()));
+        assert_eq!(buf, r#"<c r="A1" t="d"><v>&lt;bad&gt;&amp;</v></c>"#);
+    }
 
     #[test]
     fn test_write_color_attr_theme() {

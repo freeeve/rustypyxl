@@ -1607,7 +1607,9 @@ impl Workbook {
                                 let attr_value = String::from_utf8_lossy(&attr.value);
                                 let value_bool = attr_value == "1";
                                 match attr_key {
-                                    b"password" => prot.password = Some(attr_value.to_string()),
+                                    b"password" => {
+                                        prot.password_hash = Some(attr_value.to_string())
+                                    }
                                     b"selectLockedCells" => prot.select_locked_cells = value_bool,
                                     b"selectUnlockedCells" => {
                                         prot.select_unlocked_cells = value_bool

@@ -108,8 +108,11 @@ impl Default for DataValidation {
 pub struct WorksheetProtection {
     /// Sheet protection enabled.
     pub sheet: bool,
-    /// Password hash (for Excel compatibility).
+    /// Plaintext password; hashed with the legacy Excel verifier on save.
     pub password: Option<String>,
+    /// Pre-hashed password verifier loaded from an existing file.
+    /// Takes precedence over `password` on save so a loaded hash is never re-hashed.
+    pub password_hash: Option<String>,
     /// Allow selecting locked cells.
     pub select_locked_cells: bool,
     /// Allow selecting unlocked cells.

@@ -443,3 +443,64 @@ fn test_row_dimensions() {
     assert_eq!(ws.row_dimensions.get(&1), Some(&30.0));
     assert_eq!(ws.row_dimensions.get(&5), Some(&45.0));
 }
+
+/// Saving a sheet that uses protection, merges, validations, hyperlinks, and
+/// page setup must emit worksheet children in CT_Worksheet schema order, or
+/// Excel prompts to "repair" the file and strips the offending elements.
+#[test]
+fn test_worksheet_element_order_follows_schema() {
+    use rustypyxl_core::DataValidation;
+    use std::io::Read;
+
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("Test".to_string())).unwrap();
+    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::from("data")).unwrap();
+    wb.set_cell_hyperlink(2, 1, "#Test!A1".to_string()).unwrap();
+
+    let ws = wb.get_sheet_by_name_mut("Test").unwrap();
+    ws.enable_protection(Some("secret".to_string()));
+    ws.merge_cells("B1:C1");
+    ws.add_data_validation(3, 1, DataValidation::default());
+    let mut ps = PageSetup::new();
+    ps.print_gridlines = true;
+    ws.set_page_setup(ps);
+
+    let path = temp_file("test_element_order.xlsx");
+    wb.save(&path).unwrap();
+
+    let file = fs::File::open(&path).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    let mut sheet_xml = String::new();
+    zip.by_name("xl/worksheets/sheet1.xml")
+        .unwrap()
+        .read_to_string(&mut sheet_xml)
+        .unwrap();
+
+    let order = [
+        "<sheetData",
+        "<sheetProtection",
+        "<mergeCells",
+        "<dataValidations",
+        "<hyperlinks",
+        "<printOptions",
+        "<pageMargins",
+        "<pageSetup ",
+    ];
+    let positions: Vec<usize> = order
+        .iter()
+        .map(|tag| {
+            sheet_xml
+                .find(tag)
+                .unwrap_or_else(|| panic!("missing element {} in {}", tag, sheet_xml))
+        })
+        .collect();
+    let mut sorted = positions.clone();
+    sorted.sort_unstable();
+    assert_eq!(positions, sorted, "worksheet elements out of schema order: {}", sheet_xml);
+
+    // The password attribute must hold the legacy verifier hash, not plaintext.
+    assert!(!sheet_xml.contains("password=\"secret\""));
+    assert!(sheet_xml.contains("password=\"DAA7\""), "expected hashed password in {}", sheet_xml);
+
+    fs::remove_file(&path).ok();
+}
