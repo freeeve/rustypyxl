@@ -1,5 +1,5 @@
 use crate::cell::InternedString;
-use crate::worksheet::{decode_cell_key, SheetVisibility, Worksheet, CellData};
+use crate::worksheet::{cell_key, decode_cell_key, SheetVisibility, Worksheet, CellData};
 use crate::cell::CellValue;
 use crate::utils::column_to_letter;
 use crate::error::Result;
@@ -139,10 +139,11 @@ fn write_cell_direct(
     buf: &mut String,
     coord: &str,
     cell_data: &CellData,
+    style_index: Option<u32>,
     shared_string_map: &HashMap<InternedString, usize>,
 ) {
     // Helper to write style attribute
-    let style_attr = cell_data.style_index.map(|s| {
+    let style_attr = style_index.map(|s| {
         let mut attr = String::with_capacity(10);
         attr.push_str(" s=\"");
         attr.push_str(itoa::Buffer::new().format(s));
@@ -914,6 +915,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     table_rel_ids: &[String],
     dxfs: &[ConditionalFormat],
     has_comments: bool,
+    style_overrides: &HashMap<u64, u32>,
 ) -> Result<()> {
     let path = format!("xl/worksheets/sheet{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
@@ -1062,7 +1064,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
                     // Write cells
                     for &((row, col), cell_data) in &sorted_cells {
                         let coord = format!("{}{}", column_to_letter(col), row);
-                        write_cell_direct(&mut buf, &coord, cell_data, shared_string_map);
+                        let style_index = cell_data
+                            .style_index
+                            .or_else(|| style_overrides.get(&cell_key(row, col)).copied());
+                        write_cell_direct(&mut buf, &coord, cell_data, style_index, shared_string_map);
                     }
 
                     buf.push_str("</row>");
@@ -1102,7 +1107,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
 
             for &((row, col), cell_data) in cells.iter() {
                 let coord = format!("{}{}", column_to_letter(col), row);
-                write_cell_direct(&mut buf, &coord, cell_data, shared_string_map);
+                let style_index = cell_data
+                    .style_index
+                    .or_else(|| style_overrides.get(&cell_key(row, col)).copied());
+                write_cell_direct(&mut buf, &coord, cell_data, style_index, shared_string_map);
             }
 
             buf.push_str("</row>");
@@ -2086,7 +2094,7 @@ mod tests {
                 value: CellValue::Number(v),
                 ..Default::default()
             };
-            write_cell_direct(&mut buf, "A1", &cell, &map);
+            write_cell_direct(&mut buf, "A1", &cell, cell.style_index, &map);
             assert_eq!(buf, r#"<c r="A1" t="e"><v>#NUM!</v></c>"#);
 
             let mut buf2 = String::new();

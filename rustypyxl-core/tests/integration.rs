@@ -896,3 +896,78 @@ fn test_roundtrip_names_formulas_headers_comments() {
 
     fs::remove_file(&path).ok();
 }
+
+/// Styles applied through the core Rust API must reach the saved file.
+/// Previously the writer emitted s= only from style_index, which nothing in
+/// core populated, so every core styling call produced unstyled output.
+#[test]
+fn test_core_styling_api_reaches_saved_file() {
+    use rustypyxl_core::{Alignment, CellStyle, Fill, Font};
+    use std::io::Read;
+
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("S".to_string())).unwrap();
+    wb.set_cell_value_in_sheet("S", 1, 1, CellValue::from("styled")).unwrap();
+    wb.set_cell_value_in_sheet("S", 2, 1, CellValue::Number(0.5)).unwrap();
+    wb.set_cell_value_in_sheet("S", 3, 1, CellValue::Number(0.25)).unwrap();
+
+    {
+        let ws = wb.get_sheet_by_name_mut("S").unwrap();
+        let style = CellStyle::new()
+            .with_font(Font::new().with_bold(true).with_color("FF0000"))
+            .with_fill(Fill::solid("FFFF00"));
+        ws.set_cell_style(1, 1, style);
+        ws.set_cell_number_format(2, 1, "0.000%"); // custom (not a builtin id)
+        // Built-in date/time format must survive the id round-trip
+        ws.set_cell_number_format(3, 1, "h:mm");
+        ws.set_cell_alignment(3, 1, Alignment::new().with_horizontal("center"));
+    }
+
+    let path = temp_file("test_core_styles.xlsx");
+    wb.save(&path).unwrap();
+
+    {
+        let file = fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut sheet_xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
+        assert!(
+            sheet_xml.contains(r#"<c r="A1" s="#),
+            "styled cell has no s= attribute: {}",
+            sheet_xml
+        );
+        let mut styles_xml = String::new();
+        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles_xml).unwrap();
+        assert!(styles_xml.contains("FFFF00"), "fill color missing from styles.xml");
+        assert!(styles_xml.contains("0.000%"), "custom number format missing from styles.xml");
+        assert!(styles_xml.contains(r#"numFmtId="20""#), "builtin h:mm xf missing");
+    }
+
+    let wb2 = Workbook::load(&path).unwrap();
+    let ws2 = wb2.get_sheet_by_name("S").unwrap();
+
+    let c1 = ws2.get_cell(1, 1).expect("A1 missing");
+    let style = c1.style.as_ref().expect("style lost on round-trip");
+    let font = style.font.as_ref().expect("font lost");
+    assert!(font.bold, "bold lost");
+    let fill = style.fill.as_ref().expect("fill lost");
+    assert!(format!("{:?}", fill).contains("FFFF00"), "fill color lost: {:?}", fill);
+
+    let c2 = ws2.get_cell(2, 1).expect("A2 missing");
+    let fmt = c2
+        .number_format
+        .clone()
+        .or_else(|| c2.style.as_ref().and_then(|s| s.number_format.clone()));
+    assert_eq!(fmt.as_deref(), Some("0.000%"), "number format lost");
+
+    let c3 = ws2.get_cell(3, 1).expect("A3 missing");
+    let fmt3 = c3
+        .number_format
+        .clone()
+        .or_else(|| c3.style.as_ref().and_then(|s| s.number_format.clone()));
+    assert_eq!(fmt3.as_deref(), Some("h:mm"), "builtin date format lost (id 20)");
+    let align = c3.style.as_ref().and_then(|s| s.alignment.clone()).expect("alignment lost");
+    assert_eq!(align.horizontal.as_deref(), Some("center"));
+
+    fs::remove_file(&path).ok();
+}

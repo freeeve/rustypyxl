@@ -358,6 +358,42 @@ impl Worksheet {
             .entry(cell_key(row, column))
             .or_default();
         cell_data.style = Some(Arc::new(style));
+        // Invalidate any loaded xf index so the new style is re-resolved on save
+        cell_data.style_index = None;
+        self.update_dimensions(row, column);
+    }
+
+    /// Set a cell's font, merging with any existing style on the cell.
+    pub fn set_cell_font(&mut self, row: u32, column: u32, font: crate::style::Font) {
+        let cell_data = self
+            .cells
+            .entry(cell_key(row, column))
+            .or_default();
+        let mut style = cell_data
+            .style
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(CellStyle::new);
+        style.font = Some(font);
+        cell_data.style = Some(Arc::new(style));
+        cell_data.style_index = None;
+        self.update_dimensions(row, column);
+    }
+
+    /// Set a cell's alignment, merging with any existing style on the cell.
+    pub fn set_cell_alignment(&mut self, row: u32, column: u32, alignment: crate::style::Alignment) {
+        let cell_data = self
+            .cells
+            .entry(cell_key(row, column))
+            .or_default();
+        let mut style = cell_data
+            .style
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(CellStyle::new);
+        style.alignment = Some(alignment);
+        cell_data.style = Some(Arc::new(style));
+        cell_data.style_index = None;
         self.update_dimensions(row, column);
     }
 
@@ -368,6 +404,8 @@ impl Worksheet {
             .entry(cell_key(row, column))
             .or_default();
         cell_data.number_format = Some(format.into());
+        // Invalidate any loaded xf index so the format is re-resolved on save
+        cell_data.style_index = None;
         self.update_dimensions(row, column);
     }
 

@@ -299,24 +299,14 @@ impl Workbook {
     /// Set cell font in the active worksheet.
     pub fn set_cell_font(&mut self, row: u32, column: u32, font: Font) -> Result<()> {
         let ws = self.active_mut()?;
-        let cell = ws.cells.entry(cell_key(row, column)).or_insert_with(CellData::new);
-        let mut new_style = cell.style.as_ref()
-            .map(|s| (**s).clone())
-            .unwrap_or_else(CellStyle::new);
-        new_style.font = Some(font);
-        cell.style = Some(Arc::new(new_style));
+        ws.set_cell_font(row, column, font);
         Ok(())
     }
 
     /// Set cell alignment in the active worksheet.
     pub fn set_cell_alignment(&mut self, row: u32, column: u32, alignment: Alignment) -> Result<()> {
         let ws = self.active_mut()?;
-        let cell = ws.cells.entry(cell_key(row, column)).or_insert_with(CellData::new);
-        let mut new_style = cell.style.as_ref()
-            .map(|s| (**s).clone())
-            .unwrap_or_else(CellStyle::new);
-        new_style.alignment = Some(alignment);
-        cell.style = Some(Arc::new(new_style));
+        ws.set_cell_alignment(row, column, alignment);
         Ok(())
     }
 
@@ -540,10 +530,40 @@ impl Workbook {
             writer::write_shared_strings(zip, &options, &shared_strings_vec)?;
         }
 
+        // Resolve styles set through the core API into registry xfs. Cells
+        // styled via set_cell_style/set_cell_font/... carry the style on
+        // CellData but have no xf index (style_index is None), so without
+        // this pass the writer would emit them unstyled.
+        let mut styles_for_save = self.styles.clone();
+        let style_overrides: Vec<std::collections::HashMap<u64, u32>> = self
+            .worksheets
+            .iter()
+            .map(|ws| {
+                let mut overrides = std::collections::HashMap::new();
+                for (key, cell) in &ws.cells {
+                    if cell.style_index.is_none()
+                        && (cell.style.is_some() || cell.number_format.is_some())
+                    {
+                        let mut style = cell
+                            .style
+                            .as_deref()
+                            .cloned()
+                            .unwrap_or_else(crate::style::CellStyle::new);
+                        if style.number_format.is_none() {
+                            style.number_format = cell.number_format.clone();
+                        }
+                        let idx = styles_for_save.get_or_add_cell_xf(&style);
+                        overrides.insert(*key, idx as u32);
+                    }
+                }
+                overrides
+            })
+            .collect();
+
         // Write styles.xml with the differential formats used by
         // conditional-formatting rules (referenced by dxfId)
         let dxfs = writer::collect_dxfs(&self.worksheets);
-        writer::write_styles_xml(zip, &options, &self.styles, &dxfs)?;
+        writer::write_styles_xml(zip, &options, &styles_for_save, &dxfs)?;
 
         // Write each worksheet, its tables/comments, and its .rels part
         for (idx, worksheet) in self.worksheets.iter().enumerate() {
@@ -562,6 +582,7 @@ impl Workbook {
                 &table_rel_ids,
                 &dxfs,
                 has_comments,
+                &style_overrides[idx],
             )?;
 
             for (table, table_id) in worksheet.tables.iter().zip(table_ids) {
@@ -1506,23 +1527,10 @@ impl Workbook {
                                 {
                                     if let Some(format) = number_formats.get(&id) {
                                         current_xf.number_format = Some(format.clone());
-                                    } else {
-                                        let builtin_format = match id {
-                                            0 => Some("General".to_string()),
-                                            1 => Some("0".to_string()),
-                                            2 => Some("0.00".to_string()),
-                                            3 => Some("#,##0".to_string()),
-                                            4 => Some("#,##0.00".to_string()),
-                                            9 => Some("0%".to_string()),
-                                            10 => Some("0.00%".to_string()),
-                                            11 => Some("0.00E+00".to_string()),
-                                            14 => Some("mm/dd/yyyy".to_string()),
-                                            22 => Some("m/d/yy h:mm".to_string()),
-                                            _ => None,
-                                        };
-                                        if let Some(format) = builtin_format {
-                                            current_xf.number_format = Some(format);
-                                        }
+                                    } else if let Some(code) =
+                                        StyleRegistry::builtin_num_fmt_code(id)
+                                    {
+                                        current_xf.number_format = Some(code.to_string());
                                     }
                                 }
                             }
@@ -1671,23 +1679,10 @@ impl Workbook {
                                 {
                                     if let Some(format) = number_formats.get(&id) {
                                         xf.number_format = Some(format.clone());
-                                    } else {
-                                        let builtin = match id {
-                                            0 => Some("General".to_string()),
-                                            1 => Some("0".to_string()),
-                                            2 => Some("0.00".to_string()),
-                                            3 => Some("#,##0".to_string()),
-                                            4 => Some("#,##0.00".to_string()),
-                                            9 => Some("0%".to_string()),
-                                            10 => Some("0.00%".to_string()),
-                                            11 => Some("0.00E+00".to_string()),
-                                            14 => Some("mm/dd/yyyy".to_string()),
-                                            22 => Some("m/d/yy h:mm".to_string()),
-                                            _ => None,
-                                        };
-                                        if let Some(fmt) = builtin {
-                                            xf.number_format = Some(fmt);
-                                        }
+                                    } else if let Some(code) =
+                                        StyleRegistry::builtin_num_fmt_code(id)
+                                    {
+                                        xf.number_format = Some(code.to_string());
                                     }
                                 }
                             }

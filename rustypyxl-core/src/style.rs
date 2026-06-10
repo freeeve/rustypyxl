@@ -569,10 +569,55 @@ impl StyleRegistry {
             return *id;
         }
 
-        // Add new custom format (IDs start at 164)
-        let id = 164 + self.num_fmts.len();
+        // Add new custom format. IDs start at 164; allocate past the highest
+        // existing id rather than 164 + len(), which collides with the
+        // non-contiguous ids found in loaded files.
+        let id = self
+            .num_fmts
+            .iter()
+            .map(|(id, _)| *id + 1)
+            .max()
+            .unwrap_or(164)
+            .max(164);
         self.num_fmts.push((id, format.to_string()));
         id
+    }
+
+    /// Format code for a built-in number format id, the reverse of
+    /// builtin_num_fmt_id. Built-ins are implicit in styles.xml, so loaders
+    /// must resolve the id themselves.
+    pub fn builtin_num_fmt_code(id: u32) -> Option<&'static str> {
+        Some(match id {
+            0 => "General",
+            1 => "0",
+            2 => "0.00",
+            3 => "#,##0",
+            4 => "#,##0.00",
+            9 => "0%",
+            10 => "0.00%",
+            11 => "0.00E+00",
+            12 => "# ?/?",
+            13 => "# ??/??",
+            14 => "mm-dd-yy",
+            15 => "d-mmm-yy",
+            16 => "d-mmm",
+            17 => "mmm-yy",
+            18 => "h:mm AM/PM",
+            19 => "h:mm:ss AM/PM",
+            20 => "h:mm",
+            21 => "h:mm:ss",
+            22 => "m/d/yy h:mm",
+            37 => "#,##0 ;(#,##0)",
+            38 => "#,##0 ;[Red](#,##0)",
+            39 => "#,##0.00;(#,##0.00)",
+            40 => "#,##0.00;[Red](#,##0.00)",
+            45 => "mm:ss",
+            46 => "[h]:mm:ss",
+            47 => "mmss.0",
+            48 => "##0.0E+0",
+            49 => "@",
+            _ => return None,
+        })
     }
 
     /// Get built-in number format ID for common formats.
@@ -703,24 +748,35 @@ impl StyleRegistry {
             return Some(fmt.clone());
         }
 
-        // Return built-in format strings
-        match id {
-            0 => Some("General".to_string()),
-            1 => Some("0".to_string()),
-            2 => Some("0.00".to_string()),
-            3 => Some("#,##0".to_string()),
-            4 => Some("#,##0.00".to_string()),
-            9 => Some("0%".to_string()),
-            10 => Some("0.00%".to_string()),
-            14 => Some("mm-dd-yy".to_string()),
-            _ => None,
-        }
+        // Built-ins are implicit in the file but must round-trip in the model
+        Self::builtin_num_fmt_code(id as u32).map(|code| code.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_custom_num_fmt_ids_skip_loaded_ids() {
+        let mut reg = StyleRegistry::new();
+        // Simulate a loaded file carrying a non-contiguous custom id
+        reg.num_fmts.push((165, "yyyy".to_string()));
+        // A new format must not reuse 165 (the old 164+len scheme did)
+        assert_eq!(reg.get_or_add_num_fmt("0.000%"), 166);
+        // An existing format keeps its id
+        assert_eq!(reg.get_or_add_num_fmt("yyyy"), 165);
+        // Built-ins resolve to their fixed ids
+        assert_eq!(reg.get_or_add_num_fmt("0.00%"), 10);
+    }
+
+    #[test]
+    fn test_builtin_num_fmt_tables_are_inverse() {
+        for id in [0u32, 1, 2, 3, 4, 9, 10, 11, 14, 20, 21, 22, 45, 49] {
+            let code = StyleRegistry::builtin_num_fmt_code(id).unwrap();
+            assert_eq!(StyleRegistry::builtin_num_fmt_id(code), Some(id as usize), "{}", code);
+        }
+    }
 
     #[test]
     fn test_font_builder() {
