@@ -18,6 +18,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ProjectionMask;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -183,14 +184,23 @@ impl Workbook {
         let schema = builder.schema().clone();
         let all_column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-        // Determine which columns to import
+        // Determine which columns to import (in requested order); an unknown
+        // name is an error rather than a silently dropped column
         let columns_to_import: Vec<usize> = if opts.columns.is_empty() {
             (0..all_column_names.len()).collect()
         } else {
             opts.columns
                 .iter()
-                .filter_map(|name| all_column_names.iter().position(|n| n == name))
-                .collect()
+                .map(|name| {
+                    all_column_names.iter().position(|n| n == name).ok_or_else(|| {
+                        RustypyxlError::ParseError(format!(
+                            "Column '{}' not found in parquet file (available: {})",
+                            name,
+                            all_column_names.join(", ")
+                        ))
+                    })
+                })
+                .collect::<Result<_>>()?
         };
 
         if columns_to_import.is_empty() {
@@ -199,9 +209,22 @@ impl Workbook {
             ));
         }
 
+        // Push the selection down to the reader so unselected columns are
+        // never decoded. The projected batch keeps file-schema order, so map
+        // each requested column to its position within the projection.
+        let mut projected: Vec<usize> = columns_to_import.clone();
+        projected.sort_unstable();
+        projected.dedup();
+        let batch_indices: Vec<usize> = columns_to_import
+            .iter()
+            .map(|idx| projected.iter().position(|p| p == idx).unwrap())
+            .collect();
+        let projection = ProjectionMask::roots(builder.parquet_schema(), projected.iter().copied());
+
         // Build reader with batch size
         let reader = builder
             .with_batch_size(opts.batch_size)
+            .with_projection(projection)
             .build()
             .map_err(|e| RustypyxlError::ParseError(format!("Failed to build parquet reader: {}", e)))?;
 
@@ -243,9 +266,9 @@ impl Workbook {
             let num_rows = batch.num_rows();
 
             // Process each column
-            for (col_offset, &schema_idx) in columns_to_import.iter().enumerate() {
+            for (col_offset, &batch_idx) in batch_indices.iter().enumerate() {
                 let col = start_col + col_offset as u32;
-                let array = batch.column(schema_idx);
+                let array = batch.column(batch_idx);
 
                 write_arrow_array_to_worksheet(
                     worksheet,
@@ -278,6 +301,20 @@ impl Workbook {
             column_names: final_column_names,
         })
     }
+}
+
+/// Number formats applied to imported date/timestamp cells so Excel renders
+/// them as dates instead of bare serial numbers.
+const DATE_FORMAT: &str = "yyyy-mm-dd";
+const DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
+
+/// Write an Excel date serial with the matching number format.
+fn set_date_cell(worksheet: &mut Worksheet, row: u32, col: u32, serial: f64, format: &str) {
+    let cell = worksheet.get_or_create_cell_mut(row, col);
+    cell.value = CellValue::Number(serial);
+    cell.number_format = Some(format.to_string());
+    // Force re-resolution of the style at save time
+    cell.style_index = None;
 }
 
 /// Write an Arrow array to a worksheet column.
@@ -364,7 +401,7 @@ fn write_arrow_array_to_worksheet(
                     // Convert to Excel serial number (Excel epoch is 1900-01-01, but with the 1900 leap year bug)
                     // Unix epoch (1970-01-01) is Excel serial 25569
                     let excel_serial = days + 25569;
-                    worksheet.set_cell_value(row, col, CellValue::Number(excel_serial as f64));
+                    set_date_cell(worksheet, row, col, excel_serial as f64, DATE_FORMAT);
                 }
             }
         }
@@ -377,10 +414,12 @@ fn write_arrow_array_to_worksheet(
                     let ms = arr.value(i);
                     let days = ms as f64 / (24.0 * 60.0 * 60.0 * 1000.0);
                     let excel_serial = days + 25569.0;
-                    worksheet.set_cell_value(row, col, CellValue::Number(excel_serial));
+                    set_date_cell(worksheet, row, col, excel_serial, DATE_FORMAT);
                 }
             }
         }
+        // Timestamps are converted in UTC: Arrow stores tz-aware timestamps
+        // as UTC instants and Excel serials have no timezone concept.
         DataType::Timestamp(unit, _tz) => {
             match unit {
                 TimeUnit::Second => {
@@ -391,7 +430,7 @@ fn write_arrow_array_to_worksheet(
                             let secs = arr.value(i) as f64;
                             let days = secs / (24.0 * 60.0 * 60.0);
                             let excel_serial = days + 25569.0;
-                            worksheet.set_cell_value(row, col, CellValue::Number(excel_serial));
+                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
                         }
                     }
                 }
@@ -403,7 +442,7 @@ fn write_arrow_array_to_worksheet(
                             let ms = arr.value(i) as f64;
                             let days = ms / (24.0 * 60.0 * 60.0 * 1000.0);
                             let excel_serial = days + 25569.0;
-                            worksheet.set_cell_value(row, col, CellValue::Number(excel_serial));
+                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
                         }
                     }
                 }
@@ -415,7 +454,7 @@ fn write_arrow_array_to_worksheet(
                             let us = arr.value(i) as f64;
                             let days = us / (24.0 * 60.0 * 60.0 * 1_000_000.0);
                             let excel_serial = days + 25569.0;
-                            worksheet.set_cell_value(row, col, CellValue::Number(excel_serial));
+                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
                         }
                     }
                 }
@@ -427,7 +466,7 @@ fn write_arrow_array_to_worksheet(
                             let ns = arr.value(i) as f64;
                             let days = ns / (24.0 * 60.0 * 60.0 * 1_000_000_000.0);
                             let excel_serial = days + 25569.0;
-                            worksheet.set_cell_value(row, col, CellValue::Number(excel_serial));
+                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
                         }
                     }
                 }
@@ -451,9 +490,16 @@ fn write_arrow_array_to_worksheet(
             for i in 0..num_rows {
                 let row = start_row + i as u32;
                 if arr.is_valid(i) {
-                    // Convert i256 to f64 - may lose precision for very large numbers
-                    let bytes = arr.value(i).to_le_bytes();
-                    let val = i128::from_le_bytes(bytes[0..16].try_into().unwrap()) as f64 / scale_factor;
+                    // Go through the decimal string so values beyond i128
+                    // keep the right magnitude and sign (truncating to the
+                    // low 128 bits produced arbitrary wrong numbers); f64
+                    // rounding is the only remaining loss.
+                    let val = arr
+                        .value(i)
+                        .to_string()
+                        .parse::<f64>()
+                        .map(|v| v / scale_factor)
+                        .unwrap_or(f64::NAN);
                     worksheet.set_cell_value(row, col, CellValue::Number(val));
                 }
             }
@@ -710,102 +756,20 @@ impl Workbook {
         path: &str,
         options: Option<ParquetExportOptions>,
     ) -> Result<ParquetExportResult> {
-        let options = options.unwrap_or_default();
         let worksheet = self.get_sheet_by_name(sheet_name)?;
-
-        // Get worksheet dimensions
         let (min_row, min_col, max_row, max_col) = worksheet.dimensions();
-
         if max_row < min_row || max_col < min_col {
             return Err(RustypyxlError::custom("Worksheet is empty"));
         }
-
-        let num_cols = (max_col - min_col + 1) as usize;
-        let data_start_row = if options.has_headers { min_row + 1 } else { min_row };
-        let num_data_rows = if max_row >= data_start_row {
-            (max_row - data_start_row + 1) as usize
-        } else {
-            0
-        };
-
-        // Extract column names
-        let column_names: Vec<String> = if options.has_headers {
-            (min_col..=max_col)
-                .map(|col| {
-                    let original = worksheet
-                        .get_cell_value(min_row, col)
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| format!("Column{}", col - min_col + 1));
-                    options
-                        .column_renames
-                        .get(&original)
-                        .cloned()
-                        .unwrap_or(original)
-                })
-                .collect()
-        } else {
-            (min_col..=max_col)
-                .map(|col| format!("Column{}", col - min_col + 1))
-                .collect()
-        };
-
-        // Collect column data and infer types
-        let mut columns_data: Vec<Vec<Option<&CellValue>>> = vec![Vec::with_capacity(num_data_rows); num_cols];
-
-        for row in data_start_row..=max_row {
-            for (col_idx, col) in (min_col..=max_col).enumerate() {
-                let value = worksheet.get_cell_value(row, col);
-                columns_data[col_idx].push(value);
-            }
-        }
-
-        // Infer types and build Arrow arrays
-        let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(num_cols);
-
-        for (col_idx, col_name) in column_names.iter().enumerate() {
-            let col_data = &columns_data[col_idx];
-            let type_hint = options.column_types.get(col_name).copied().unwrap_or(ColumnType::Auto);
-
-            let (field, array) = build_arrow_column(col_name, col_data, type_hint);
-            fields.push(field);
-            arrays.push(array);
-        }
-
-        // Create schema and record batch
-        let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), arrays)
-            .map_err(|e| RustypyxlError::custom(format!("Failed to create record batch: {}", e)))?;
-
-        // Write to parquet
-        let file = File::create(path)
-            .map_err(|e| RustypyxlError::custom(format!("Failed to create file: {}", e)))?;
-
-        let props = WriterProperties::builder()
-            .set_compression(options.compression.into())
-            .set_max_row_group_size(options.row_group_size)
-            .build();
-
-        let mut writer = ArrowWriter::try_new(file, schema, Some(props))
-            .map_err(|e| RustypyxlError::custom(format!("Failed to create parquet writer: {}", e)))?;
-
-        writer.write(&batch)
-            .map_err(|e| RustypyxlError::custom(format!("Failed to write batch: {}", e)))?;
-
-        writer.close()
-            .map_err(|e| RustypyxlError::custom(format!("Failed to close writer: {}", e)))?;
-
-        // Get file size
-        let file_size = std::fs::metadata(path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-
-        Ok(ParquetExportResult {
-            rows_exported: num_data_rows as u32,
-            columns_exported: num_cols as u32,
-            column_names,
-            file_size,
-        })
+        self.export_cells(
+            sheet_name,
+            path,
+            min_row,
+            min_col,
+            max_row,
+            max_col,
+            options.unwrap_or_default(),
+        )
     }
 
     /// Export a specific range from a worksheet to a Parquet file.
@@ -829,12 +793,36 @@ impl Workbook {
         max_col: u32,
         options: Option<ParquetExportOptions>,
     ) -> Result<ParquetExportResult> {
-        let options = options.unwrap_or_default();
-        let worksheet = self.get_sheet_by_name(sheet_name)?;
-
         if max_row < min_row || max_col < min_col {
             return Err(RustypyxlError::custom("Invalid range"));
         }
+        self.export_cells(
+            sheet_name,
+            path,
+            min_row,
+            min_col,
+            max_row,
+            max_col,
+            options.unwrap_or_default(),
+        )
+    }
+
+    /// Shared export implementation. Rows are written in row_group_size
+    /// chunks so peak memory is bounded by one chunk instead of the whole
+    /// sheet; column types are inferred in a first streaming pass so every
+    /// chunk shares the same schema.
+    #[allow(clippy::too_many_arguments)]
+    fn export_cells(
+        &self,
+        sheet_name: &str,
+        path: &str,
+        min_row: u32,
+        min_col: u32,
+        max_row: u32,
+        max_col: u32,
+        options: ParquetExportOptions,
+    ) -> Result<ParquetExportResult> {
+        let worksheet = self.get_sheet_by_name(sheet_name)?;
 
         let num_cols = (max_col - min_col + 1) as usize;
         let data_start_row = if options.has_headers { min_row + 1 } else { min_row };
@@ -865,33 +853,38 @@ impl Workbook {
                 .collect()
         };
 
-        // Collect column data
-        let mut columns_data: Vec<Vec<Option<&CellValue>>> = vec![Vec::with_capacity(num_data_rows); num_cols];
+        // Pass 1: resolve each column's type, materializing one column at a
+        // time at most (only for columns without an explicit hint)
+        let resolved_types: Vec<ColumnType> = column_names
+            .iter()
+            .enumerate()
+            .map(|(col_idx, col_name)| {
+                let hint = options
+                    .column_types
+                    .get(col_name)
+                    .copied()
+                    .unwrap_or(ColumnType::Auto);
+                if hint != ColumnType::Auto || num_data_rows == 0 {
+                    return hint;
+                }
+                let col = min_col + col_idx as u32;
+                let col_data: Vec<Option<&CellValue>> = (data_start_row..=max_row)
+                    .map(|row| worksheet.get_cell_value(row, col))
+                    .collect();
+                infer_column_type(&col_data)
+            })
+            .collect();
 
-        for row in data_start_row..=max_row {
-            for (col_idx, col) in (min_col..=max_col).enumerate() {
-                let value = worksheet.get_cell_value(row, col);
-                columns_data[col_idx].push(value);
-            }
-        }
-
-        // Infer types and build Arrow arrays
-        let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(num_cols);
-
-        for (col_idx, col_name) in column_names.iter().enumerate() {
-            let col_data = &columns_data[col_idx];
-            let type_hint = options.column_types.get(col_name).copied().unwrap_or(ColumnType::Auto);
-
-            let (field, array) = build_arrow_column(col_name, col_data, type_hint);
-            fields.push(field);
-            arrays.push(array);
-        }
-
-        // Create schema and record batch
+        let fields: Vec<Field> = column_names
+            .iter()
+            .zip(&resolved_types)
+            .map(|(name, col_type)| {
+                // Field metadata must match what build_arrow_column produces
+                let (field, _) = build_arrow_column(name, &[], *col_type);
+                field
+            })
+            .collect();
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), arrays)
-            .map_err(|e| RustypyxlError::custom(format!("Failed to create record batch: {}", e)))?;
 
         // Write to parquet
         let file = File::create(path)
@@ -902,11 +895,34 @@ impl Workbook {
             .set_max_row_group_size(options.row_group_size)
             .build();
 
-        let mut writer = ArrowWriter::try_new(file, schema, Some(props))
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
             .map_err(|e| RustypyxlError::custom(format!("Failed to create parquet writer: {}", e)))?;
 
-        writer.write(&batch)
-            .map_err(|e| RustypyxlError::custom(format!("Failed to write batch: {}", e)))?;
+        // Pass 2: build and write one RecordBatch per row-group-sized chunk
+        let chunk_rows = options.row_group_size.max(1) as u32;
+        let mut chunk_start = data_start_row;
+        while chunk_start <= max_row && num_data_rows > 0 {
+            let chunk_end = chunk_start
+                .saturating_add(chunk_rows - 1)
+                .min(max_row);
+
+            let mut arrays: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+            for (col_idx, col_name) in column_names.iter().enumerate() {
+                let col = min_col + col_idx as u32;
+                let col_data: Vec<Option<&CellValue>> = (chunk_start..=chunk_end)
+                    .map(|row| worksheet.get_cell_value(row, col))
+                    .collect();
+                let (_, array) = build_arrow_column(col_name, &col_data, resolved_types[col_idx]);
+                arrays.push(array);
+            }
+
+            let batch = RecordBatch::try_new(schema.clone(), arrays)
+                .map_err(|e| RustypyxlError::custom(format!("Failed to create record batch: {}", e)))?;
+            writer.write(&batch)
+                .map_err(|e| RustypyxlError::custom(format!("Failed to write batch: {}", e)))?;
+
+            chunk_start = chunk_end + 1;
+        }
 
         writer.close()
             .map_err(|e| RustypyxlError::custom(format!("Failed to close writer: {}", e)))?;
@@ -1186,6 +1202,56 @@ mod tests {
         let v2 = CellValue::Boolean(false);
         let values: Vec<Option<&CellValue>> = vec![Some(&v1), Some(&v2)];
         assert_eq!(infer_column_type(&values), ColumnType::Boolean);
+    }
+
+    #[test]
+    fn test_export_chunks_rows_into_row_groups() {
+        let mut wb = Workbook::new();
+        wb.create_sheet(Some("Big".to_string())).unwrap();
+        {
+            let ws = wb.get_sheet_by_name_mut("Big").unwrap();
+            ws.set_cell_value(1, 1, CellValue::from("n"));
+            for r in 0..100u32 {
+                ws.set_cell_value(r + 2, 1, CellValue::Number(r as f64));
+            }
+        }
+
+        let dir = std::env::temp_dir().join("rustypyxl_parquet_tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chunked.parquet");
+        let path_str = path.to_str().unwrap();
+
+        let opts = ParquetExportOptions {
+            row_group_size: 10,
+            ..Default::default()
+        };
+        let result = wb.export_to_parquet("Big", path_str, Some(opts)).unwrap();
+        assert_eq!(result.rows_exported, 100);
+
+        // One batch per chunk means one row group per 10 rows, and the data
+        // must still round-trip in order
+        let file = File::open(&path).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        assert_eq!(builder.metadata().num_row_groups(), 10);
+        let reader = builder.build().unwrap();
+        let mut values = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            // Whole numbers are inferred as Int64 on export
+            let arr = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for i in 0..arr.len() {
+                values.push(arr.value(i) as f64);
+            }
+        }
+        assert_eq!(values.len(), 100);
+        assert_eq!(values[0], 0.0);
+        assert_eq!(values[99], 99.0);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -292,3 +292,89 @@ class TestParquetRoundtrip:
         assert wb2.get_cell_value("Imported", 1, 1) == "name"
         assert wb2.get_cell_value("Imported", 2, 1) == "Test1"
         assert wb2.get_cell_value("Imported", 2, 2) == 100
+
+
+class TestParquetTypeFidelity:
+    """Regression tests for type-fidelity fixes (task 006)."""
+
+    def test_dates_import_with_date_formats(self, tmp_path):
+        import datetime
+
+        import openpyxl
+
+        table = pa.table({
+            "d": pa.array([datetime.date(2024, 3, 15)], pa.date32()),
+            "ts": pa.array([datetime.datetime(2024, 3, 15, 10, 30, 45)], pa.timestamp("us")),
+        })
+        src = tmp_path / "dates.parquet"
+        pq.write_table(table, src)
+
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("P")
+        wb.insert_from_parquet("P", str(src))
+        out = tmp_path / "dates.xlsx"
+        wb.save(str(out))
+
+        ws = openpyxl.load_workbook(out)["P"]
+        assert isinstance(ws["A2"].value, datetime.datetime), (
+            "date imported as bare serial number"
+        )
+        assert ws["A2"].value.date() == datetime.date(2024, 3, 15)
+        assert ws["A2"].number_format == "yyyy-mm-dd"
+        assert ws["B2"].value == datetime.datetime(2024, 3, 15, 10, 30, 45)
+        assert ws["B2"].number_format == "yyyy-mm-dd hh:mm:ss"
+
+    def test_decimal256_beyond_i128_keeps_magnitude(self, tmp_path):
+        import decimal
+
+        table = pa.table({
+            "small": pa.array([decimal.Decimal("12345.678")], pa.decimal256(60, 3)),
+            "big": pa.array([decimal.Decimal(10**40)], pa.decimal256(76, 0)),
+            "negbig": pa.array([decimal.Decimal(-(10**40))], pa.decimal256(76, 0)),
+        })
+        src = tmp_path / "dec.parquet"
+        pq.write_table(table, src)
+
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("P")
+        wb.insert_from_parquet("P", str(src))
+        ws = wb["P"]
+        assert abs(ws["A2"].value - 12345.678) < 1e-9
+        # Truncating to the low 128 bits used to produce arbitrary values here
+        assert abs(ws["B2"].value - 1e40) / 1e40 < 1e-10
+        assert abs(ws["C2"].value + 1e40) / 1e40 < 1e-10
+
+    def test_unknown_column_selection_errors(self, tmp_path):
+        table = pa.table({"a": [1], "b": [2]})
+        src = tmp_path / "cols.parquet"
+        pq.write_table(table, src)
+
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("P")
+        with pytest.raises(ValueError, match="nope"):
+            wb.insert_from_parquet("P", str(src), columns=["a", "nope"])
+
+    def test_column_selection_keeps_requested_order(self, tmp_path):
+        table = pa.table({"a": [1], "b": [2], "c": [3]})
+        src = tmp_path / "order.parquet"
+        pq.write_table(table, src)
+
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("P")
+        wb.insert_from_parquet("P", str(src), columns=["c", "a"])
+        ws = wb["P"]
+        assert ws["A1"].value == "c" and ws["B1"].value == "a"
+        assert ws["A2"].value == 3 and ws["B2"].value == 1
+
+    def test_large_export_roundtrip(self, tmp_path):
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("Big")
+        wb.write_rows("Big", [["a", "b"]] + [[i, i * 0.5] for i in range(10_000)])
+        out = tmp_path / "big.parquet"
+        wb.export_to_parquet("Big", str(out), column_types={"a": "int64"})
+
+        t = pq.read_table(out)
+        assert t.num_rows == 10_000
+        assert t.column("a")[0].as_py() == 0
+        assert t.column("a")[9_999].as_py() == 9_999
+        assert t.column("b")[9_999].as_py() == 9_999 * 0.5
