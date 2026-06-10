@@ -255,7 +255,6 @@ impl HeaderFooterSection {
         self.right = Some(text.into());
         self
     }
-
 }
 
 /// Builds the header/footer string with section codes.
@@ -559,7 +558,11 @@ mod tests {
     fn test_header_footer_section() {
         let section = HeaderFooterSection::new()
             .with_left("Left text")
-            .with_center(format!("Page {} of {}", codes::PAGE_NUMBER, codes::TOTAL_PAGES))
+            .with_center(format!(
+                "Page {} of {}",
+                codes::PAGE_NUMBER,
+                codes::TOTAL_PAGES
+            ))
             .with_right(codes::DATE);
 
         let s = section.to_string();

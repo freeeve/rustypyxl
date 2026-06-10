@@ -394,8 +394,7 @@ mod tests {
 
     #[test]
     fn test_create_bar_chart() {
-        let chart = Chart::bar()
-            .with_title("Sales Data");
+        let chart = Chart::bar().with_title("Sales Data");
 
         assert_eq!(chart.chart_type, ChartType::Bar);
         assert!(chart.title.is_some());
@@ -403,8 +402,7 @@ mod tests {
 
     #[test]
     fn test_create_line_chart() {
-        let chart = Chart::line()
-            .with_title("Trends");
+        let chart = Chart::line().with_title("Trends");
 
         assert_eq!(chart.chart_type, ChartType::Line);
     }
@@ -415,7 +413,7 @@ mod tests {
         chart.add_series(
             ChartSeries::new("Sheet1!$B$2:$B$10")
                 .with_name("Revenue")
-                .with_categories("Sheet1!$A$2:$A$10")
+                .with_categories("Sheet1!$A$2:$A$10"),
         );
 
         assert_eq!(chart.series.len(), 1);

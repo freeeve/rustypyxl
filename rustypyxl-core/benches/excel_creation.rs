@@ -1,19 +1,19 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use rustypyxl_core::cell::CellValue;
 use rustypyxl_core::workbook::Workbook;
 use rustypyxl_core::worksheet::Worksheet;
-use rustypyxl_core::cell::CellValue;
 
 fn create_large_workbook(rows: u32, cols: u32) -> Workbook {
     let mut workbook = Workbook::new();
-    
+
     let mut worksheet = Worksheet::new("Data".to_string());
-    
+
     // Create header row
     for col in 1..=cols {
         let header = format!("Column{}", col);
         worksheet.set_cell_value(1, col, CellValue::from(header));
     }
-    
+
     // Create data rows
     for row in 2..=rows + 1 {
         for col in 1..=cols {
@@ -27,32 +27,30 @@ fn create_large_workbook(rows: u32, cols: u32) -> Workbook {
             worksheet.set_cell_value(row, col, value);
         }
     }
-    
+
     workbook.worksheets.push(worksheet);
     workbook.sheet_names.push("Data".to_string());
-    
+
     workbook
 }
 
 fn benchmark_excel_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("excel_creation");
     group.sample_size(10); // Smaller sample for faster runs
-    
+
     // Test different sizes: 1k, 10k, 50k, 100k rows
     let sizes = vec![1_000, 10_000, 50_000, 100_000];
     let cols = 12;
-    
+
     for size in sizes {
         group.bench_with_input(
             BenchmarkId::new("create_workbook", size),
             &size,
             |b, &rows| {
-                b.iter(|| {
-                    black_box(create_large_workbook(rows, cols))
-                });
+                b.iter(|| black_box(create_large_workbook(rows, cols)));
             },
         );
-        
+
         group.bench_with_input(
             BenchmarkId::new("create_and_save", size),
             &size,
@@ -67,24 +65,28 @@ fn benchmark_excel_creation(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
 fn benchmark_cell_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("cell_operations");
-    
+
     group.bench_function("set_cell_string", |b| {
         let mut worksheet = Worksheet::new("Test".to_string());
         b.iter(|| {
             for row in 1..=1000 {
                 for col in 1..=12 {
-                    worksheet.set_cell_value(row, col, CellValue::from(format!("Value{}-{}", row, col)));
+                    worksheet.set_cell_value(
+                        row,
+                        col,
+                        CellValue::from(format!("Value{}-{}", row, col)),
+                    );
                 }
             }
         });
     });
-    
+
     group.bench_function("set_cell_number", |b| {
         let mut worksheet = Worksheet::new("Test".to_string());
         b.iter(|| {
@@ -95,7 +97,7 @@ fn benchmark_cell_operations(c: &mut Criterion) {
             }
         });
     });
-    
+
     group.finish();
 }
 

@@ -6,8 +6,7 @@ use std::sync::Arc;
 pub type InternedString = Arc<str>;
 
 /// Represents the value of a cell in an Excel worksheet.
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum CellValue {
     /// String value.
     String(InternedString),
@@ -79,7 +78,6 @@ impl CellValue {
         }
     }
 }
-
 
 impl fmt::Display for CellValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

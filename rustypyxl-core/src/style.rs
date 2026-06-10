@@ -305,8 +305,14 @@ impl GradientFill {
             top: None,
             bottom: None,
             stops: vec![
-                GradientStop { position: 0.0, color: start_color.into() },
-                GradientStop { position: 1.0, color: end_color.into() },
+                GradientStop {
+                    position: 0.0,
+                    color: start_color.into(),
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: end_color.into(),
+                },
             ],
         }
     }
@@ -325,7 +331,10 @@ impl GradientFill {
 
     /// Add a color stop.
     pub fn with_stop<S: Into<String>>(mut self, position: f64, color: S) -> Self {
-        self.stops.push(GradientStop { position, color: color.into() });
+        self.stops.push(GradientStop {
+            position,
+            color: color.into(),
+        });
         self
     }
 }
@@ -655,19 +664,27 @@ impl StyleRegistry {
 
     /// Get or create a cell format (xf) index for a CellStyle.
     pub fn get_or_add_cell_xf(&mut self, style: &CellStyle) -> usize {
-        let font_id = style.font.as_ref()
+        let font_id = style
+            .font
+            .as_ref()
             .map(|f| self.get_or_add_font(f))
             .unwrap_or(0);
 
-        let fill_id = style.fill.as_ref()
+        let fill_id = style
+            .fill
+            .as_ref()
             .map(|f| self.get_or_add_fill(f))
             .unwrap_or(0);
 
-        let border_id = style.border.as_ref()
+        let border_id = style
+            .border
+            .as_ref()
             .map(|b| self.get_or_add_border(b))
             .unwrap_or(0);
 
-        let num_fmt_id = style.number_format.as_ref()
+        let num_fmt_id = style
+            .number_format
+            .as_ref()
             .map(|nf| self.get_or_add_num_fmt(nf))
             .unwrap_or(0);
 
@@ -774,7 +791,12 @@ mod tests {
     fn test_builtin_num_fmt_tables_are_inverse() {
         for id in [0u32, 1, 2, 3, 4, 9, 10, 11, 14, 20, 21, 22, 45, 49] {
             let code = StyleRegistry::builtin_num_fmt_code(id).unwrap();
-            assert_eq!(StyleRegistry::builtin_num_fmt_id(code), Some(id as usize), "{}", code);
+            assert_eq!(
+                StyleRegistry::builtin_num_fmt_id(code),
+                Some(id as usize),
+                "{}",
+                code
+            );
         }
     }
 

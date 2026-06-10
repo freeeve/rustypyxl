@@ -1,19 +1,19 @@
-use crate::cell::InternedString;
-use crate::worksheet::{cell_key, decode_cell_key, SheetVisibility, Worksheet, CellData};
-use crate::cell::CellValue;
-use crate::utils::column_to_letter;
-use crate::error::Result;
 use crate::autofilter::FilterType;
+use crate::cell::CellValue;
+use crate::cell::InternedString;
 use crate::conditional::{ConditionalColor, ConditionalFormat, ConditionalFormatType};
+use crate::error::Result;
 use crate::pagesetup::Orientation;
 use crate::style::StyleRegistry;
-use zip::write::{FileOptions, ExtendedFileOptions};
-use zip::ZipWriter;
+use crate::utils::column_to_letter;
+use crate::worksheet::{cell_key, decode_cell_key, CellData, SheetVisibility, Worksheet};
+use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
-use quick_xml::events::{BytesStart, BytesEnd, BytesText, Event};
-use std::io::{Write, Cursor, Seek};
-use std::collections::HashMap;
 use rayon::prelude::*;
+use std::collections::HashMap;
+use std::io::{Cursor, Seek, Write};
+use zip::write::{ExtendedFileOptions, FileOptions};
+use zip::ZipWriter;
 
 /// Returns true for C0 control characters that are illegal in XML 1.0
 /// (everything below 0x20 except tab, line feed, and carriage return).
@@ -43,7 +43,11 @@ pub(crate) fn strip_illegal_xml_chars(s: &str) -> std::borrow::Cow<'_, str> {
 pub(crate) fn legacy_password_hash(password: &str) -> u16 {
     let bytes = password.as_bytes();
     let mut verifier: u16 = 0;
-    for &b in bytes.iter().rev().chain(std::iter::once(&(bytes.len() as u8))) {
+    for &b in bytes
+        .iter()
+        .rev()
+        .chain(std::iter::once(&(bytes.len() as u8)))
+    {
         verifier = ((verifier >> 14) & 0x0001) | ((verifier << 1) & 0x7fff);
         verifier ^= b as u16;
     }
@@ -265,13 +269,19 @@ pub fn write_content_types<W: Write + Seek>(
 
     let mut writer = Writer::new(Cursor::new(Vec::new()));
     let mut types_start = BytesStart::new("Types");
-    types_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/package/2006/content-types"));
+    types_start.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/package/2006/content-types",
+    ));
     writer.write_event(quick_xml::events::Event::Start(types_start))?;
 
     // Default overrides
     let mut default1 = BytesStart::new("Default");
     default1.push_attribute(("Extension", "rels"));
-    default1.push_attribute(("ContentType", "application/vnd.openxmlformats-package.relationships+xml"));
+    default1.push_attribute((
+        "ContentType",
+        "application/vnd.openxmlformats-package.relationships+xml",
+    ));
     writer.write_event(quick_xml::events::Event::Empty(default1))?;
 
     let mut default2 = BytesStart::new("Default");
@@ -283,21 +293,30 @@ pub fn write_content_types<W: Write + Seek>(
         // Comment boxes are anchored by legacy VML drawings
         let mut default3 = BytesStart::new("Default");
         default3.push_attribute(("Extension", "vml"));
-        default3.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.vmlDrawing"));
+        default3.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.vmlDrawing",
+        ));
         writer.write_event(quick_xml::events::Event::Empty(default3))?;
     }
 
     // Overrides
     let mut override1 = BytesStart::new("Override");
     override1.push_attribute(("PartName", "/xl/workbook.xml"));
-    override1.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"));
+    override1.push_attribute((
+        "ContentType",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+    ));
     writer.write_event(quick_xml::events::Event::Empty(override1))?;
 
     for i in 1..=sheet_count {
         let part_name = format!("/xl/worksheets/sheet{}.xml", i);
         let mut override_elem = BytesStart::new("Override");
         override_elem.push_attribute(("PartName", part_name.as_str()));
-        override_elem.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"));
+        override_elem.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml",
+        ));
         writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
     }
 
@@ -305,20 +324,29 @@ pub fn write_content_types<W: Write + Seek>(
     if has_shared_strings {
         let mut override2 = BytesStart::new("Override");
         override2.push_attribute(("PartName", "/xl/sharedStrings.xml"));
-        override2.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"));
+        override2.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml",
+        ));
         writer.write_event(quick_xml::events::Event::Empty(override2))?;
     }
 
     let mut override3 = BytesStart::new("Override");
     override3.push_attribute(("PartName", "/xl/styles.xml"));
-    override3.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"));
+    override3.push_attribute((
+        "ContentType",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
+    ));
     writer.write_event(quick_xml::events::Event::Empty(override3))?;
 
     for sheet_id in comment_sheet_ids {
         let part_name = format!("/xl/comments/comment{}.xml", sheet_id);
         let mut override_elem = BytesStart::new("Override");
         override_elem.push_attribute(("PartName", part_name.as_str()));
-        override_elem.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"));
+        override_elem.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml",
+        ));
         writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
     }
 
@@ -326,7 +354,10 @@ pub fn write_content_types<W: Write + Seek>(
         let part_name = format!("/xl/tables/table{}.xml", table_id);
         let mut override_elem = BytesStart::new("Override");
         override_elem.push_attribute(("PartName", part_name.as_str()));
-        override_elem.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"));
+        override_elem.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml",
+        ));
         writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
     }
 
@@ -342,14 +373,14 @@ pub fn write_rels<W: Write + Seek>(
     options: &FileOptions<'static, ExtendedFileOptions>,
 ) -> Result<()> {
     zip.start_file("_rels/.rels", options.clone())?;
-    
+
     let content = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
 <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
 </Relationships>"#;
-    
+
     zip.write_all(content.as_bytes())?;
     Ok(())
 }
@@ -364,7 +395,7 @@ pub fn write_doc_props<W: Write + Seek>(
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 </cp:coreProperties>"#;
     zip.write_all(core_xml.as_bytes())?;
-    
+
     // Write docProps/app.xml
     zip.start_file("docProps/app.xml", options.clone())?;
     let app_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -372,7 +403,7 @@ pub fn write_doc_props<W: Write + Seek>(
 <Application>RustyPyXL</Application>
 </Properties>"#;
     zip.write_all(app_xml.as_bytes())?;
-    
+
     Ok(())
 }
 
@@ -384,18 +415,28 @@ pub fn write_workbook_xml<W: Write + Seek>(
     active_tab: usize,
 ) -> Result<()> {
     zip.start_file("xl/workbook.xml", options.clone())?;
-    
+
     let mut writer = Writer::new(Cursor::new(Vec::new()));
     let mut workbook_start = BytesStart::new("workbook");
-    workbook_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
-    workbook_start.push_attribute(("xmlns:r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"));
+    workbook_start.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
+    workbook_start.push_attribute((
+        "xmlns:r",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ));
     writer.write_event(quick_xml::events::Event::Start(workbook_start))?;
-    
+
     // workbookPr
-    writer.write_event(quick_xml::events::Event::Empty(BytesStart::new("workbookPr")))?;
-    
+    writer.write_event(quick_xml::events::Event::Empty(BytesStart::new(
+        "workbookPr",
+    )))?;
+
     // bookViews
-    writer.write_event(quick_xml::events::Event::Start(BytesStart::new("bookViews")))?;
+    writer.write_event(quick_xml::events::Event::Start(BytesStart::new(
+        "bookViews",
+    )))?;
     let mut view = BytesStart::new("workbookView");
     view.push_attribute(("visibility", "visible"));
     view.push_attribute(("minimized", "0"));
@@ -408,7 +449,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
     view.push_attribute(("activeTab", active_tab.to_string().as_str()));
     writer.write_event(quick_xml::events::Event::Empty(view))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("bookViews")))?;
-    
+
     // sheets
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheets")))?;
     for (idx, (name, visibility)) in sheets.iter().enumerate() {
@@ -422,10 +463,12 @@ pub fn write_workbook_xml<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::Empty(sheet))?;
     }
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheets")))?;
-    
+
     // definedNames (named ranges), preserving sheet scope and visibility
     if !named_ranges.is_empty() {
-        writer.write_event(quick_xml::events::Event::Start(BytesStart::new("definedNames")))?;
+        writer.write_event(quick_xml::events::Event::Start(BytesStart::new(
+            "definedNames",
+        )))?;
         for nr in named_ranges {
             let mut defined_name = BytesStart::new("definedName");
             defined_name.push_attribute(("name", nr.name.as_str()));
@@ -441,9 +484,9 @@ pub fn write_workbook_xml<W: Write + Seek>(
         }
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedNames")))?;
     }
-    
+
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("workbook")))?;
-    
+
     let result = writer.into_inner().into_inner();
     zip.write_all(&result)?;
     Ok(())
@@ -457,9 +500,11 @@ pub fn write_workbook_rels<W: Write + Seek>(
 ) -> Result<()> {
     zip.start_file("xl/_rels/workbook.xml.rels", options.clone())?;
 
-    let mut content = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let mut content = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-"#);
+"#,
+    );
 
     for i in 1..=sheet_count {
         content.push_str(&format!(
@@ -489,7 +534,12 @@ pub fn collect_shared_strings(
     // Estimate capacity: count string cells across all worksheets
     let estimated_strings: usize = worksheets
         .iter()
-        .map(|ws| ws.cells.values().filter(|c| matches!(c.value, CellValue::String(_))).count())
+        .map(|ws| {
+            ws.cells
+                .values()
+                .filter(|c| matches!(c.value, CellValue::String(_)))
+                .count()
+        })
         .sum();
 
     let mut strings = Vec::with_capacity(estimated_strings);
@@ -520,12 +570,15 @@ pub fn write_shared_strings<W: Write + Seek>(
     let estimated_size = strings.len() * 50 + 200;
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(estimated_size)));
     let mut sst = BytesStart::new("sst");
-    sst.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
+    sst.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
     let count_str = strings.len().to_string();
     sst.push_attribute(("count", count_str.as_str()));
     sst.push_attribute(("uniqueCount", count_str.as_str()));
     writer.write_event(quick_xml::events::Event::Start(sst))?;
-    
+
     for s in strings {
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("si")))?;
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("t")))?;
@@ -535,9 +588,9 @@ pub fn write_shared_strings<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("t")))?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("si")))?;
     }
-    
+
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sst")))?;
-    
+
     let result = writer.into_inner().into_inner();
     zip.write_all(&result)?;
     Ok(())
@@ -643,7 +696,10 @@ fn write_alignment_xml(xml: &mut String, align: &crate::style::Alignment) {
 /// Write protection element to the XML string.
 fn write_protection_xml(xml: &mut String, prot: &crate::style::Protection) {
     xml.push_str("<protection");
-    xml.push_str(&format!(r#" locked="{}""#, if prot.locked { "1" } else { "0" }));
+    xml.push_str(&format!(
+        r#" locked="{}""#,
+        if prot.locked { "1" } else { "0" }
+    ));
     if prot.hidden {
         xml.push_str(r#" hidden="1""#);
     }
@@ -755,7 +811,11 @@ fn write_dxfs_xml(xml: &mut String, dxfs: &[ConditionalFormat]) {
                 xml.push_str(if i { "<i/>" } else { r#"<i val="0"/>"# });
             }
             if let Some(st) = fmt.strikethrough {
-                xml.push_str(if st { "<strike/>" } else { r#"<strike val="0"/>"# });
+                xml.push_str(if st {
+                    "<strike/>"
+                } else {
+                    r#"<strike val="0"/>"#
+                });
             }
             if let Some(u) = fmt.underline {
                 xml.push_str(if u { "<u/>" } else { r#"<u val="none"/>"# });
@@ -808,13 +868,19 @@ pub fn write_styles_xml<W: Write + Seek>(
 
     let mut xml = String::with_capacity(4096);
     xml.push_str(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
-    xml.push_str(r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#);
+    xml.push_str(
+        r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+    );
 
     // Number formats
     if !styles.num_fmts.is_empty() {
         xml.push_str(&format!(r#"<numFmts count="{}">"#, styles.num_fmts.len()));
         for (id, code) in &styles.num_fmts {
-            xml.push_str(&format!(r#"<numFmt numFmtId="{}" formatCode="{}"/>"#, id, escape_xml(code)));
+            xml.push_str(&format!(
+                r#"<numFmt numFmtId="{}" formatCode="{}"/>"#,
+                id,
+                escape_xml(code)
+            ));
         }
         xml.push_str("</numFmts>");
     } else {
@@ -924,34 +990,52 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     let estimated_size = worksheet.cells.len() * 100;
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(estimated_size)));
     let mut worksheet_start = BytesStart::new("worksheet");
-    worksheet_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
-    worksheet_start.push_attribute(("xmlns:r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"));
+    worksheet_start.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
+    worksheet_start.push_attribute((
+        "xmlns:r",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ));
     writer.write_event(quick_xml::events::Event::Start(worksheet_start))?;
-    
+
     // sheetPr
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheetPr")))?;
     let mut outline = BytesStart::new("outlinePr");
     outline.push_attribute(("summaryBelow", "1"));
     outline.push_attribute(("summaryRight", "1"));
     writer.write_event(quick_xml::events::Event::Empty(outline))?;
-    writer.write_event(quick_xml::events::Event::Empty(BytesStart::new("pageSetUpPr")))?;
+    writer.write_event(quick_xml::events::Event::Empty(BytesStart::new(
+        "pageSetUpPr",
+    )))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheetPr")))?;
-    
+
     // dimension (if we have cells)
     if worksheet.max_row > 0 && worksheet.max_column > 0 {
         let start = "A1";
-        let end = format!("{}{}", column_to_letter(worksheet.max_column), worksheet.max_row);
+        let end = format!(
+            "{}{}",
+            column_to_letter(worksheet.max_column),
+            worksheet.max_row
+        );
         let mut dim = BytesStart::new("dimension");
         dim.push_attribute(("ref", format!("{}:{}", start, end).as_str()));
         writer.write_event(quick_xml::events::Event::Empty(dim))?;
     }
-    
+
     // sheetViews
-    writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheetViews")))?;
+    writer.write_event(quick_xml::events::Event::Start(BytesStart::new(
+        "sheetViews",
+    )))?;
     let frozen = worksheet
         .freeze_panes
         .as_deref()
-        .and_then(|cell| crate::utils::parse_coordinate(cell).ok().map(|(row, col)| (cell, row, col)))
+        .and_then(|cell| {
+            crate::utils::parse_coordinate(cell)
+                .ok()
+                .map(|(row, col)| (cell, row, col))
+        })
         .filter(|&(_, row, col)| row > 1 || col > 1);
     if let Some((cell, row, col)) = frozen {
         let x_split = col - 1;
@@ -989,13 +1073,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::Empty(view))?;
     }
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheetViews")))?;
-    
+
     // sheetFormatPr
     let mut format_pr = BytesStart::new("sheetFormatPr");
     format_pr.push_attribute(("baseColWidth", "8"));
     format_pr.push_attribute(("defaultRowHeight", "15"));
     writer.write_event(quick_xml::events::Event::Empty(format_pr))?;
-    
+
     // cols (column dimensions)
     if !worksheet.column_dimensions.is_empty() {
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("cols")))?;
@@ -1009,9 +1093,11 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         }
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("cols")))?;
     }
-    
+
     // sheetData
-    writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheetData")))?;
+    writer.write_event(quick_xml::events::Event::Start(BytesStart::new(
+        "sheetData",
+    )))?;
 
     // Group cells by row - pre-allocate based on max_row
     let estimated_rows = worksheet.max_row as usize;
@@ -1067,7 +1153,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
                         let style_index = cell_data
                             .style_index
                             .or_else(|| style_overrides.get(&cell_key(row, col)).copied());
-                        write_cell_direct(&mut buf, &coord, cell_data, style_index, shared_string_map);
+                        write_cell_direct(
+                            &mut buf,
+                            &coord,
+                            cell_data,
+                            style_index,
+                            shared_string_map,
+                        );
                     }
 
                     buf.push_str("</row>");
@@ -1128,21 +1220,63 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         if protection.sheet {
             let mut sheet_protection = BytesStart::new("sheetProtection");
             sheet_protection.push_attribute(("sheet", "1"));
-            sheet_protection.push_attribute(("selectLockedCells", if protection.select_locked_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("selectUnlockedCells", if protection.select_unlocked_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatCells", if protection.format_cells { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatColumns", if protection.format_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("formatRows", if protection.format_rows { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertColumns", if protection.insert_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertRows", if protection.insert_rows { "1" } else { "0" }));
-            sheet_protection.push_attribute(("insertHyperlinks", if protection.insert_hyperlinks { "1" } else { "0" }));
-            sheet_protection.push_attribute(("deleteColumns", if protection.delete_columns { "1" } else { "0" }));
-            sheet_protection.push_attribute(("deleteRows", if protection.delete_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute((
+                "selectLockedCells",
+                if protection.select_locked_cells {
+                    "1"
+                } else {
+                    "0"
+                },
+            ));
+            sheet_protection.push_attribute((
+                "selectUnlockedCells",
+                if protection.select_unlocked_cells {
+                    "1"
+                } else {
+                    "0"
+                },
+            ));
+            sheet_protection.push_attribute((
+                "formatCells",
+                if protection.format_cells { "1" } else { "0" },
+            ));
+            sheet_protection.push_attribute((
+                "formatColumns",
+                if protection.format_columns { "1" } else { "0" },
+            ));
+            sheet_protection
+                .push_attribute(("formatRows", if protection.format_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute((
+                "insertColumns",
+                if protection.insert_columns { "1" } else { "0" },
+            ));
+            sheet_protection
+                .push_attribute(("insertRows", if protection.insert_rows { "1" } else { "0" }));
+            sheet_protection.push_attribute((
+                "insertHyperlinks",
+                if protection.insert_hyperlinks {
+                    "1"
+                } else {
+                    "0"
+                },
+            ));
+            sheet_protection.push_attribute((
+                "deleteColumns",
+                if protection.delete_columns { "1" } else { "0" },
+            ));
+            sheet_protection
+                .push_attribute(("deleteRows", if protection.delete_rows { "1" } else { "0" }));
             sheet_protection.push_attribute(("sort", if protection.sort { "1" } else { "0" }));
-            sheet_protection.push_attribute(("autoFilter", if protection.auto_filter { "1" } else { "0" }));
-            sheet_protection.push_attribute(("pivotTables", if protection.pivot_tables { "1" } else { "0" }));
-            sheet_protection.push_attribute(("objects", if protection.objects { "1" } else { "0" }));
-            sheet_protection.push_attribute(("scenarios", if protection.scenarios { "1" } else { "0" }));
+            sheet_protection
+                .push_attribute(("autoFilter", if protection.auto_filter { "1" } else { "0" }));
+            sheet_protection.push_attribute((
+                "pivotTables",
+                if protection.pivot_tables { "1" } else { "0" },
+            ));
+            sheet_protection
+                .push_attribute(("objects", if protection.objects { "1" } else { "0" }));
+            sheet_protection
+                .push_attribute(("scenarios", if protection.scenarios { "1" } else { "0" }));
             // The password attribute holds the legacy 16-bit verifier hash, never
             // the plaintext. A value loaded from an existing file is already hashed.
             if let Some(ref hash) = protection.password_hash {
@@ -1183,7 +1317,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     // dataValidations (per schema order: after conditionalFormatting, before hyperlinks)
     if !worksheet.data_validations.is_empty() {
         let mut data_validations = BytesStart::new("dataValidations");
-        data_validations.push_attribute(("count", worksheet.data_validations.len().to_string().as_str()));
+        data_validations.push_attribute((
+            "count",
+            worksheet.data_validations.len().to_string().as_str(),
+        ));
         writer.write_event(quick_xml::events::Event::Start(data_validations))?;
 
         for ((row, col), validation) in &worksheet.data_validations {
@@ -1191,10 +1328,19 @@ pub fn write_worksheet_xml<W: Write + Seek>(
             let mut dv = BytesStart::new("dataValidation");
             dv.push_attribute(("type", validation.validation_type.as_str()));
             dv.push_attribute(("allowBlank", if validation.allow_blank { "1" } else { "0" }));
-            dv.push_attribute(("showErrorMessage", if validation.show_error { "1" } else { "0" }));
-            dv.push_attribute(("showInputMessage", if validation.show_input { "1" } else { "0" }));
+            dv.push_attribute((
+                "showErrorMessage",
+                if validation.show_error { "1" } else { "0" },
+            ));
+            dv.push_attribute((
+                "showInputMessage",
+                if validation.show_input { "1" } else { "0" },
+            ));
             // A loaded rule may span multiple cells; fall back to the key cell
-            dv.push_attribute(("sqref", validation.sqref.as_deref().unwrap_or(coord.as_str())));
+            dv.push_attribute((
+                "sqref",
+                validation.sqref.as_deref().unwrap_or(coord.as_str()),
+            ));
             writer.write_event(quick_xml::events::Event::Start(dv))?;
             if let Some(ref f1) = validation.formula1 {
                 writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula1")))?;
@@ -1206,9 +1352,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
                 writer.write_event(quick_xml::events::Event::Text(BytesText::new(f2)))?;
                 writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula2")))?;
             }
-            writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidation")))?;
+            writer.write_event(quick_xml::events::Event::End(BytesEnd::new(
+                "dataValidation",
+            )))?;
         }
-        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidations")))?;
+        writer.write_event(quick_xml::events::Event::End(BytesEnd::new(
+            "dataValidations",
+        )))?;
     }
 
     // hyperlinks: external URLs reference the sheet rels via r:id; internal
@@ -1251,7 +1401,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
 
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("hyperlinks")))?;
     }
-    
+
     // printOptions (per schema order: after hyperlinks, before pageMargins)
     if let Some(ref ps) = worksheet.page_setup {
         write_print_options(&mut writer, ps)?;
@@ -1315,7 +1465,8 @@ pub fn write_comments_xml<W: Write + Seek>(
     sheet_id: u32,
 ) -> Result<bool> {
     // Collect comments
-    let comment_cells: Vec<((u32, u32), String)> = worksheet.cells
+    let comment_cells: Vec<((u32, u32), String)> = worksheet
+        .cells
         .iter()
         .filter_map(|(key, cell_data)| {
             cell_data.comment.as_ref().map(|comment| {
@@ -1324,31 +1475,34 @@ pub fn write_comments_xml<W: Write + Seek>(
             })
         })
         .collect();
-    
+
     if comment_cells.is_empty() {
         return Ok(false); // No comments to write
     }
-    
+
     let path = format!("xl/comments/comment{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
-    
+
     let mut writer = Writer::new(Cursor::new(Vec::new()));
     let mut comments_start = BytesStart::new("comments");
-    comments_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
+    comments_start.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
     writer.write_event(quick_xml::events::Event::Start(comments_start))?;
-    
+
     // authors
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("authors")))?;
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("author")))?;
     writer.write_event(quick_xml::events::Event::Text(BytesText::new("RustyPyXL")))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("author")))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("authors")))?;
-    
+
     // commentList
     let mut comment_list = BytesStart::new("commentList");
     comment_list.push_attribute(("count", comment_cells.len().to_string().as_str()));
     writer.write_event(quick_xml::events::Event::Start(comment_list))?;
-    
+
     for ((row, col), comment_text) in comment_cells {
         let coord = format!("{}{}", column_to_letter(col), row);
         let mut comment = BytesStart::new("comment");
@@ -1356,17 +1510,19 @@ pub fn write_comments_xml<W: Write + Seek>(
         comment.push_attribute(("authorId", "0"));
         comment.push_attribute(("shapeId", "0"));
         writer.write_event(quick_xml::events::Event::Start(comment))?;
-        
+
         // text
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("text")))?;
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("t")))?;
-        writer.write_event(quick_xml::events::Event::Text(BytesText::new(&comment_text)))?;
+        writer.write_event(quick_xml::events::Event::Text(BytesText::new(
+            &comment_text,
+        )))?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("t")))?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("text")))?;
-        
+
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("comment")))?;
     }
-    
+
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("commentList")))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("comments")))?;
 
@@ -1441,7 +1597,8 @@ fn write_auto_filter<W: std::io::Write>(
                 }
                 FilterType::ColorFilter(cf) => {
                     let mut color_filter = BytesStart::new("colorFilter");
-                    color_filter.push_attribute(("cellColor", if cf.cell_color { "1" } else { "0" }));
+                    color_filter
+                        .push_attribute(("cellColor", if cf.cell_color { "1" } else { "0" }));
                     // Color would be specified via dxfId in real implementation
                     writer.write_event(Event::Empty(color_filter))?;
                 }
@@ -1460,9 +1617,15 @@ fn write_auto_filter<W: std::io::Write>(
             if auto_filter.sort_descending {
                 sort_cond.push_attribute(("descending", "1"));
             }
-            sort_cond.push_attribute(("ref", format!("{}:{}",
-                column_to_letter(sort_col + 1),
-                column_to_letter(sort_col + 1)).as_str()));
+            sort_cond.push_attribute((
+                "ref",
+                format!(
+                    "{}:{}",
+                    column_to_letter(sort_col + 1),
+                    column_to_letter(sort_col + 1)
+                )
+                .as_str(),
+            ));
             writer.write_event(Event::Empty(sort_cond))?;
 
             writer.write_event(Event::End(BytesEnd::new("sortState")))?;
@@ -1509,31 +1672,22 @@ fn implied_rule_formula(
     // Embedded quotes in the matched text are doubled in Excel formulas
     let quoted = format!("\"{}\"", text.replace('"', "\"\""));
     match rule.rule_type {
-        ConditionalFormatType::ContainsText => Some(format!(
-            "NOT(ISERROR(SEARCH({},{})))",
-            quoted, anchor
-        )),
+        ConditionalFormatType::ContainsText => {
+            Some(format!("NOT(ISERROR(SEARCH({},{})))", quoted, anchor))
+        }
         ConditionalFormatType::NotContainsText => {
             Some(format!("ISERROR(SEARCH({},{}))", quoted, anchor))
         }
-        ConditionalFormatType::BeginsWith => Some(format!(
-            "LEFT({},LEN({}))={}",
-            anchor, quoted, quoted
-        )),
-        ConditionalFormatType::EndsWith => Some(format!(
-            "RIGHT({},LEN({}))={}",
-            anchor, quoted, quoted
-        )),
-        ConditionalFormatType::ContainsBlanks => {
-            Some(format!("LEN(TRIM({}))=0", anchor))
+        ConditionalFormatType::BeginsWith => {
+            Some(format!("LEFT({},LEN({}))={}", anchor, quoted, quoted))
         }
-        ConditionalFormatType::NotContainsBlanks => {
-            Some(format!("LEN(TRIM({}))>0", anchor))
+        ConditionalFormatType::EndsWith => {
+            Some(format!("RIGHT({},LEN({}))={}", anchor, quoted, quoted))
         }
+        ConditionalFormatType::ContainsBlanks => Some(format!("LEN(TRIM({}))=0", anchor)),
+        ConditionalFormatType::NotContainsBlanks => Some(format!("LEN(TRIM({}))>0", anchor)),
         ConditionalFormatType::ContainsErrors => Some(format!("ISERROR({})", anchor)),
-        ConditionalFormatType::NotContainsErrors => {
-            Some(format!("NOT(ISERROR({}))", anchor))
-        }
+        ConditionalFormatType::NotContainsErrors => Some(format!("NOT(ISERROR({}))", anchor)),
         ConditionalFormatType::TimePeriod => {
             let period = rule.time_period.as_deref()?;
             Some(match period {
@@ -1579,12 +1733,7 @@ fn implied_rule_formula(
 /// percent bands (Excel's own defaults), e.g. 3 icons -> 0/33/67.
 fn default_icon_thresholds(icon_count: u32) -> Vec<(String, String)> {
     (0..icon_count)
-        .map(|i| {
-            (
-                "percent".to_string(),
-                ((100 * i) / icon_count).to_string(),
-            )
-        })
+        .map(|i| ("percent".to_string(), ((100 * i) / icon_count).to_string()))
         .collect()
 }
 
@@ -1973,7 +2122,10 @@ pub fn write_table_xml<W: Write + Seek>(
 
     let mut writer = Writer::new(Cursor::new(Vec::new()));
     let mut table_start = BytesStart::new("table");
-    table_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
+    table_start.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
     // Use the workbook-assigned id, not table.id, to guarantee uniqueness
     table_start.push_attribute(("id", table_id.to_string().as_str()));
     table_start.push_attribute(("name", table.name.as_str()));
@@ -2046,10 +2198,22 @@ pub fn write_table_xml<W: Write + Seek>(
     // tableStyleInfo
     let mut style_info = BytesStart::new("tableStyleInfo");
     style_info.push_attribute(("name", table.style.style_name().as_str()));
-    style_info.push_attribute(("showFirstColumn", if table.show_first_column { "1" } else { "0" }));
-    style_info.push_attribute(("showLastColumn", if table.show_last_column { "1" } else { "0" }));
-    style_info.push_attribute(("showRowStripes", if table.show_row_stripes { "1" } else { "0" }));
-    style_info.push_attribute(("showColumnStripes", if table.show_column_stripes { "1" } else { "0" }));
+    style_info.push_attribute((
+        "showFirstColumn",
+        if table.show_first_column { "1" } else { "0" },
+    ));
+    style_info.push_attribute((
+        "showLastColumn",
+        if table.show_last_column { "1" } else { "0" },
+    ));
+    style_info.push_attribute((
+        "showRowStripes",
+        if table.show_row_stripes { "1" } else { "0" },
+    ));
+    style_info.push_attribute((
+        "showColumnStripes",
+        if table.show_column_stripes { "1" } else { "0" },
+    ));
     writer.write_event(Event::Empty(style_info))?;
 
     writer.write_event(Event::End(BytesEnd::new("table")))?;
@@ -2062,7 +2226,7 @@ pub fn write_table_xml<W: Write + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{Fill, BorderStyle};
+    use crate::style::{BorderStyle, Fill};
 
     #[test]
     fn test_escape_xml_strips_illegal_control_chars() {

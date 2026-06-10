@@ -786,7 +786,9 @@ mod tests {
 
     #[test]
     fn test_data_bar() {
-        let bar = DataBar::new().with_color(ConditionalColor::blue()).hide_value();
+        let bar = DataBar::new()
+            .with_color(ConditionalColor::blue())
+            .hide_value();
         let rule = ConditionalRule::with_data_bar(bar);
 
         assert_eq!(rule.rule_type, ConditionalFormatType::DataBar);
@@ -806,11 +808,13 @@ mod tests {
     #[test]
     fn test_conditional_formatting() {
         let mut cf = ConditionalFormatting::new("A1:A100");
-        cf.add_rule(ConditionalRule::top(10).with_format(
-            ConditionalFormat::new()
-                .with_bold(true)
-                .with_fill(ConditionalColor::yellow()),
-        ));
+        cf.add_rule(
+            ConditionalRule::top(10).with_format(
+                ConditionalFormat::new()
+                    .with_bold(true)
+                    .with_fill(ConditionalColor::yellow()),
+            ),
+        );
 
         assert_eq!(cf.range, "A1:A100");
         assert_eq!(cf.rules.len(), 1);

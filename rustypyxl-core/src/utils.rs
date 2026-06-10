@@ -27,7 +27,9 @@ pub fn parse_coordinate_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
             _ => break,
         };
         // Use checked arithmetic to prevent overflow
-        column = column.checked_mul(26)?.checked_add((upper - b'A' + 1) as u32)?;
+        column = column
+            .checked_mul(26)?
+            .checked_add((upper - b'A' + 1) as u32)?;
         // Early exit if column exceeds Excel's max
         if column > MAX_COLUMN {
             return None;
@@ -113,9 +115,10 @@ pub fn letter_to_column(letters: &str) -> Result<u32> {
             b'a'..=b'z' => b - 32,
             b'A'..=b'Z' => b,
             _ => {
-                return Err(RustypyxlError::InvalidCoordinate(
-                    format!("Invalid character in column: {}", b as char)
-                ))
+                return Err(RustypyxlError::InvalidCoordinate(format!(
+                    "Invalid character in column: {}",
+                    b as char
+                )))
             }
         };
         saw_letter = true;
@@ -123,20 +126,21 @@ pub fn letter_to_column(letters: &str) -> Result<u32> {
         result = result
             .checked_mul(26)
             .and_then(|r| r.checked_add((upper - b'A' + 1) as u32))
-            .ok_or_else(|| RustypyxlError::InvalidCoordinate(
-                format!("Column '{}' exceeds maximum", letters)
-            ))?;
+            .ok_or_else(|| {
+                RustypyxlError::InvalidCoordinate(format!("Column '{}' exceeds maximum", letters))
+            })?;
         // Validate against Excel's max column
         if result > MAX_COLUMN {
-            return Err(RustypyxlError::InvalidCoordinate(
-                format!("Column '{}' exceeds Excel maximum (XFD = {})", letters, MAX_COLUMN)
-            ));
+            return Err(RustypyxlError::InvalidCoordinate(format!(
+                "Column '{}' exceeds Excel maximum (XFD = {})",
+                letters, MAX_COLUMN
+            )));
         }
     }
 
     if !saw_letter || result == 0 {
         return Err(RustypyxlError::InvalidCoordinate(
-            "Empty column letters".to_string()
+            "Empty column letters".to_string(),
         ));
     }
 
@@ -168,9 +172,10 @@ pub fn parse_range(range: &str) -> Result<((u32, u32), (u32, u32))> {
     let parts: Vec<&str> = range.split(':').collect();
 
     if parts.len() != 2 {
-        return Err(RustypyxlError::InvalidCoordinate(
-            format!("Invalid range format: {}", range)
-        ));
+        return Err(RustypyxlError::InvalidCoordinate(format!(
+            "Invalid range format: {}",
+            range
+        )));
     }
 
     let start = parse_coordinate(parts[0])?;

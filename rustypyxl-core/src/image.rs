@@ -95,7 +95,8 @@ impl ImageFormat {
         }
 
         // TIFF: II or MM
-        if data.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || data.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+        if data.starts_with(&[0x49, 0x49, 0x2A, 0x00])
+            || data.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
         {
             return Some(ImageFormat::Tiff);
         }
@@ -309,7 +310,7 @@ mod tests {
             .unwrap()
             .with_size_inches(2.0, 1.5);
 
-        assert_eq!(image.width, 1828800);  // 2 * 914400
+        assert_eq!(image.width, 1828800); // 2 * 914400
         assert_eq!(image.height, 1371600); // 1.5 * 914400
     }
 

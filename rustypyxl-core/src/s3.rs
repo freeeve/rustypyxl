@@ -52,7 +52,8 @@ async fn create_s3_client(config: Option<&S3Config>) -> Result<Client> {
 
     if let Some(cfg) = config {
         if let Some(ref region) = cfg.region {
-            aws_config_loader = aws_config_loader.region(aws_sdk_s3::config::Region::new(region.clone()));
+            aws_config_loader =
+                aws_config_loader.region(aws_sdk_s3::config::Region::new(region.clone()));
         }
     }
 
@@ -93,16 +94,12 @@ pub async fn load_from_s3_async(
             ))
         })?;
 
-    let data = response
-        .body
-        .collect()
-        .await
-        .map_err(|e| {
-            RustypyxlError::S3Error(format!(
-                "Failed to read S3 response body: {}",
-                DisplayErrorContext(&e)
-            ))
-        })?;
+    let data = response.body.collect().await.map_err(|e| {
+        RustypyxlError::S3Error(format!(
+            "Failed to read S3 response body: {}",
+            DisplayErrorContext(&e)
+        ))
+    })?;
 
     Workbook::load_from_bytes(&data.into_bytes())
 }
@@ -213,7 +210,10 @@ mod tests {
             .with_path_style();
 
         assert_eq!(config.region, Some("us-west-2".to_string()));
-        assert_eq!(config.endpoint_url, Some("http://localhost:9000".to_string()));
+        assert_eq!(
+            config.endpoint_url,
+            Some("http://localhost:9000".to_string())
+        );
         assert!(config.force_path_style);
     }
 }

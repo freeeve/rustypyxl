@@ -1,10 +1,15 @@
 //! Integration tests for rustypyxl-core.
 
-use rustypyxl_core::{Workbook, CellValue};
-use rustypyxl_core::autofilter::{AutoFilter, FilterColumn, CustomFilter, FilterOperator};
-use rustypyxl_core::conditional::{ConditionalFormatting, ConditionalRule, ConditionalFormatType, ConditionalOperator, ColorScale, DataBar, ConditionalColor};
-use rustypyxl_core::table::{Table, TableStyle, TableColumn, TotalsRowFunction};
-use rustypyxl_core::pagesetup::{PageSetup, PaperSize, Orientation, PageMargins, HeaderFooterSection};
+use rustypyxl_core::autofilter::{AutoFilter, CustomFilter, FilterColumn, FilterOperator};
+use rustypyxl_core::conditional::{
+    ColorScale, ConditionalColor, ConditionalFormatType, ConditionalFormatting,
+    ConditionalOperator, ConditionalRule, DataBar,
+};
+use rustypyxl_core::pagesetup::{
+    HeaderFooterSection, Orientation, PageMargins, PageSetup, PaperSize,
+};
+use rustypyxl_core::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
+use rustypyxl_core::{CellValue, Workbook};
 use std::fs;
 
 fn temp_file(name: &str) -> String {
@@ -19,9 +24,12 @@ fn test_create_and_save_workbook() {
     let ws = wb.create_sheet(Some("Test".to_string())).unwrap();
     assert_eq!(ws.title(), "Test");
 
-    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::from("Hello")).unwrap();
-    wb.set_cell_value_in_sheet("Test", 1, 2, CellValue::Number(42.0)).unwrap();
-    wb.set_cell_value_in_sheet("Test", 1, 3, CellValue::Boolean(true)).unwrap();
+    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::from("Hello"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Test", 1, 2, CellValue::Number(42.0))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Test", 1, 3, CellValue::Boolean(true))
+        .unwrap();
 
     let path = temp_file("test_create.xlsx");
     wb.save(&path).unwrap();
@@ -36,12 +44,18 @@ fn test_roundtrip_basic() {
     wb.create_sheet(Some("Data".to_string())).unwrap();
 
     // Add various cell types
-    wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::from("Name")).unwrap();
-    wb.set_cell_value_in_sheet("Data", 1, 2, CellValue::from("Value")).unwrap();
-    wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::from("Item A")).unwrap();
-    wb.set_cell_value_in_sheet("Data", 2, 2, CellValue::Number(100.0)).unwrap();
-    wb.set_cell_value_in_sheet("Data", 3, 1, CellValue::from("Item B")).unwrap();
-    wb.set_cell_value_in_sheet("Data", 3, 2, CellValue::Number(200.0)).unwrap();
+    wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::from("Name"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Data", 1, 2, CellValue::from("Value"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::from("Item A"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Data", 2, 2, CellValue::Number(100.0))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Data", 3, 1, CellValue::from("Item B"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Data", 3, 2, CellValue::Number(200.0))
+        .unwrap();
 
     let path = temp_file("test_roundtrip.xlsx");
     wb.save(&path).unwrap();
@@ -72,9 +86,17 @@ fn test_formula_roundtrip() {
     let mut wb = Workbook::new();
     wb.create_sheet(Some("Formulas".to_string())).unwrap();
 
-    wb.set_cell_value_in_sheet("Formulas", 1, 1, CellValue::Number(10.0)).unwrap();
-    wb.set_cell_value_in_sheet("Formulas", 2, 1, CellValue::Number(20.0)).unwrap();
-    wb.set_cell_value_in_sheet("Formulas", 3, 1, CellValue::Formula("SUM(A1:A2)".to_string())).unwrap();
+    wb.set_cell_value_in_sheet("Formulas", 1, 1, CellValue::Number(10.0))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Formulas", 2, 1, CellValue::Number(20.0))
+        .unwrap();
+    wb.set_cell_value_in_sheet(
+        "Formulas",
+        3,
+        1,
+        CellValue::Formula("SUM(A1:A2)".to_string()),
+    )
+    .unwrap();
 
     let path = temp_file("test_formula.xlsx");
     wb.save(&path).unwrap();
@@ -99,12 +121,15 @@ fn test_autofilter_creation() {
     assert!(af.columns.is_empty());
 
     // Add value filter
-    af.add_filter(FilterColumn::values(0, vec!["Apple".to_string(), "Orange".to_string()]));
+    af.add_filter(FilterColumn::values(
+        0,
+        vec!["Apple".to_string(), "Orange".to_string()],
+    ));
     assert_eq!(af.columns.len(), 1);
 
     // Add custom filter
-    let custom = CustomFilter::new(FilterOperator::GreaterThan, "100")
-        .and(FilterOperator::LessThan, "500");
+    let custom =
+        CustomFilter::new(FilterOperator::GreaterThan, "100").and(FilterOperator::LessThan, "500");
     af.add_filter(FilterColumn::custom(1, custom));
     assert_eq!(af.columns.len(), 2);
 
@@ -179,12 +204,7 @@ fn test_table_creation() {
 
 #[test]
 fn test_table_with_headers() {
-    let table = Table::with_headers(
-        1,
-        "Products",
-        "A1:C10",
-        &["Name", "Price", "Quantity"],
-    );
+    let table = Table::with_headers(1, "Products", "A1:C10", &["Name", "Price", "Quantity"]);
 
     assert_eq!(table.columns.len(), 3);
     assert_eq!(table.columns[0].name, "Name");
@@ -204,13 +224,11 @@ fn test_table_with_totals() {
 
 #[test]
 fn test_table_style() {
-    let table = Table::new(1, "Test", "A1:B10")
-        .with_style(TableStyle::blue());
+    let table = Table::new(1, "Test", "A1:B10").with_style(TableStyle::blue());
 
     assert_eq!(table.style.style_name(), "TableStyleMedium2");
 
-    let green = Table::new(2, "Test2", "A1:B10")
-        .with_style(TableStyle::green());
+    let green = Table::new(2, "Test2", "A1:B10").with_style(TableStyle::green());
     assert_eq!(green.style.style_name(), "TableStyleMedium7");
 }
 
@@ -234,7 +252,10 @@ fn test_table_column_formula() {
         .with_formula("[@Price]*[@Quantity]")
         .with_totals_function(TotalsRowFunction::Sum);
 
-    assert_eq!(col.calculated_column_formula, Some("[@Price]*[@Quantity]".to_string()));
+    assert_eq!(
+        col.calculated_column_formula,
+        Some("[@Price]*[@Quantity]".to_string())
+    );
     assert_eq!(col.totals_row_function, TotalsRowFunction::Sum);
 }
 
@@ -390,7 +411,8 @@ fn test_named_ranges() {
     let mut wb = Workbook::new();
     wb.create_sheet(Some("Data".to_string())).unwrap();
 
-    wb.create_named_range("MyRange".to_string(), "Data!$A$1:$C$10".to_string()).unwrap();
+    wb.create_named_range("MyRange".to_string(), "Data!$A$1:$C$10".to_string())
+        .unwrap();
 
     let range = wb.get_named_range("MyRange");
     assert!(range.is_some());
@@ -454,7 +476,8 @@ fn test_worksheet_element_order_follows_schema() {
 
     let mut wb = Workbook::new();
     wb.create_sheet(Some("Test".to_string())).unwrap();
-    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::from("data")).unwrap();
+    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::from("data"))
+        .unwrap();
     wb.set_cell_hyperlink(2, 1, "#Test!A1".to_string()).unwrap();
 
     let ws = wb.get_sheet_by_name_mut("Test").unwrap();
@@ -496,11 +519,19 @@ fn test_worksheet_element_order_follows_schema() {
         .collect();
     let mut sorted = positions.clone();
     sorted.sort_unstable();
-    assert_eq!(positions, sorted, "worksheet elements out of schema order: {}", sheet_xml);
+    assert_eq!(
+        positions, sorted,
+        "worksheet elements out of schema order: {}",
+        sheet_xml
+    );
 
     // The password attribute must hold the legacy verifier hash, not plaintext.
     assert!(!sheet_xml.contains("password=\"secret\""));
-    assert!(sheet_xml.contains("password=\"DAA7\""), "expected hashed password in {}", sheet_xml);
+    assert!(
+        sheet_xml.contains("password=\"DAA7\""),
+        "expected hashed password in {}",
+        sheet_xml
+    );
 
     fs::remove_file(&path).ok();
 }
@@ -576,14 +607,16 @@ fn test_t_str_cells_are_literal_text_not_shared_index() {
 /// all of these from any loaded file.
 #[test]
 fn test_roundtrip_preserves_structure() {
-    use rustypyxl_core::{DataValidation, SheetVisibility};
     use rustypyxl_core::pagesetup::PageMargins;
+    use rustypyxl_core::{DataValidation, SheetVisibility};
 
     let mut wb = Workbook::new();
     wb.create_sheet(Some("Main".to_string())).unwrap();
     wb.create_sheet(Some("Secret".to_string())).unwrap();
-    wb.set_cell_value_in_sheet("Main", 1, 1, CellValue::from("data")).unwrap();
-    wb.set_cell_value_in_sheet("Secret", 1, 1, CellValue::from("hidden data")).unwrap();
+    wb.set_cell_value_in_sheet("Main", 1, 1, CellValue::from("data"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("Secret", 1, 1, CellValue::from("hidden data"))
+        .unwrap();
     wb.active_sheet = 0;
 
     {
@@ -608,7 +641,14 @@ fn test_roundtrip_preserves_structure() {
         ps.paper_size = PaperSize::A4;
         ps.scale = 80;
         ps.print_gridlines = true;
-        ps.margins = PageMargins { left: 1.5, right: 0.25, top: 2.0, bottom: 0.5, header: 0.1, footer: 0.9 };
+        ps.margins = PageMargins {
+            left: 1.5,
+            right: 0.25,
+            top: 2.0,
+            bottom: 0.5,
+            header: 0.1,
+            footer: 0.9,
+        };
         ws.set_page_setup(ps);
 
         ws.set_cell_hyperlink(3, 1, "https://example.com/page?a=1&b=2".to_string());
@@ -625,19 +665,34 @@ fn test_roundtrip_preserves_structure() {
     assert_eq!(wb2.active_sheet, 0);
 
     let secret = wb2.get_sheet_by_name("Secret").unwrap();
-    assert_eq!(secret.visibility, SheetVisibility::Hidden, "hidden sheet became visible");
+    assert_eq!(
+        secret.visibility,
+        SheetVisibility::Hidden,
+        "hidden sheet became visible"
+    );
 
     let main = wb2.get_sheet_by_name("Main").unwrap();
     assert_eq!(main.visibility, SheetVisibility::Visible);
-    assert_eq!(main.freeze_panes.as_deref(), Some("B2"), "freeze panes lost");
+    assert_eq!(
+        main.freeze_panes.as_deref(),
+        Some("B2"),
+        "freeze panes lost"
+    );
 
     let af = main.auto_filter.as_ref().expect("autofilter lost");
     assert_eq!(af.range, "A1:C10");
 
-    let dv = main.data_validations.get(&(2, 4)).expect("data validation lost");
+    let dv = main
+        .data_validations
+        .get(&(2, 4))
+        .expect("data validation lost");
     assert_eq!(dv.validation_type, "list");
     assert_eq!(dv.formula1.as_deref(), Some("\"Yes,No\""));
-    assert_eq!(dv.sqref.as_deref(), Some("D2:D10"), "validation range narrowed");
+    assert_eq!(
+        dv.sqref.as_deref(),
+        Some("D2:D10"),
+        "validation range narrowed"
+    );
 
     let ps = main.page_setup.as_ref().expect("page setup lost");
     assert_eq!(ps.orientation, Orientation::Landscape);
@@ -648,9 +703,17 @@ fn test_roundtrip_preserves_structure() {
     assert_eq!(ps.margins.top, 2.0);
 
     let link = main.get_cell(3, 1).and_then(|c| c.hyperlink.clone());
-    assert_eq!(link.as_deref(), Some("https://example.com/page?a=1&b=2"), "external hyperlink lost");
+    assert_eq!(
+        link.as_deref(),
+        Some("https://example.com/page?a=1&b=2"),
+        "external hyperlink lost"
+    );
     let internal = main.get_cell(4, 1).and_then(|c| c.hyperlink.clone());
-    assert_eq!(internal.as_deref(), Some("#Secret!A1"), "internal hyperlink lost");
+    assert_eq!(
+        internal.as_deref(),
+        Some("#Secret!A1"),
+        "internal hyperlink lost"
+    );
 
     assert_eq!(main.tables.len(), 1, "table lost");
     let t = &main.tables[0];
@@ -664,10 +727,17 @@ fn test_roundtrip_preserves_structure() {
     let path2 = temp_file("test_roundtrip_structure2.xlsx");
     wb2.save(&path2).unwrap();
     let wb3 = Workbook::load(&path2).unwrap();
-    assert_eq!(wb3.get_sheet_by_name("Secret").unwrap().visibility, SheetVisibility::Hidden);
+    assert_eq!(
+        wb3.get_sheet_by_name("Secret").unwrap().visibility,
+        SheetVisibility::Hidden
+    );
     assert_eq!(wb3.get_sheet_by_name("Main").unwrap().tables.len(), 1);
     assert_eq!(
-        wb3.get_sheet_by_name("Main").unwrap().get_cell(3, 1).and_then(|c| c.hyperlink.clone()).as_deref(),
+        wb3.get_sheet_by_name("Main")
+            .unwrap()
+            .get_cell(3, 1)
+            .and_then(|c| c.hyperlink.clone())
+            .as_deref(),
         Some("https://example.com/page?a=1&b=2")
     );
 
@@ -686,7 +756,8 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
     let mut wb = Workbook::new();
     wb.create_sheet(Some("CF".to_string())).unwrap();
     for r in 1..=10 {
-        wb.set_cell_value_in_sheet("CF", r, 1, CellValue::Number(r as f64 * 10.0)).unwrap();
+        wb.set_cell_value_in_sheet("CF", r, 1, CellValue::Number(r as f64 * 10.0))
+            .unwrap();
     }
 
     {
@@ -701,13 +772,20 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
                     .with_bold(true),
             ),
         );
-        cf1.add_rule(ConditionalRule::with_color_scale(ColorScale::red_yellow_green()).with_priority(2));
+        cf1.add_rule(
+            ConditionalRule::with_color_scale(ColorScale::red_yellow_green()).with_priority(2),
+        );
         ws.add_conditional_formatting(cf1);
 
         let mut cf2 = ConditionalFormatting::new("B1:B10");
-        cf2.add_rule(ConditionalRule::with_data_bar(DataBar::new().with_color(ConditionalColor::blue())));
+        cf2.add_rule(ConditionalRule::with_data_bar(
+            DataBar::new().with_color(ConditionalColor::blue()),
+        ));
         // Empty thresholds previously produced schema-invalid <iconSet/>
-        cf2.add_rule(ConditionalRule::with_icon_set(IconSet::new(IconSetStyle::ThreeArrows)).with_priority(2));
+        cf2.add_rule(
+            ConditionalRule::with_icon_set(IconSet::new(IconSetStyle::ThreeArrows))
+                .with_priority(2),
+        );
         cf2.add_rule(
             ConditionalRule::contains_text("err")
                 .with_priority(3)
@@ -725,23 +803,44 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
         let file = fs::File::open(&path).unwrap();
         let mut zip = zip::ZipArchive::new(file).unwrap();
         let mut sheet_xml = String::new();
-        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
-        assert!(sheet_xml.contains("dxfId=\"0\""), "missing dxfId in {}", sheet_xml);
-        assert!(sheet_xml.contains("SEARCH("), "missing implied text-rule formula");
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet_xml)
+            .unwrap();
+        assert!(
+            sheet_xml.contains("dxfId=\"0\""),
+            "missing dxfId in {}",
+            sheet_xml
+        );
+        assert!(
+            sheet_xml.contains("SEARCH("),
+            "missing implied text-rule formula"
+        );
         // 3 icons -> three cfvo thresholds at 0/33/66 percent
         assert!(sheet_xml.contains(r#"<iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="66"/></iconSet>"#),
             "icon set missing default thresholds: {}", sheet_xml);
 
         let mut styles_xml = String::new();
-        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles_xml).unwrap();
-        assert!(styles_xml.contains("<dxfs count=\"2\">"), "dxfs missing in {}", styles_xml);
+        zip.by_name("xl/styles.xml")
+            .unwrap()
+            .read_to_string(&mut styles_xml)
+            .unwrap();
+        assert!(
+            styles_xml.contains("<dxfs count=\"2\">"),
+            "dxfs missing in {}",
+            styles_xml
+        );
         assert!(styles_xml.contains("FFFFC7CE"));
     }
 
     // Load back and verify the model round-trips
     let wb2 = Workbook::load(&path).unwrap();
     let ws2 = wb2.get_sheet_by_name("CF").unwrap();
-    assert_eq!(ws2.conditional_formatting.len(), 2, "CF blocks lost on load");
+    assert_eq!(
+        ws2.conditional_formatting.len(),
+        2,
+        "CF blocks lost on load"
+    );
 
     let cf1 = &ws2.conditional_formatting[0];
     assert_eq!(cf1.range, "A1:A10");
@@ -751,8 +850,14 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
     assert_eq!(rule.operator, Some(ConditionalOperator::GreaterThan));
     assert_eq!(rule.formula1.as_deref(), Some("50"));
     let fmt = rule.format.as_ref().expect("dxf format lost on load");
-    assert_eq!(fmt.fill_color.as_ref().and_then(|c| c.rgb.as_deref()), Some("FFFFC7CE"));
-    assert_eq!(fmt.font_color.as_ref().and_then(|c| c.rgb.as_deref()), Some("FF9C0006"));
+    assert_eq!(
+        fmt.fill_color.as_ref().and_then(|c| c.rgb.as_deref()),
+        Some("FFFFC7CE")
+    );
+    assert_eq!(
+        fmt.font_color.as_ref().and_then(|c| c.rgb.as_deref()),
+        Some("FF9C0006")
+    );
     assert_eq!(fmt.bold, Some(true));
 
     let scale_rule = &cf1.rules[1];
@@ -779,8 +884,11 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
     let ws3 = wb3.get_sheet_by_name("CF").unwrap();
     assert_eq!(ws3.conditional_formatting.len(), 2);
     assert_eq!(
-        ws3.conditional_formatting[0].rules[0].format.as_ref()
-            .and_then(|f| f.fill_color.as_ref()).and_then(|c| c.rgb.as_deref()),
+        ws3.conditional_formatting[0].rules[0]
+            .format
+            .as_ref()
+            .and_then(|f| f.fill_color.as_ref())
+            .and_then(|c| c.rgb.as_deref()),
         Some("FFFFC7CE")
     );
 
@@ -800,7 +908,8 @@ fn test_roundtrip_names_formulas_headers_comments() {
     wb.create_sheet(Some("S2".to_string())).unwrap();
 
     // Sheet-scoped + hidden defined names
-    wb.create_named_range("GlobalName".to_string(), "S1!$A$1:$B$2".to_string()).unwrap();
+    wb.create_named_range("GlobalName".to_string(), "S1!$A$1:$B$2".to_string())
+        .unwrap();
     wb.named_ranges.push(rustypyxl_core::NamedRange {
         name: "LocalName".to_string(),
         range: "S2!$C$1".to_string(),
@@ -826,7 +935,10 @@ fn test_roundtrip_names_formulas_headers_comments() {
 
         let mut ps = PageSetup::new();
         ps.header_footer.odd_header = Some(
-            HeaderFooterSection::new().with_left("Lft").with_center("Ctr & Co").with_right("Rgt"),
+            HeaderFooterSection::new()
+                .with_left("Lft")
+                .with_center("Ctr & Co")
+                .with_right("Rgt"),
         );
         ps.header_footer.odd_footer = Some(HeaderFooterSection::new().with_center("Page"));
         ws.set_page_setup(ps);
@@ -840,36 +952,71 @@ fn test_roundtrip_names_formulas_headers_comments() {
         let file = fs::File::open(&path).unwrap();
         let mut zip = zip::ZipArchive::new(file).unwrap();
         let mut sheet_xml = String::new();
-        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet_xml)
+            .unwrap();
         assert!(
             sheet_xml.contains("<f>A1+B1</f><v>5</v>"),
-            "cached formula value not written: {}", sheet_xml
+            "cached formula value not written: {}",
+            sheet_xml
         );
-        assert!(sheet_xml.contains("t=\"str\""), "cached string type missing");
-        assert!(sheet_xml.contains("<legacyDrawing r:id=\"rIdVml\"/>"), "legacyDrawing missing");
+        assert!(
+            sheet_xml.contains("t=\"str\""),
+            "cached string type missing"
+        );
+        assert!(
+            sheet_xml.contains("<legacyDrawing r:id=\"rIdVml\"/>"),
+            "legacyDrawing missing"
+        );
 
         let mut vml = String::new();
-        zip.by_name("xl/drawings/vmlDrawing1.vml").unwrap().read_to_string(&mut vml).unwrap();
+        zip.by_name("xl/drawings/vmlDrawing1.vml")
+            .unwrap()
+            .read_to_string(&mut vml)
+            .unwrap();
         assert!(vml.contains("ObjectType=\"Note\""));
-        assert!(vml.contains("<x:Row>2</x:Row>"), "comment anchor row wrong: {}", vml);
+        assert!(
+            vml.contains("<x:Row>2</x:Row>"),
+            "comment anchor row wrong: {}",
+            vml
+        );
 
         let mut ct = String::new();
-        zip.by_name("[Content_Types].xml").unwrap().read_to_string(&mut ct).unwrap();
+        zip.by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut ct)
+            .unwrap();
         assert!(ct.contains("Extension=\"vml\""));
         assert!(ct.contains("comments+xml"));
 
         let mut wbxml = String::new();
-        zip.by_name("xl/workbook.xml").unwrap().read_to_string(&mut wbxml).unwrap();
-        assert!(wbxml.contains("localSheetId=\"1\""), "sheet scope lost: {}", wbxml);
+        zip.by_name("xl/workbook.xml")
+            .unwrap()
+            .read_to_string(&mut wbxml)
+            .unwrap();
+        assert!(
+            wbxml.contains("localSheetId=\"1\""),
+            "sheet scope lost: {}",
+            wbxml
+        );
         assert!(wbxml.contains("hidden=\"1\""), "hidden flag lost");
     }
 
     // Model round-trip
     let wb2 = Workbook::load(&path).unwrap();
-    let local = wb2.named_ranges.iter().find(|nr| nr.name == "LocalName").expect("scoped name lost");
+    let local = wb2
+        .named_ranges
+        .iter()
+        .find(|nr| nr.name == "LocalName")
+        .expect("scoped name lost");
     assert_eq!(local.local_sheet_id, Some(1));
     assert!(local.hidden);
-    let global = wb2.named_ranges.iter().find(|nr| nr.name == "GlobalName").unwrap();
+    let global = wb2
+        .named_ranges
+        .iter()
+        .find(|nr| nr.name == "GlobalName")
+        .unwrap();
     assert_eq!(global.local_sheet_id, None);
 
     let ws2 = wb2.get_sheet_by_name("S1").unwrap();
@@ -892,7 +1039,12 @@ fn test_roundtrip_names_formulas_headers_comments() {
     let ftr = ps2.header_footer.odd_footer.as_ref().expect("footer lost");
     assert_eq!(ftr.center.as_deref(), Some("Page"));
 
-    assert_eq!(ws2.get_cell(3, 1).and_then(|c| c.comment.clone()).as_deref(), Some("a comment"));
+    assert_eq!(
+        ws2.get_cell(3, 1)
+            .and_then(|c| c.comment.clone())
+            .as_deref(),
+        Some("a comment")
+    );
 
     fs::remove_file(&path).ok();
 }
@@ -907,9 +1059,12 @@ fn test_core_styling_api_reaches_saved_file() {
 
     let mut wb = Workbook::new();
     wb.create_sheet(Some("S".to_string())).unwrap();
-    wb.set_cell_value_in_sheet("S", 1, 1, CellValue::from("styled")).unwrap();
-    wb.set_cell_value_in_sheet("S", 2, 1, CellValue::Number(0.5)).unwrap();
-    wb.set_cell_value_in_sheet("S", 3, 1, CellValue::Number(0.25)).unwrap();
+    wb.set_cell_value_in_sheet("S", 1, 1, CellValue::from("styled"))
+        .unwrap();
+    wb.set_cell_value_in_sheet("S", 2, 1, CellValue::Number(0.5))
+        .unwrap();
+    wb.set_cell_value_in_sheet("S", 3, 1, CellValue::Number(0.25))
+        .unwrap();
 
     {
         let ws = wb.get_sheet_by_name_mut("S").unwrap();
@@ -918,7 +1073,7 @@ fn test_core_styling_api_reaches_saved_file() {
             .with_fill(Fill::solid("FFFF00"));
         ws.set_cell_style(1, 1, style);
         ws.set_cell_number_format(2, 1, "0.000%"); // custom (not a builtin id)
-        // Built-in date/time format must survive the id round-trip
+                                                   // Built-in date/time format must survive the id round-trip
         ws.set_cell_number_format(3, 1, "h:mm");
         ws.set_cell_alignment(3, 1, Alignment::new().with_horizontal("center"));
     }
@@ -930,17 +1085,32 @@ fn test_core_styling_api_reaches_saved_file() {
         let file = fs::File::open(&path).unwrap();
         let mut zip = zip::ZipArchive::new(file).unwrap();
         let mut sheet_xml = String::new();
-        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet_xml)
+            .unwrap();
         assert!(
             sheet_xml.contains(r#"<c r="A1" s="#),
             "styled cell has no s= attribute: {}",
             sheet_xml
         );
         let mut styles_xml = String::new();
-        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles_xml).unwrap();
-        assert!(styles_xml.contains("FFFF00"), "fill color missing from styles.xml");
-        assert!(styles_xml.contains("0.000%"), "custom number format missing from styles.xml");
-        assert!(styles_xml.contains(r#"numFmtId="20""#), "builtin h:mm xf missing");
+        zip.by_name("xl/styles.xml")
+            .unwrap()
+            .read_to_string(&mut styles_xml)
+            .unwrap();
+        assert!(
+            styles_xml.contains("FFFF00"),
+            "fill color missing from styles.xml"
+        );
+        assert!(
+            styles_xml.contains("0.000%"),
+            "custom number format missing from styles.xml"
+        );
+        assert!(
+            styles_xml.contains(r#"numFmtId="20""#),
+            "builtin h:mm xf missing"
+        );
     }
 
     let wb2 = Workbook::load(&path).unwrap();
@@ -951,7 +1121,11 @@ fn test_core_styling_api_reaches_saved_file() {
     let font = style.font.as_ref().expect("font lost");
     assert!(font.bold, "bold lost");
     let fill = style.fill.as_ref().expect("fill lost");
-    assert!(format!("{:?}", fill).contains("FFFF00"), "fill color lost: {:?}", fill);
+    assert!(
+        format!("{:?}", fill).contains("FFFF00"),
+        "fill color lost: {:?}",
+        fill
+    );
 
     let c2 = ws2.get_cell(2, 1).expect("A2 missing");
     let fmt = c2
@@ -965,8 +1139,16 @@ fn test_core_styling_api_reaches_saved_file() {
         .number_format
         .clone()
         .or_else(|| c3.style.as_ref().and_then(|s| s.number_format.clone()));
-    assert_eq!(fmt3.as_deref(), Some("h:mm"), "builtin date format lost (id 20)");
-    let align = c3.style.as_ref().and_then(|s| s.alignment.clone()).expect("alignment lost");
+    assert_eq!(
+        fmt3.as_deref(),
+        Some("h:mm"),
+        "builtin date format lost (id 20)"
+    );
+    let align = c3
+        .style
+        .as_ref()
+        .and_then(|s| s.alignment.clone())
+        .expect("alignment lost");
     assert_eq!(align.horizontal.as_deref(), Some("center"));
 
     fs::remove_file(&path).ok();

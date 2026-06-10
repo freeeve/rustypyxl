@@ -313,12 +313,7 @@ mod tests {
 
     #[test]
     fn test_table_with_headers() {
-        let table = Table::with_headers(
-            1,
-            "Products",
-            "A1:C10",
-            &["Name", "Price", "Quantity"],
-        );
+        let table = Table::with_headers(1, "Products", "A1:C10", &["Name", "Price", "Quantity"]);
 
         assert_eq!(table.columns.len(), 3);
         assert_eq!(table.columns[0].name, "Name");
@@ -338,28 +333,30 @@ mod tests {
         table.set_column_totals("Value", TotalsRowFunction::Sum);
 
         assert!(table.totals_row);
-        assert_eq!(
-            table.columns[1].totals_row_function,
-            TotalsRowFunction::Sum
-        );
+        assert_eq!(table.columns[1].totals_row_function, TotalsRowFunction::Sum);
     }
 
     #[test]
     fn test_structured_reference() {
         let table = Table::new(1, "Sales", "A1:C10");
 
-        assert_eq!(table.structured_ref(Some("Amount"), None), "Sales[[Amount]]");
+        assert_eq!(
+            table.structured_ref(Some("Amount"), None),
+            "Sales[[Amount]]"
+        );
         assert_eq!(
             table.structured_ref(Some("Amount"), Some("#Data")),
             "Sales[[#Data],[Amount]]"
         );
-        assert_eq!(table.structured_ref(None, Some("#Totals")), "Sales[[#Totals]]");
+        assert_eq!(
+            table.structured_ref(None, Some("#Totals")),
+            "Sales[[#Totals]]"
+        );
     }
 
     #[test]
     fn test_table_column_formula() {
-        let col = TableColumn::new(1, "Total")
-            .with_formula("[@Price]*[@Quantity]");
+        let col = TableColumn::new(1, "Total").with_formula("[@Price]*[@Quantity]");
 
         assert_eq!(
             col.calculated_column_formula,

@@ -13,7 +13,10 @@ mod worksheet;
 
 use cell::PyCell;
 use streaming::PyStreamingWorkbook;
-use style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection, PyColor, PyGradientFill, PyGradientStop};
+use style::{
+    PyAlignment, PyBorder, PyColor, PyFont, PyGradientFill, PyGradientStop, PyPatternFill,
+    PyProtection, PySide,
+};
 use workbook::PyWorkbook;
 use worksheet::{PyCellRangeIterator, PyWorksheet};
 

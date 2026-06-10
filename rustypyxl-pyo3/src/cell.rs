@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 use rustypyxl_core::column_to_letter;
 
-use crate::style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PyProtection};
+use crate::style::{PyAlignment, PyBorder, PyFont, PyPatternFill, PyProtection};
 use crate::workbook::PyWorkbook;
 
 /// An Excel Cell (openpyxl-compatible API).

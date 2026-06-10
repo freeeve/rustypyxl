@@ -10,10 +10,10 @@ use rustypyxl_core::Workbook;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
+        eprintln!("Usage: profile_read <file.xlsx> [flamegraph.svg] [profile.pb]");
         eprintln!(
-            "Usage: profile_read <file.xlsx> [flamegraph.svg] [profile.pb]"
+            "Example: cargo run -p rustypyxl-core --features pprof --bin profile_read -- test.xlsx"
         );
-        eprintln!("Example: cargo run -p rustypyxl-core --features pprof --bin profile_read -- test.xlsx");
         std::process::exit(2);
     }
 

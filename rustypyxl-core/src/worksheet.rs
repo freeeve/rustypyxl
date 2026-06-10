@@ -1,16 +1,16 @@
 //! Worksheet representation and cell operations.
 
+use crate::autofilter::AutoFilter;
+use crate::cell::CellValue;
+use crate::conditional::ConditionalFormatting;
+use crate::pagesetup::PageSetup;
+use crate::style::CellStyle;
+use crate::table::Table;
 #[cfg(feature = "fast-hash")]
 use hashbrown::HashMap;
 #[cfg(not(feature = "fast-hash"))]
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::cell::CellValue;
-use crate::style::CellStyle;
-use crate::autofilter::AutoFilter;
-use crate::conditional::ConditionalFormatting;
-use crate::table::Table;
-use crate::pagesetup::PageSetup;
 
 #[cfg(feature = "fast-hash")]
 pub type CellMap = hashbrown::HashMap<u64, CellData, ahash::RandomState>;
@@ -299,10 +299,7 @@ impl Worksheet {
 
     /// Set a cell value at the specified row and column (1-indexed).
     pub fn set_cell_value<V: Into<CellValue>>(&mut self, row: u32, column: u32, value: V) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.value = value.into();
         self.update_dimensions(row, column);
     }
@@ -310,9 +307,7 @@ impl Worksheet {
     /// Get a mutable reference to a cell, creating it if it doesn't exist.
     pub fn get_or_create_cell_mut(&mut self, row: u32, column: u32) -> &mut CellData {
         self.update_dimensions(row, column);
-        self.cells
-            .entry(cell_key(row, column))
-            .or_default()
+        self.cells.entry(cell_key(row, column)).or_default()
     }
 
     /// Set complete cell data at the specified position.
@@ -323,40 +318,28 @@ impl Worksheet {
 
     /// Set a formula in a cell.
     pub fn set_cell_formula<S: Into<String>>(&mut self, row: u32, column: u32, formula: S) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.value = CellValue::Formula(formula.into());
         self.update_dimensions(row, column);
     }
 
     /// Set a cell's hyperlink.
     pub fn set_cell_hyperlink(&mut self, row: u32, column: u32, url: String) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.hyperlink = Some(url);
         self.update_dimensions(row, column);
     }
 
     /// Set a cell's comment.
     pub fn set_cell_comment(&mut self, row: u32, column: u32, comment: String) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.comment = Some(comment);
         self.update_dimensions(row, column);
     }
 
     /// Set a cell's style.
     pub fn set_cell_style(&mut self, row: u32, column: u32, style: CellStyle) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.style = Some(Arc::new(style));
         // Invalidate any loaded xf index so the new style is re-resolved on save
         cell_data.style_index = None;
@@ -365,10 +348,7 @@ impl Worksheet {
 
     /// Set a cell's font, merging with any existing style on the cell.
     pub fn set_cell_font(&mut self, row: u32, column: u32, font: crate::style::Font) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         let mut style = cell_data
             .style
             .as_deref()
@@ -381,11 +361,13 @@ impl Worksheet {
     }
 
     /// Set a cell's alignment, merging with any existing style on the cell.
-    pub fn set_cell_alignment(&mut self, row: u32, column: u32, alignment: crate::style::Alignment) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+    pub fn set_cell_alignment(
+        &mut self,
+        row: u32,
+        column: u32,
+        alignment: crate::style::Alignment,
+    ) {
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         let mut style = cell_data
             .style
             .as_deref()
@@ -399,10 +381,7 @@ impl Worksheet {
 
     /// Set a cell's number format.
     pub fn set_cell_number_format<S: Into<String>>(&mut self, row: u32, column: u32, format: S) {
-        let cell_data = self
-            .cells
-            .entry(cell_key(row, column))
-            .or_default();
+        let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.number_format = Some(format.into());
         // Invalidate any loaded xf index so the format is re-resolved on save
         cell_data.style_index = None;
@@ -428,7 +407,8 @@ impl Worksheet {
         if let Some(colon_pos) = range.find(':') {
             let start = range[..colon_pos].to_string();
             let end = range[colon_pos + 1..].to_string();
-            self.merged_cells.retain(|(s, e)| !(s == &start && e == &end));
+            self.merged_cells
+                .retain(|(s, e)| !(s == &start && e == &end));
         }
     }
 
@@ -527,7 +507,11 @@ impl Worksheet {
             .iter()
             .filter_map(|(k, v)| {
                 let (r, c) = decode_cell_key(*k);
-                if r == row { Some((c, v)) } else { None }
+                if r == row {
+                    Some((c, v))
+                } else {
+                    None
+                }
             })
             .collect();
         cells.sort_by_key(|(c, _)| *c);

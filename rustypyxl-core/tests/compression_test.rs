@@ -14,8 +14,13 @@ fn test_default_compression_is_deflate() {
 
     let mut wb = Workbook::new();
     let _ws = wb.create_sheet(Some("Test".to_string())).unwrap();
-    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::String(std::sync::Arc::from("Hello")))
-        .unwrap();
+    wb.set_cell_value_in_sheet(
+        "Test",
+        1,
+        1,
+        CellValue::String(std::sync::Arc::from("Hello")),
+    )
+    .unwrap();
 
     wb.save(path_str).unwrap();
 
@@ -44,8 +49,13 @@ fn test_no_compression_opt_in() {
 
     let mut wb = Workbook::new();
     let _ws = wb.create_sheet(Some("Test".to_string())).unwrap();
-    wb.set_cell_value_in_sheet("Test", 1, 1, CellValue::String(std::sync::Arc::from("Hello")))
-        .unwrap();
+    wb.set_cell_value_in_sheet(
+        "Test",
+        1,
+        1,
+        CellValue::String(std::sync::Arc::from("Hello")),
+    )
+    .unwrap();
     wb.set_compression(CompressionLevel::None);
 
     wb.save(path_str).unwrap();

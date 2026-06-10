@@ -18,8 +18,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ProjectionMask;
 use parquet::arrow::ArrowWriter;
+use parquet::arrow::ProjectionMask;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
@@ -182,7 +182,8 @@ impl Workbook {
 
         // Get schema and determine columns to read
         let schema = builder.schema().clone();
-        let all_column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let all_column_names: Vec<String> =
+            schema.fields().iter().map(|f| f.name().clone()).collect();
 
         // Determine which columns to import (in requested order); an unknown
         // name is an error rather than a silently dropped column
@@ -192,13 +193,16 @@ impl Workbook {
             opts.columns
                 .iter()
                 .map(|name| {
-                    all_column_names.iter().position(|n| n == name).ok_or_else(|| {
-                        RustypyxlError::ParseError(format!(
-                            "Column '{}' not found in parquet file (available: {})",
-                            name,
-                            all_column_names.join(", ")
-                        ))
-                    })
+                    all_column_names
+                        .iter()
+                        .position(|n| n == name)
+                        .ok_or_else(|| {
+                            RustypyxlError::ParseError(format!(
+                                "Column '{}' not found in parquet file (available: {})",
+                                name,
+                                all_column_names.join(", ")
+                            ))
+                        })
                 })
                 .collect::<Result<_>>()?
         };
@@ -226,7 +230,9 @@ impl Workbook {
             .with_batch_size(opts.batch_size)
             .with_projection(projection)
             .build()
-            .map_err(|e| RustypyxlError::ParseError(format!("Failed to build parquet reader: {}", e)))?;
+            .map_err(|e| {
+                RustypyxlError::ParseError(format!("Failed to build parquet reader: {}", e))
+            })?;
 
         // Get the worksheet
         let worksheet = self.get_sheet_by_name_mut(sheet_name)?;
@@ -249,7 +255,11 @@ impl Workbook {
         if opts.include_headers {
             for (col_offset, name) in final_column_names.iter().enumerate() {
                 let col = start_col + col_offset as u32;
-                worksheet.set_cell_value(current_row, col, CellValue::String(Arc::from(name.as_str())));
+                worksheet.set_cell_value(
+                    current_row,
+                    col,
+                    CellValue::String(Arc::from(name.as_str())),
+                );
             }
             current_row += 1;
         }
@@ -270,13 +280,7 @@ impl Workbook {
                 let col = start_col + col_offset as u32;
                 let array = batch.column(batch_idx);
 
-                write_arrow_array_to_worksheet(
-                    worksheet,
-                    array,
-                    current_row,
-                    col,
-                    num_rows,
-                );
+                write_arrow_array_to_worksheet(worksheet, array, current_row, col, num_rows);
             }
 
             current_row += num_rows as u32;
@@ -420,58 +424,68 @@ fn write_arrow_array_to_worksheet(
         }
         // Timestamps are converted in UTC: Arrow stores tz-aware timestamps
         // as UTC instants and Excel serials have no timezone concept.
-        DataType::Timestamp(unit, _tz) => {
-            match unit {
-                TimeUnit::Second => {
-                    let arr = array.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
-                    for i in 0..num_rows {
-                        let row = start_row + i as u32;
-                        if arr.is_valid(i) {
-                            let secs = arr.value(i) as f64;
-                            let days = secs / (24.0 * 60.0 * 60.0);
-                            let excel_serial = days + 25569.0;
-                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
-                        }
-                    }
-                }
-                TimeUnit::Millisecond => {
-                    let arr = array.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap();
-                    for i in 0..num_rows {
-                        let row = start_row + i as u32;
-                        if arr.is_valid(i) {
-                            let ms = arr.value(i) as f64;
-                            let days = ms / (24.0 * 60.0 * 60.0 * 1000.0);
-                            let excel_serial = days + 25569.0;
-                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
-                        }
-                    }
-                }
-                TimeUnit::Microsecond => {
-                    let arr = array.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
-                    for i in 0..num_rows {
-                        let row = start_row + i as u32;
-                        if arr.is_valid(i) {
-                            let us = arr.value(i) as f64;
-                            let days = us / (24.0 * 60.0 * 60.0 * 1_000_000.0);
-                            let excel_serial = days + 25569.0;
-                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
-                        }
-                    }
-                }
-                TimeUnit::Nanosecond => {
-                    let arr = array.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-                    for i in 0..num_rows {
-                        let row = start_row + i as u32;
-                        if arr.is_valid(i) {
-                            let ns = arr.value(i) as f64;
-                            let days = ns / (24.0 * 60.0 * 60.0 * 1_000_000_000.0);
-                            let excel_serial = days + 25569.0;
-                            set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
-                        }
+        DataType::Timestamp(unit, _tz) => match unit {
+            TimeUnit::Second => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<TimestampSecondArray>()
+                    .unwrap();
+                for i in 0..num_rows {
+                    let row = start_row + i as u32;
+                    if arr.is_valid(i) {
+                        let secs = arr.value(i) as f64;
+                        let days = secs / (24.0 * 60.0 * 60.0);
+                        let excel_serial = days + 25569.0;
+                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
                     }
                 }
             }
-        }
+            TimeUnit::Millisecond => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap();
+                for i in 0..num_rows {
+                    let row = start_row + i as u32;
+                    if arr.is_valid(i) {
+                        let ms = arr.value(i) as f64;
+                        let days = ms / (24.0 * 60.0 * 60.0 * 1000.0);
+                        let excel_serial = days + 25569.0;
+                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                    }
+                }
+            }
+            TimeUnit::Microsecond => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .unwrap();
+                for i in 0..num_rows {
+                    let row = start_row + i as u32;
+                    if arr.is_valid(i) {
+                        let us = arr.value(i) as f64;
+                        let days = us / (24.0 * 60.0 * 60.0 * 1_000_000.0);
+                        let excel_serial = days + 25569.0;
+                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                    }
+                }
+            }
+            TimeUnit::Nanosecond => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<TimestampNanosecondArray>()
+                    .unwrap();
+                for i in 0..num_rows {
+                    let row = start_row + i as u32;
+                    if arr.is_valid(i) {
+                        let ns = arr.value(i) as f64;
+                        let days = ns / (24.0 * 60.0 * 60.0 * 1_000_000_000.0);
+                        let excel_serial = days + 25569.0;
+                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                    }
+                }
+            }
+        },
         DataType::Decimal128(_, scale) => {
             let arr = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
             let scale_factor = 10f64.powi(*scale as i32);
@@ -534,25 +548,41 @@ fn write_int_array(
     if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<Int16Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     }
@@ -568,25 +598,41 @@ fn write_uint_array(
     if let Some(arr) = array.as_any().downcast_ref::<UInt8Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<UInt16Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<UInt32Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     } else if let Some(arr) = array.as_any().downcast_ref::<UInt64Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(start_row + i as u32, col, CellValue::Number(arr.value(i) as f64));
+                worksheet.set_cell_value(
+                    start_row + i as u32,
+                    col,
+                    CellValue::Number(arr.value(i) as f64),
+                );
             }
         }
     }
@@ -610,8 +656,7 @@ pub struct ParquetExportResult {
 }
 
 /// Column type hint for parquet export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColumnType {
     /// Infer type from data (default).
     #[default]
@@ -629,7 +674,6 @@ pub enum ColumnType {
     /// Force datetime type (Excel serial → Timestamp).
     DateTime,
 }
-
 
 /// Options for parquet export.
 #[derive(Debug, Clone)]
@@ -825,7 +869,11 @@ impl Workbook {
         let worksheet = self.get_sheet_by_name(sheet_name)?;
 
         let num_cols = (max_col - min_col + 1) as usize;
-        let data_start_row = if options.has_headers { min_row + 1 } else { min_row };
+        let data_start_row = if options.has_headers {
+            min_row + 1
+        } else {
+            min_row
+        };
         let num_data_rows = if max_row >= data_start_row {
             (max_row - data_start_row + 1) as usize
         } else {
@@ -895,16 +943,15 @@ impl Workbook {
             .set_max_row_group_size(options.row_group_size)
             .build();
 
-        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
-            .map_err(|e| RustypyxlError::custom(format!("Failed to create parquet writer: {}", e)))?;
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).map_err(|e| {
+            RustypyxlError::custom(format!("Failed to create parquet writer: {}", e))
+        })?;
 
         // Pass 2: build and write one RecordBatch per row-group-sized chunk
         let chunk_rows = options.row_group_size.max(1) as u32;
         let mut chunk_start = data_start_row;
         while chunk_start <= max_row && num_data_rows > 0 {
-            let chunk_end = chunk_start
-                .saturating_add(chunk_rows - 1)
-                .min(max_row);
+            let chunk_end = chunk_start.saturating_add(chunk_rows - 1).min(max_row);
 
             let mut arrays: Vec<ArrayRef> = Vec::with_capacity(num_cols);
             for (col_idx, col_name) in column_names.iter().enumerate() {
@@ -916,21 +963,22 @@ impl Workbook {
                 arrays.push(array);
             }
 
-            let batch = RecordBatch::try_new(schema.clone(), arrays)
-                .map_err(|e| RustypyxlError::custom(format!("Failed to create record batch: {}", e)))?;
-            writer.write(&batch)
+            let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(|e| {
+                RustypyxlError::custom(format!("Failed to create record batch: {}", e))
+            })?;
+            writer
+                .write(&batch)
                 .map_err(|e| RustypyxlError::custom(format!("Failed to write batch: {}", e)))?;
 
             chunk_start = chunk_end + 1;
         }
 
-        writer.close()
+        writer
+            .close()
             .map_err(|e| RustypyxlError::custom(format!("Failed to close writer: {}", e)))?;
 
         // Get file size
-        let file_size = std::fs::metadata(path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
         Ok(ParquetExportResult {
             rows_exported: num_data_rows as u32,
@@ -996,10 +1044,7 @@ fn build_arrow_column(
 
     match col_type {
         ColumnType::String | ColumnType::Auto => {
-            let arr: StringArray = values
-                .iter()
-                .map(|v| v.map(|cv| cv.to_string()))
-                .collect();
+            let arr: StringArray = values.iter().map(|v| v.map(|cv| cv.to_string())).collect();
             (
                 Field::new(name, DataType::Utf8, true),
                 Arc::new(arr) as ArrayRef,
@@ -1136,7 +1181,10 @@ mod tests {
             .select_columns(vec!["col1".to_string(), "col2".to_string()])
             .with_batch_size(1000);
 
-        assert_eq!(opts.column_renames.get("old_name"), Some(&"new_name".to_string()));
+        assert_eq!(
+            opts.column_renames.get("old_name"),
+            Some(&"new_name".to_string())
+        );
         assert!(opts.include_headers);
         assert_eq!(opts.columns, vec!["col1", "col2"]);
         assert_eq!(opts.batch_size, 1000);
@@ -1168,7 +1216,10 @@ mod tests {
             .with_column_type("numbers", ColumnType::Float64)
             .with_row_group_size(10000);
 
-        assert_eq!(opts.column_renames.get("old_name"), Some(&"new_name".to_string()));
+        assert_eq!(
+            opts.column_renames.get("old_name"),
+            Some(&"new_name".to_string())
+        );
         assert!(opts.has_headers);
         assert_eq!(opts.compression, ParquetCompression::Zstd);
         assert_eq!(opts.column_types.get("numbers"), Some(&ColumnType::Float64));
@@ -1261,18 +1312,27 @@ mod tests {
         wb.create_sheet(Some("TestSheet".to_string())).unwrap();
 
         // Set header row
-        wb.set_cell_value_in_sheet("TestSheet", 1, 1, CellValue::String(Arc::from("Name"))).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 1, 2, CellValue::String(Arc::from("Age"))).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 1, 3, CellValue::String(Arc::from("Score"))).unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 1, 1, CellValue::String(Arc::from("Name")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 1, 2, CellValue::String(Arc::from("Age")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 1, 3, CellValue::String(Arc::from("Score")))
+            .unwrap();
 
         // Set data rows
-        wb.set_cell_value_in_sheet("TestSheet", 2, 1, CellValue::String(Arc::from("Alice"))).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 2, 2, CellValue::Number(30.0)).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 2, 3, CellValue::Number(95.5)).unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 2, 1, CellValue::String(Arc::from("Alice")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 2, 2, CellValue::Number(30.0))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 2, 3, CellValue::Number(95.5))
+            .unwrap();
 
-        wb.set_cell_value_in_sheet("TestSheet", 3, 1, CellValue::String(Arc::from("Bob"))).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 3, 2, CellValue::Number(25.0)).unwrap();
-        wb.set_cell_value_in_sheet("TestSheet", 3, 3, CellValue::Number(87.3)).unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 3, 1, CellValue::String(Arc::from("Bob")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 3, 2, CellValue::Number(25.0))
+            .unwrap();
+        wb.set_cell_value_in_sheet("TestSheet", 3, 3, CellValue::Number(87.3))
+            .unwrap();
 
         // Export to parquet
         let temp = NamedTempFile::new().unwrap();
@@ -1289,16 +1349,27 @@ mod tests {
         let mut wb2 = Workbook::new();
         wb2.create_sheet(Some("Imported".to_string())).unwrap();
 
-        let import_result = wb2.insert_from_parquet("Imported", path, 1, 1, None).unwrap();
+        let import_result = wb2
+            .insert_from_parquet("Imported", path, 1, 1, None)
+            .unwrap();
 
         assert_eq!(import_result.rows_imported, 2);
         assert_eq!(import_result.columns_imported, 3);
 
         // Verify data
         let ws = wb2.get_sheet_by_name("Imported").unwrap();
-        assert_eq!(ws.get_cell_value(1, 1), Some(&CellValue::String(Arc::from("Name"))));
-        assert_eq!(ws.get_cell_value(2, 1), Some(&CellValue::String(Arc::from("Alice"))));
-        assert_eq!(ws.get_cell_value(3, 1), Some(&CellValue::String(Arc::from("Bob"))));
+        assert_eq!(
+            ws.get_cell_value(1, 1),
+            Some(&CellValue::String(Arc::from("Name")))
+        );
+        assert_eq!(
+            ws.get_cell_value(2, 1),
+            Some(&CellValue::String(Arc::from("Alice")))
+        );
+        assert_eq!(
+            ws.get_cell_value(3, 1),
+            Some(&CellValue::String(Arc::from("Bob")))
+        );
     }
 
     #[test]
@@ -1344,13 +1415,8 @@ mod tests {
             Some(400.25),
             Some(500.75),
         ]);
-        let active_array = BooleanArray::from(vec![
-            Some(true),
-            Some(false),
-            Some(true),
-            None,
-            Some(false),
-        ]);
+        let active_array =
+            BooleanArray::from(vec![Some(true), Some(false), Some(true), None, Some(false)]);
 
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -1360,7 +1426,8 @@ mod tests {
                 Arc::new(value_array),
                 Arc::new(active_array),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = File::create(path1).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -1384,7 +1451,9 @@ mod tests {
         let mut wb2 = Workbook::new();
         wb2.create_sheet(Some("Imported".to_string())).unwrap();
 
-        let import_result2 = wb2.insert_from_parquet("Imported", path2, 1, 1, None).unwrap();
+        let import_result2 = wb2
+            .insert_from_parquet("Imported", path2, 1, 1, None)
+            .unwrap();
         assert_eq!(import_result2.rows_imported, 5);
         assert_eq!(import_result2.columns_imported, 4);
 
@@ -1393,10 +1462,22 @@ mod tests {
         let ws2 = wb2.get_sheet_by_name("Imported").unwrap();
 
         // Check headers
-        assert_eq!(ws1.get_cell_value(1, 1).map(|v| v.to_string()), ws2.get_cell_value(1, 1).map(|v| v.to_string()));
-        assert_eq!(ws1.get_cell_value(1, 2).map(|v| v.to_string()), ws2.get_cell_value(1, 2).map(|v| v.to_string()));
-        assert_eq!(ws1.get_cell_value(1, 3).map(|v| v.to_string()), ws2.get_cell_value(1, 3).map(|v| v.to_string()));
-        assert_eq!(ws1.get_cell_value(1, 4).map(|v| v.to_string()), ws2.get_cell_value(1, 4).map(|v| v.to_string()));
+        assert_eq!(
+            ws1.get_cell_value(1, 1).map(|v| v.to_string()),
+            ws2.get_cell_value(1, 1).map(|v| v.to_string())
+        );
+        assert_eq!(
+            ws1.get_cell_value(1, 2).map(|v| v.to_string()),
+            ws2.get_cell_value(1, 2).map(|v| v.to_string())
+        );
+        assert_eq!(
+            ws1.get_cell_value(1, 3).map(|v| v.to_string()),
+            ws2.get_cell_value(1, 3).map(|v| v.to_string())
+        );
+        assert_eq!(
+            ws1.get_cell_value(1, 4).map(|v| v.to_string()),
+            ws2.get_cell_value(1, 4).map(|v| v.to_string())
+        );
 
         // Check data rows
         for row in 2..=6 {
@@ -1415,17 +1496,17 @@ mod tests {
 
         let mut wb = Workbook::new();
         wb.create_sheet(Some("Data".to_string())).unwrap();
-        wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::String(Arc::from("Col1"))).unwrap();
-        wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::Number(42.0)).unwrap();
+        wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::String(Arc::from("Col1")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::Number(42.0))
+            .unwrap();
 
         // Test different compression options
-        let opts_zstd = ParquetExportOptions::new()
-            .with_compression(ParquetCompression::Zstd);
+        let opts_zstd = ParquetExportOptions::new().with_compression(ParquetCompression::Zstd);
         let result = wb.export_to_parquet("Data", path, Some(opts_zstd)).unwrap();
         assert!(result.file_size > 0);
 
-        let opts_none = ParquetExportOptions::new()
-            .with_compression(ParquetCompression::None);
+        let opts_none = ParquetExportOptions::new().with_compression(ParquetCompression::None);
         let result = wb.export_to_parquet("Data", path, Some(opts_none)).unwrap();
         assert!(result.file_size > 0);
     }
@@ -1439,13 +1520,15 @@ mod tests {
         wb.create_sheet(Some("Data".to_string())).unwrap();
 
         // Create data with mixed types that could be interpreted differently
-        wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::String(Arc::from("Value"))).unwrap();
-        wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::Number(1.0)).unwrap();
-        wb.set_cell_value_in_sheet("Data", 3, 1, CellValue::Number(2.0)).unwrap();
+        wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::String(Arc::from("Value")))
+            .unwrap();
+        wb.set_cell_value_in_sheet("Data", 2, 1, CellValue::Number(1.0))
+            .unwrap();
+        wb.set_cell_value_in_sheet("Data", 3, 1, CellValue::Number(2.0))
+            .unwrap();
 
         // Force it to be exported as float64 even though values are integers
-        let opts = ParquetExportOptions::new()
-            .with_column_type("Value", ColumnType::Float64);
+        let opts = ParquetExportOptions::new().with_column_type("Value", ColumnType::Float64);
 
         let result = wb.export_to_parquet("Data", path, Some(opts)).unwrap();
         assert_eq!(result.rows_exported, 2);

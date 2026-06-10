@@ -1,7 +1,7 @@
 //! Python bindings for Worksheet.
 
-use pyo3::prelude::*;
 use pyo3::exceptions::{PyNotImplementedError, PyValueError};
+use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::Py;
 use rustypyxl_core::{column_to_letter, parse_coordinate, Worksheet};
@@ -82,7 +82,9 @@ impl PyWorksheet {
             f(&mut this.inner.worksheets[idx]);
             Ok(())
         } else {
-            Err(PyValueError::new_err("Worksheet is not attached to a workbook"))
+            Err(PyValueError::new_err(
+                "Worksheet is not attached to a workbook",
+            ))
         }
     }
 
@@ -100,7 +102,13 @@ impl PyWorksheet {
         } else if let (Some(sr), Some(sc), Some(er), Some(ec)) =
             (start_row, start_column, end_row, end_column)
         {
-            Ok(format!("{}{}:{}{}", column_to_letter(sc), sr, column_to_letter(ec), er))
+            Ok(format!(
+                "{}{}:{}{}",
+                column_to_letter(sc),
+                sr,
+                column_to_letter(ec),
+                er
+            ))
         } else {
             Err(PyValueError::new_err(
                 "Must specify either range_string or all of start_row, start_column, end_row, end_column",
@@ -149,7 +157,13 @@ impl PyWorksheet {
             Python::with_gil(|py| -> PyResult<()> {
                 let mut this = wb.borrow_mut(py);
                 let idx = self.resolve_index(&this)?;
-                if this.inner.sheet_names.iter().enumerate().any(|(i, n)| i != idx && n == &value) {
+                if this
+                    .inner
+                    .sheet_names
+                    .iter()
+                    .enumerate()
+                    .any(|(i, n)| i != idx && n == &value)
+                {
                     return Err(PyValueError::new_err(format!(
                         "Worksheet '{}' already exists",
                         value
@@ -188,8 +202,7 @@ impl PyWorksheet {
             return Ok(rows.into_any().unbind());
         }
 
-        let (row, col) = parse_coordinate(key)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let (row, col) = parse_coordinate(key).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Py::new(py, self.make_cell(row, col, py))?.into_any())
     }
 
@@ -200,15 +213,16 @@ impl PyWorksheet {
                 "Range assignment is not supported; assign cells individually",
             ));
         }
-        let (row, col) = parse_coordinate(key)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let (row, col) = parse_coordinate(key).map_err(|e| PyValueError::new_err(e.to_string()))?;
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
             let idx = self.resolve_index(&this)?;
             let name = this.inner.sheet_names[idx].clone();
             this.set_cell_value(&name, row, col, &value)
         } else {
-            Err(PyValueError::new_err("Worksheet is not attached to a workbook"))
+            Err(PyValueError::new_err(
+                "Worksheet is not attached to a workbook",
+            ))
         }
     }
 
@@ -322,7 +336,8 @@ impl PyWorksheet {
         end_column: Option<u32>,
         py: Python<'_>,
     ) -> PyResult<()> {
-        let range = self.resolve_range(range_string, start_row, start_column, end_row, end_column)?;
+        let range =
+            self.resolve_range(range_string, start_row, start_column, end_row, end_column)?;
         self.with_sheet_mut(py, move |ws| ws.merge_cells(&range))
     }
 
@@ -337,7 +352,8 @@ impl PyWorksheet {
         end_column: Option<u32>,
         py: Python<'_>,
     ) -> PyResult<()> {
-        let range = self.resolve_range(range_string, start_row, start_column, end_row, end_column)?;
+        let range =
+            self.resolve_range(range_string, start_row, start_column, end_row, end_column)?;
         self.with_sheet_mut(py, move |ws| ws.unmerge_cells(&range))
     }
 
@@ -368,10 +384,9 @@ impl PyWorksheet {
                 let column = if let Ok(idx) = key.extract::<u32>() {
                     idx
                 } else if let Ok(letter) = key.extract::<String>() {
-                    let (_, col) = parse_coordinate(&format!("{}1", letter))
-                        .map_err(|_| {
-                            PyValueError::new_err(format!("Invalid column key '{}'", letter))
-                        })?;
+                    let (_, col) = parse_coordinate(&format!("{}1", letter)).map_err(|_| {
+                        PyValueError::new_err(format!("Invalid column key '{}'", letter))
+                    })?;
                     col
                 } else {
                     return Err(PyValueError::new_err(
@@ -393,13 +408,19 @@ impl PyWorksheet {
             let mut this = wb.borrow_mut(py);
             let idx = self.resolve_index(&this)?;
             let ws = &mut this.inner.worksheets[idx];
-            let target_row = if ws.cells.is_empty() { 1 } else { ws.dimensions().2 + 1 };
+            let target_row = if ws.cells.is_empty() {
+                1
+            } else {
+                ws.dimensions().2 + 1
+            };
             for (column, cv) in cells {
                 ws.set_cell_value(target_row, column, cv);
             }
             Ok(())
         } else {
-            Err(PyValueError::new_err("Worksheet is not attached to a workbook"))
+            Err(PyValueError::new_err(
+                "Worksheet is not attached to a workbook",
+            ))
         }
     }
 
@@ -407,28 +428,36 @@ impl PyWorksheet {
     #[pyo3(signature = (idx, amount=None))]
     fn insert_rows(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
         let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err("insert_rows is not yet implemented"))
+        Err(PyNotImplementedError::new_err(
+            "insert_rows is not yet implemented",
+        ))
     }
 
     /// Insert columns. Not yet implemented.
     #[pyo3(signature = (idx, amount=None))]
     fn insert_cols(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
         let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err("insert_cols is not yet implemented"))
+        Err(PyNotImplementedError::new_err(
+            "insert_cols is not yet implemented",
+        ))
     }
 
     /// Delete rows. Not yet implemented.
     #[pyo3(signature = (idx, amount=None))]
     fn delete_rows(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
         let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err("delete_rows is not yet implemented"))
+        Err(PyNotImplementedError::new_err(
+            "delete_rows is not yet implemented",
+        ))
     }
 
     /// Delete columns. Not yet implemented.
     #[pyo3(signature = (idx, amount=None))]
     fn delete_cols(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
         let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err("delete_cols is not yet implemented"))
+        Err(PyNotImplementedError::new_err(
+            "delete_cols is not yet implemented",
+        ))
     }
 
     /// Get the freeze-panes anchor cell, if any.
@@ -469,7 +498,6 @@ impl PyWorksheet {
     }
 }
 
-
 /// Lazy iterator over a worksheet range, yielding one tuple per row (or per
 /// column for iter_cols) like openpyxl's generators. Resolves the sheet by
 /// stable uid on every step, so concurrent sheet removal raises instead of
@@ -492,9 +520,12 @@ impl PyCellRangeIterator {
     fn read_value(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            let idx = this.inner.sheet_index_by_uid(self.sheet_uid).ok_or_else(|| {
-                PyValueError::new_err("Worksheet no longer exists in this workbook")
-            })?;
+            let idx = this
+                .inner
+                .sheet_index_by_uid(self.sheet_uid)
+                .ok_or_else(|| {
+                    PyValueError::new_err("Worksheet no longer exists in this workbook")
+                })?;
             if let Some(cell) = this.inner.worksheets[idx].get_cell(row, col) {
                 return Ok(cell_value_to_python(&cell.value, py));
             }
@@ -506,7 +537,11 @@ impl PyCellRangeIterator {
         if self.values_only {
             self.read_value(row, col, py)
         } else if let Some(ref wb) = self.workbook {
-            Ok(Py::new(py, PyCell::connected(row, col, wb.clone_ref(py), self.sheet_uid))?.into_any())
+            Ok(Py::new(
+                py,
+                PyCell::connected(row, col, wb.clone_ref(py), self.sheet_uid),
+            )?
+            .into_any())
         } else {
             Ok(Py::new(py, PyCell::new(row, col))?.into_any())
         }
@@ -522,7 +557,11 @@ impl PyCellRangeIterator {
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         use pyo3::types::PyTuple;
 
-        let limit = if self.by_columns { self.max_col } else { self.max_row };
+        let limit = if self.by_columns {
+            self.max_col
+        } else {
+            self.max_row
+        };
         if self.position > limit {
             return Ok(None);
         }

@@ -53,8 +53,13 @@ pub mod s3;
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
-pub use style::{Alignment, Border, BorderStyle, CellStyle, Fill, Font, GradientFill, GradientStop, Protection};
-pub use utils::{column_to_letter, coordinate_from_row_col, letter_to_column, parse_coordinate, parse_coordinate_bytes, parse_f64_bytes, parse_u32_bytes, parse_range};
+pub use style::{
+    Alignment, Border, BorderStyle, CellStyle, Fill, Font, GradientFill, GradientStop, Protection,
+};
+pub use utils::{
+    column_to_letter, coordinate_from_row_col, letter_to_column, parse_coordinate,
+    parse_coordinate_bytes, parse_f64_bytes, parse_range, parse_u32_bytes,
+};
 pub use workbook::{CompressionLevel, NamedRange, Workbook};
 pub use worksheet::{CellData, DataValidation, SheetVisibility, Worksheet, WorksheetProtection};
 

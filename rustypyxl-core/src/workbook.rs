@@ -2,28 +2,32 @@
 
 #[cfg(feature = "fast-hash")]
 use hashbrown::HashMap;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
+use rayon::prelude::*;
 #[cfg(not(feature = "fast-hash"))]
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::sync::Arc;
 use zip::ZipArchive;
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
-use rayon::prelude::*;
 
 use crate::autofilter::AutoFilter;
-use crate::conditional::{
-    ColorScale, ConditionalColor, ConditionalFormat, ConditionalFormatType,
-    ConditionalFormatting, ConditionalOperator, ConditionalRule, DataBar, IconSet, IconSetStyle,
-};
 use crate::cell::CellValue;
-use crate::pagesetup::{Orientation, PageSetup, PaperSize};
-use crate::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
+use crate::conditional::{
+    ColorScale, ConditionalColor, ConditionalFormat, ConditionalFormatType, ConditionalFormatting,
+    ConditionalOperator, ConditionalRule, DataBar, IconSet, IconSetStyle,
+};
 use crate::error::{Result, RustypyxlError};
-use crate::style::{Alignment, Border, BorderStyle, CellStyle, CellXf, Fill, Font, Protection, StyleRegistry};
-use crate::utils::{parse_coordinate, parse_coordinate_bytes, parse_u32_bytes, parse_f64_bytes};
-use crate::worksheet::{cell_key, CellData, DataValidation, SheetVisibility, Worksheet, WorksheetProtection};
+use crate::pagesetup::{Orientation, PageSetup, PaperSize};
+use crate::style::{
+    Alignment, Border, BorderStyle, CellStyle, CellXf, Fill, Font, Protection, StyleRegistry,
+};
+use crate::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
+use crate::utils::{parse_coordinate, parse_coordinate_bytes, parse_f64_bytes, parse_u32_bytes};
+use crate::worksheet::{
+    cell_key, CellData, DataValidation, SheetVisibility, Worksheet, WorksheetProtection,
+};
 use crate::writer;
 
 /// A named range definition.
@@ -40,8 +44,7 @@ pub struct NamedRange {
 }
 
 /// Compression level for saving workbooks.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum CompressionLevel {
     /// No compression - fastest saves, largest files
     None,
@@ -53,7 +56,6 @@ pub enum CompressionLevel {
     /// Best compression (deflate level 9) - smallest files, slowest
     Best,
 }
-
 
 /// An Excel workbook containing worksheets.
 pub struct Workbook {
@@ -175,7 +177,9 @@ impl Workbook {
 
     /// Get a mutable reference to the active worksheet.
     pub fn active_mut(&mut self) -> Result<&mut Worksheet> {
-        self.worksheets.first_mut().ok_or(RustypyxlError::NoWorksheets)
+        self.worksheets
+            .first_mut()
+            .ok_or(RustypyxlError::NoWorksheets)
     }
 
     /// Get all worksheets.
@@ -210,16 +214,16 @@ impl Workbook {
 
     /// Get a worksheet by index.
     pub fn get_sheet_by_index(&self, index: usize) -> Result<&Worksheet> {
-        self.worksheets.get(index).ok_or_else(|| {
-            RustypyxlError::WorksheetNotFound(format!("index {}", index))
-        })
+        self.worksheets
+            .get(index)
+            .ok_or_else(|| RustypyxlError::WorksheetNotFound(format!("index {}", index)))
     }
 
     /// Get a mutable worksheet by index.
     pub fn get_sheet_by_index_mut(&mut self, index: usize) -> Result<&mut Worksheet> {
-        self.worksheets.get_mut(index).ok_or_else(|| {
-            RustypyxlError::WorksheetNotFound(format!("index {}", index))
-        })
+        self.worksheets
+            .get_mut(index)
+            .ok_or_else(|| RustypyxlError::WorksheetNotFound(format!("index {}", index)))
     }
 
     /// Create a new worksheet.
@@ -302,7 +306,12 @@ impl Workbook {
     }
 
     /// Set cell alignment in the active worksheet.
-    pub fn set_cell_alignment(&mut self, row: u32, column: u32, alignment: Alignment) -> Result<()> {
+    pub fn set_cell_alignment(
+        &mut self,
+        row: u32,
+        column: u32,
+        alignment: Alignment,
+    ) -> Result<()> {
         let ws = self.active_mut()?;
         ws.set_cell_alignment(row, column, alignment);
         Ok(())
@@ -434,7 +443,9 @@ impl Workbook {
     }
 
     /// Get the file options based on compression settings.
-    fn get_file_options(&self) -> zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> {
+    fn get_file_options(
+        &self,
+    ) -> zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> {
         use zip::write::FileOptions;
         use zip::CompressionMethod;
 
@@ -458,14 +469,18 @@ impl Workbook {
     }
 
     /// Write all workbook contents to a ZipWriter.
-    fn write_workbook_contents<W: std::io::Write + Seek>(&self, zip: &mut zip::ZipWriter<W>) -> Result<()> {
+    fn write_workbook_contents<W: std::io::Write + Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+    ) -> Result<()> {
         use std::io::Write;
         use zip::write::FileOptions;
 
         let options = self.get_file_options();
 
         // Collect shared strings first to know if we have any
-        let (shared_strings_vec, shared_strings_map) = writer::collect_shared_strings(&self.worksheets);
+        let (shared_strings_vec, shared_strings_map) =
+            writer::collect_shared_strings(&self.worksheets);
         let has_shared_strings = !shared_strings_vec.is_empty();
 
         // Pre-compute per-sheet metadata so [Content_Types].xml, the sheet
@@ -518,7 +533,13 @@ impl Workbook {
             .zip(&self.worksheets)
             .map(|(name, ws)| (name.clone(), ws.visibility))
             .collect();
-        writer::write_workbook_xml(zip, &options, &sheet_meta, &self.named_ranges, self.active_sheet)?;
+        writer::write_workbook_xml(
+            zip,
+            &options,
+            &sheet_meta,
+            &self.named_ranges,
+            self.active_sheet,
+        )?;
 
         // Write xl/_rels/workbook.xml.rels
         writer::write_workbook_rels(zip, &options, self.worksheets.len(), has_shared_strings)?;
@@ -568,8 +589,10 @@ impl Workbook {
             let sheet_id = (idx + 1) as u32;
             let has_comments = comment_sheet_ids.contains(&sheet_id);
             let table_ids = &table_assignments[idx];
-            let table_rel_ids: Vec<String> =
-                table_ids.iter().map(|id| format!("rIdTable{}", id)).collect();
+            let table_rel_ids: Vec<String> = table_ids
+                .iter()
+                .map(|id| format!("rIdTable{}", id))
+                .collect();
 
             writer::write_worksheet_xml(
                 zip,
@@ -597,8 +620,10 @@ impl Workbook {
             let external_links = writer::collect_external_hyperlinks(worksheet);
             if has_comments || !external_links.is_empty() || !table_ids.is_empty() {
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
-                let rels_options: zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> =
-                    FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+                let rels_options: zip::write::FileOptions<
+                    'static,
+                    zip::write::ExtendedFileOptions,
+                > = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
                 zip.start_file(&rels_path, rels_options)?;
 
                 let mut rels_content = String::from(
@@ -639,7 +664,8 @@ impl Workbook {
     fn parse_workbook<R: Read + Seek>(&mut self, archive: &mut ZipArchive<R>) -> Result<()> {
         // Phase 1: Load all file contents into memory (sequential ZIP extraction)
         let workbook_xml = Self::read_zip_file_to_vec(archive, "xl/workbook.xml")?;
-        let workbook_rels_xml = Self::read_zip_file_to_vec(archive, "xl/_rels/workbook.xml.rels").ok();
+        let workbook_rels_xml =
+            Self::read_zip_file_to_vec(archive, "xl/_rels/workbook.xml.rels").ok();
         let shared_strings_xml = Self::read_zip_file_to_vec(archive, "xl/sharedStrings.xml").ok();
         let styles_xml = Self::read_zip_file_to_vec(archive, "xl/styles.xml").ok();
 
@@ -857,31 +883,29 @@ impl Workbook {
                             let attr_local = attr_local.as_ref();
 
                             if attr_key == b"name" || attr_local == b"name" {
-                                sheet_name =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                                sheet_name = Some(String::from_utf8_lossy(&attr.value).to_string());
                             } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
                                 let id_str = String::from_utf8_lossy(&attr.value);
                                 sheet_id = id_str.parse().ok();
                             } else if attr_key == b"state" || attr_local == b"state" {
-                                sheet_state = SheetVisibility::from_attr(
-                                    &String::from_utf8_lossy(&attr.value),
-                                );
+                                sheet_state = SheetVisibility::from_attr(&String::from_utf8_lossy(
+                                    &attr.value,
+                                ));
                             } else if attr_local == b"id" {
                                 // r:id attribute (namespace-qualified)
-                                sheet_rid =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                                sheet_rid = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
 
-                        if let (Some(name), Some(id), Some(rid)) = (sheet_name, sheet_id, sheet_rid) {
+                        if let (Some(name), Some(id), Some(rid)) = (sheet_name, sheet_id, sheet_rid)
+                        {
                             sheets.push((name, id, rid, sheet_state));
                         }
                     } else if name == b"workbookView" || local == b"workbookView" {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"activeTab" {
-                                active_tab = String::from_utf8_lossy(&attr.value)
-                                    .parse()
-                                    .unwrap_or(0);
+                                active_tab =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                         }
                     }
@@ -956,7 +980,8 @@ impl Workbook {
                     let is_defined_name = name == b"definedName" || local == b"definedName";
 
                     if is_defined_name && in_defined_name {
-                        if let (Some(name), Some(range)) = (current_name.take(), current_range.take())
+                        if let (Some(name), Some(range)) =
+                            (current_name.take(), current_range.take())
                         {
                             named_ranges.push(NamedRange {
                                 name,
@@ -971,9 +996,11 @@ impl Workbook {
                     } else if is_defined_names {
                         in_defined_names = false;
                     } else if is_sheet {
-                        if let (Some(name), Some(id), Some(rid)) =
-                            (current_sheet_name.take(), current_sheet_id.take(), current_sheet_rid.take())
-                        {
+                        if let (Some(name), Some(id), Some(rid)) = (
+                            current_sheet_name.take(),
+                            current_sheet_id.take(),
+                            current_sheet_rid.take(),
+                        ) {
                             sheets.push((name, id, rid, current_sheet_state));
                         }
                         current_sheet_state = SheetVisibility::Visible;
@@ -1014,8 +1041,7 @@ impl Workbook {
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"Id" => {
-                                    rel_id =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string())
+                                    rel_id = Some(String::from_utf8_lossy(&attr.value).to_string())
                                 }
                                 b"Type" => {
                                     rel_type =
@@ -1032,8 +1058,7 @@ impl Workbook {
                             }
                         }
 
-                        if let (Some(id), Some(rel_type), Some(target)) =
-                            (rel_id, rel_type, target)
+                        if let (Some(id), Some(rel_type), Some(target)) = (rel_id, rel_type, target)
                         {
                             rels.insert(
                                 id,
@@ -1238,7 +1263,9 @@ impl Workbook {
 
     /// Parse border side properties and return (style, color).
     #[allow(dead_code)]
-    fn parse_border_side_attrs(e: &quick_xml::events::BytesStart) -> (Option<String>, Option<String>) {
+    fn parse_border_side_attrs(
+        e: &quick_xml::events::BytesStart,
+    ) -> (Option<String>, Option<String>) {
         let style = Self::get_attr_str(e, b"style");
         let color = None; // Color comes from nested element
         (style, color)
@@ -1249,7 +1276,9 @@ impl Workbook {
     fn parse_color_element(e: &quick_xml::events::BytesStart) -> Option<String> {
         if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
             Some(format!("#{}", rgb))
-        } else { Self::get_attr_str(e, b"theme").map(|theme| format!("theme:{}", theme)) }
+        } else {
+            Self::get_attr_str(e, b"theme").map(|theme| format!("theme:{}", theme))
+        }
     }
 
     fn parse_styles_xml(xml: &[u8]) -> Result<(HashMap<u32, Arc<CellStyle>>, StyleRegistry)> {
@@ -1293,8 +1322,13 @@ impl Workbook {
                         Self::parse_fill_element(&e, &mut current_fill);
                     }
                     // Handle self-closing border side elements (e.g., <left style="thin"/>)
-                    if in_border && (name == b"left" || name == b"right" || name == b"top"
-                                     || name == b"bottom" || name == b"diagonal") {
+                    if in_border
+                        && (name == b"left"
+                            || name == b"right"
+                            || name == b"top"
+                            || name == b"bottom"
+                            || name == b"diagonal")
+                    {
                         let mut style: Option<String> = None;
                         let color: Option<String> = None;
                         for attr in e.attributes().flatten() {
@@ -1318,10 +1352,8 @@ impl Workbook {
                     if in_border && in_border_side.is_some() && name == b"color" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"rgb" {
-                                current_border_color = Some(format!(
-                                    "#{}",
-                                    String::from_utf8_lossy(&attr.value)
-                                ));
+                                current_border_color =
+                                    Some(format!("#{}", String::from_utf8_lossy(&attr.value)));
                             }
                         }
                     }
@@ -1332,7 +1364,8 @@ impl Workbook {
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key.as_ref();
                             if attr_key == b"numFmtId" {
-                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
                                     fmt_id = Some(id);
                                 }
                             } else if attr_key == b"formatCode" {
@@ -1364,8 +1397,7 @@ impl Workbook {
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key.as_ref();
                             if attr_key == b"numFmtId" {
-                                if let Ok(id) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     current_num_fmt_id = Some(id);
                                 }
@@ -1382,8 +1414,12 @@ impl Workbook {
                         let prop_name = e.name();
                         let prop_name = prop_name.as_ref();
                         // Handle border side start elements
-                        if prop_name == b"left" || prop_name == b"right" || prop_name == b"top"
-                           || prop_name == b"bottom" || prop_name == b"diagonal" {
+                        if prop_name == b"left"
+                            || prop_name == b"right"
+                            || prop_name == b"top"
+                            || prop_name == b"bottom"
+                            || prop_name == b"diagonal"
+                        {
                             in_border_side = Some(match prop_name {
                                 b"left" => "left",
                                 b"right" => "right",
@@ -1397,19 +1433,16 @@ impl Workbook {
                             // Get style attribute
                             for attr in e.attributes().flatten() {
                                 if attr.key.as_ref() == b"style" {
-                                    current_border_style = Some(
-                                        String::from_utf8_lossy(&attr.value).to_string()
-                                    );
+                                    current_border_style =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
                                 }
                             }
                         } else if prop_name == b"color" && in_border_side.is_some() {
                             // Get color for current border side
                             for attr in e.attributes().flatten() {
                                 if attr.key.as_ref() == b"rgb" {
-                                    current_border_color = Some(format!(
-                                        "#{}",
-                                        String::from_utf8_lossy(&attr.value)
-                                    ));
+                                    current_border_color =
+                                        Some(format!("#{}", String::from_utf8_lossy(&attr.value)));
                                 }
                             }
                         }
@@ -1428,8 +1461,13 @@ impl Workbook {
                     } else if name == b"border" {
                         borders.push(current_border.clone());
                         in_border = false;
-                    } else if in_border && (name == b"left" || name == b"right" || name == b"top"
-                                            || name == b"bottom" || name == b"diagonal") {
+                    } else if in_border
+                        && (name == b"left"
+                            || name == b"right"
+                            || name == b"top"
+                            || name == b"bottom"
+                            || name == b"diagonal")
+                    {
                         // Finalize border side
                         if let Some(style) = current_border_style.take() {
                             let border_style = BorderStyle {
@@ -1520,8 +1558,7 @@ impl Workbook {
                                     }
                                 }
                             } else if attr_key == b"numFmtId" {
-                                if let Ok(id) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     if let Some(format) = number_formats.get(&id) {
                                         current_xf.number_format = Some(format.clone());
@@ -1548,14 +1585,18 @@ impl Workbook {
                                 current_align.wrap_text =
                                     String::from_utf8_lossy(&attr.value) == "1";
                             } else if attr_key == b"textRotation" {
-                                if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                if let Ok(rotation) =
+                                    String::from_utf8_lossy(&attr.value).parse::<i32>()
+                                {
                                     current_align.text_rotation = Some(rotation);
                                 }
                             } else if attr_key == b"shrinkToFit" {
                                 current_align.shrink_to_fit =
                                     String::from_utf8_lossy(&attr.value) == "1";
                             } else if attr_key == b"indent" {
-                                if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                if let Ok(indent) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
                                     current_align.indent = Some(indent);
                                 }
                             }
@@ -1618,14 +1659,18 @@ impl Workbook {
                                 current_align.wrap_text =
                                     String::from_utf8_lossy(&attr.value) == "1";
                             } else if attr_key == b"textRotation" {
-                                if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                if let Ok(rotation) =
+                                    String::from_utf8_lossy(&attr.value).parse::<i32>()
+                                {
                                     current_align.text_rotation = Some(rotation);
                                 }
                             } else if attr_key == b"shrinkToFit" {
                                 current_align.shrink_to_fit =
                                     String::from_utf8_lossy(&attr.value) == "1";
                             } else if attr_key == b"indent" {
-                                if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                if let Ok(indent) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
                                     current_align.indent = Some(indent);
                                 }
                             }
@@ -1672,8 +1717,7 @@ impl Workbook {
                                     }
                                 }
                             } else if attr_key == b"numFmtId" {
-                                if let Ok(id) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     if let Some(format) = number_formats.get(&id) {
                                         xf.number_format = Some(format.clone());
@@ -1740,20 +1784,32 @@ impl Workbook {
         for i in 0..=max_xf {
             if let Some(style) = cell_styles.get(&i) {
                 let xf = CellXf {
-                    font_id: style.font.as_ref()
+                    font_id: style
+                        .font
+                        .as_ref()
                         .and_then(|f| registry.fonts.iter().position(|rf| rf == f))
                         .unwrap_or(0),
-                    fill_id: style.fill.as_ref()
+                    fill_id: style
+                        .fill
+                        .as_ref()
                         .and_then(|f| registry.fills.iter().position(|rf| rf == f))
                         .unwrap_or(0),
-                    border_id: style.border.as_ref()
+                    border_id: style
+                        .border
+                        .as_ref()
                         .and_then(|b| registry.borders.iter().position(|rb| rb == b))
                         .unwrap_or(0),
-                    num_fmt_id: style.number_format.as_ref()
+                    num_fmt_id: style
+                        .number_format
+                        .as_ref()
                         .and_then(|nf| StyleRegistry::builtin_num_fmt_id(nf))
                         .or_else(|| {
                             style.number_format.as_ref().and_then(|nf| {
-                                registry.num_fmts.iter().find(|(_, code)| code == nf).map(|(id, _)| *id)
+                                registry
+                                    .num_fmts
+                                    .iter()
+                                    .find(|(_, code)| code == nf)
+                                    .map(|(id, _)| *id)
                             })
                         })
                         .unwrap_or(0),
@@ -1950,11 +2006,7 @@ impl Workbook {
         sqref: Option<String>,
     ) {
         if let Some(sq) = sqref {
-            let first = sq
-                .split([' ', ':'])
-                .next()
-                .unwrap_or("")
-                .replace('$', "");
+            let first = sq.split([' ', ':']).next().unwrap_or("").replace('$', "");
             if let Ok((row, col)) = parse_coordinate(&first) {
                 dv.sqref = Some(sq);
                 worksheet.data_validations.insert((row, col), dv);
@@ -2126,12 +2178,8 @@ impl Workbook {
                                 b"name" => table.name = val,
                                 b"displayName" => table.display_name = val,
                                 b"ref" => table.range = val,
-                                b"headerRowCount" => {
-                                    header_row_count = val.parse().unwrap_or(1)
-                                }
-                                b"totalsRowCount" => {
-                                    totals_row_count = val.parse().unwrap_or(0)
-                                }
+                                b"headerRowCount" => header_row_count = val.parse().unwrap_or(1),
+                                b"totalsRowCount" => totals_row_count = val.parse().unwrap_or(0),
                                 b"comment" => table.comment = Some(val),
                                 _ => {}
                             }
@@ -2282,13 +2330,9 @@ impl Workbook {
                             let attr_value = String::from_utf8_lossy(&attr.value);
                             let value_bool = attr_value == "1";
                             match attr_key {
-                                b"password" => {
-                                    prot.password_hash = Some(attr_value.to_string())
-                                }
+                                b"password" => prot.password_hash = Some(attr_value.to_string()),
                                 b"selectLockedCells" => prot.select_locked_cells = value_bool,
-                                b"selectUnlockedCells" => {
-                                    prot.select_unlocked_cells = value_bool
-                                }
+                                b"selectUnlockedCells" => prot.select_unlocked_cells = value_bool,
                                 b"formatCells" => prot.format_cells = value_bool,
                                 b"formatColumns" => prot.format_columns = value_bool,
                                 b"formatRows" => prot.format_rows = value_bool,
@@ -2312,8 +2356,7 @@ impl Workbook {
                             let attr_key = attr_key.as_ref();
                             if attr_key == b"ref" {
                                 let ref_str = String::from_utf8_lossy(&attr.value);
-                                if let Some(cap) =
-                                    Self::estimate_dimension_cells(ref_str.as_ref())
+                                if let Some(cap) = Self::estimate_dimension_cells(ref_str.as_ref())
                                 {
                                     worksheet.cells.reserve(cap);
                                     reserved_cells = true;
@@ -2342,12 +2385,10 @@ impl Workbook {
                                 hyperlink_ref =
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
                             } else if attr_key == b"location" {
-                                location =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                                location = Some(String::from_utf8_lossy(&attr.value).to_string());
                             } else if attr.key.local_name().as_ref() == b"id" {
                                 // r:id pointing into the sheet rels (external URL)
-                                rel_id =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                                rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                         if let Some(ref_coord) = hyperlink_ref {
@@ -2405,21 +2446,17 @@ impl Workbook {
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key.as_ref();
                             if attr_key == b"min" {
-                                if let Ok(num) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(num) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     col_min = Some(num);
                                 }
                             } else if attr_key == b"max" {
-                                if let Ok(num) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(num) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     col_max = Some(num);
                                 }
                             } else if attr_key == b"width" {
-                                if let Ok(w) =
-                                    String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                {
+                                if let Ok(w) = String::from_utf8_lossy(&attr.value).parse::<f64>() {
                                     width = Some(w);
                                 }
                             }
@@ -2506,8 +2543,7 @@ impl Workbook {
                             let attr_key = attr_key.as_ref();
                             if attr_key == b"ref" {
                                 let ref_str = String::from_utf8_lossy(&attr.value);
-                                if let Some(cap) =
-                                    Self::estimate_dimension_cells(ref_str.as_ref())
+                                if let Some(cap) = Self::estimate_dimension_cells(ref_str.as_ref())
                                 {
                                     worksheet.cells.reserve(cap);
                                     reserved_cells = true;
@@ -2647,8 +2683,7 @@ impl Workbook {
                         cf_show_value = true;
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"showValue" {
-                                cf_show_value =
-                                    !matches!(attr.value.as_ref(), b"0" | b"false");
+                                cf_show_value = !matches!(attr.value.as_ref(), b"0" | b"false");
                             }
                         }
                     } else if name == b"iconSet" && current_cf_rule.is_some() {
@@ -2688,21 +2723,17 @@ impl Workbook {
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key.as_ref();
                             if attr_key == b"min" {
-                                if let Ok(num) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(num) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     col_min = Some(num);
                                 }
                             } else if attr_key == b"max" {
-                                if let Ok(num) =
-                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                if let Ok(num) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     col_max = Some(num);
                                 }
                             } else if attr_key == b"width" {
-                                if let Ok(w) =
-                                    String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                {
+                                if let Ok(w) = String::from_utf8_lossy(&attr.value).parse::<f64>() {
                                     width = Some(w);
                                 }
                             }
@@ -2765,8 +2796,7 @@ impl Workbook {
                             }
                         }
                     } else if in_odd_header || in_odd_footer {
-                        let section =
-                            crate::pagesetup::HeaderFooterSection::parse_encoded(&text);
+                        let section = crate::pagesetup::HeaderFooterSection::parse_encoded(&text);
                         let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
                         if in_odd_header {
                             ps.header_footer.odd_header = Some(section);
@@ -2863,8 +2893,7 @@ impl Workbook {
                     } else if name == b"hyperlinks" {
                         _in_hyperlinks = false;
                         for ((row, col), url) in &hyperlinks {
-                            if let Some(cell_data) =
-                                worksheet.cells.get_mut(&cell_key(*row, *col))
+                            if let Some(cell_data) = worksheet.cells.get_mut(&cell_key(*row, *col))
                             {
                                 cell_data.hyperlink = Some(url.clone());
                             } else {
@@ -2882,22 +2911,19 @@ impl Workbook {
                             let cell_value = if let Some(formula) = current_formula.take() {
                                 // Preserve the cached <v> so a save doesn't
                                 // blank the cell in viewers that don't recalc
-                                cached_formula_value =
-                                    current_value.take().map(|v| match v {
-                                        TempValue::SharedIdx(idx) => shared_strings
-                                            .get(idx)
-                                            .map(|s| s.to_string())
-                                            .unwrap_or_default(),
-                                        TempValue::Bool(b) => {
-                                            (if b { "1" } else { "0" }).to_string()
-                                        }
-                                        TempValue::Number(n) => {
-                                            let mut buf = ryu::Buffer::new();
-                                            buf.format(n).to_string()
-                                        }
-                                        TempValue::Date(d) => d,
-                                        TempValue::String(s) => s,
-                                    });
+                                cached_formula_value = current_value.take().map(|v| match v {
+                                    TempValue::SharedIdx(idx) => shared_strings
+                                        .get(idx)
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_default(),
+                                    TempValue::Bool(b) => (if b { "1" } else { "0" }).to_string(),
+                                    TempValue::Number(n) => {
+                                        let mut buf = ryu::Buffer::new();
+                                        buf.format(n).to_string()
+                                    }
+                                    TempValue::Date(d) => d,
+                                    TempValue::String(s) => s,
+                                });
                                 CellValue::Formula(formula)
                             } else if let Some(value) = current_value.take() {
                                 match value {
@@ -2914,7 +2940,9 @@ impl Workbook {
                                     TempValue::Bool(b) => CellValue::Boolean(b),
                                     TempValue::Number(n) => CellValue::Number(n),
                                     TempValue::Date(d) => CellValue::Date(d),
-                                    TempValue::String(s) => CellValue::String(std::sync::Arc::from(s)),
+                                    TempValue::String(s) => {
+                                        CellValue::String(std::sync::Arc::from(s))
+                                    }
                                 }
                             } else {
                                 // If it was marked as a string type but has no value,
@@ -3157,11 +3185,21 @@ mod tests {
         assert_eq!(sheets.len(), 2);
         assert_eq!(
             sheets[0],
-            ("Data".to_string(), 8, "rId1".to_string(), SheetVisibility::Visible)
+            (
+                "Data".to_string(),
+                8,
+                "rId1".to_string(),
+                SheetVisibility::Visible
+            )
         );
         assert_eq!(
             sheets[1],
-            ("Summary".to_string(), 2, "rId2".to_string(), SheetVisibility::Visible)
+            (
+                "Summary".to_string(),
+                2,
+                "rId2".to_string(),
+                SheetVisibility::Visible
+            )
         );
     }
 

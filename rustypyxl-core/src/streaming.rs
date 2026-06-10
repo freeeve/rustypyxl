@@ -116,10 +116,12 @@ impl StreamingWorkbook {
         self.zip.start_file(&path, self.options.clone())?;
 
         // Write sheet header (we'll write sheetData rows as they come)
-        self.zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        self.zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <sheetData>
-"#)?;
+"#,
+        )?;
         self.sheet_xml_started = true;
 
         Ok(StreamingSheet {
@@ -237,9 +239,11 @@ impl StreamingWorkbook {
     }
 
     fn write_content_types(&mut self) -> Result<()> {
-        self.zip.start_file("[Content_Types].xml", self.options.clone())?;
+        self.zip
+            .start_file("[Content_Types].xml", self.options.clone())?;
 
-        let mut content = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        let mut content = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
@@ -247,7 +251,8 @@ impl StreamingWorkbook {
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
 <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
-"#);
+"#,
+        );
 
         for i in 0..self.sheets.len() {
             content.push_str(&format!(
@@ -273,33 +278,42 @@ impl StreamingWorkbook {
     }
 
     fn write_doc_props(&mut self) -> Result<()> {
-        self.zip.start_file("docProps/core.xml", self.options.clone())?;
+        self.zip
+            .start_file("docProps/core.xml", self.options.clone())?;
         self.zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">
 <dc:creator>rustypyxl</dc:creator>
 </cp:coreProperties>"#)?;
 
-        self.zip.start_file("docProps/app.xml", self.options.clone())?;
-        self.zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        self.zip
+            .start_file("docProps/app.xml", self.options.clone())?;
+        self.zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
 <Application>rustypyxl</Application>
-</Properties>"#)?;
+</Properties>"#,
+        )?;
         Ok(())
     }
 
     fn write_workbook_xml(&mut self) -> Result<()> {
-        self.zip.start_file("xl/workbook.xml", self.options.clone())?;
+        self.zip
+            .start_file("xl/workbook.xml", self.options.clone())?;
 
-        let mut content = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        let mut content = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets>
-"#);
+"#,
+        );
 
         for (i, name) in self.sheets.iter().enumerate() {
             let escaped_name = escape_xml(name);
             content.push_str(&format!(
                 "<sheet name=\"{}\" sheetId=\"{}\" r:id=\"rId{}\"/>\n",
-                escaped_name, i + 1, i + 1
+                escaped_name,
+                i + 1,
+                i + 1
             ));
         }
 
@@ -309,11 +323,14 @@ impl StreamingWorkbook {
     }
 
     fn write_workbook_rels(&mut self) -> Result<()> {
-        self.zip.start_file("xl/_rels/workbook.xml.rels", self.options.clone())?;
+        self.zip
+            .start_file("xl/_rels/workbook.xml.rels", self.options.clone())?;
 
-        let mut content = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        let mut content = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-"#);
+"#,
+        );
 
         for i in 0..self.sheets.len() {
             content.push_str(&format!(
@@ -360,11 +377,13 @@ mod tests {
 
         let mut wb = StreamingWorkbook::new(path).unwrap();
         let mut first = wb.create_sheet("First").unwrap();
-        wb.append_row(&mut first, vec![CellValue::String(Arc::from("a"))]).unwrap();
+        wb.append_row(&mut first, vec![CellValue::String(Arc::from("a"))])
+            .unwrap();
 
         // Creating the second sheet finalizes the first automatically
         let mut second = wb.create_sheet("Second").unwrap();
-        wb.append_row(&mut second, vec![CellValue::Number(42.0)]).unwrap();
+        wb.append_row(&mut second, vec![CellValue::Number(42.0)])
+            .unwrap();
 
         // The stale first-sheet handle must be rejected, not write into Second
         let err = wb.append_row(&mut first, vec![CellValue::Number(1.0)]);
@@ -407,11 +426,15 @@ mod tests {
         let mut sheet = wb.create_sheet("S").unwrap();
 
         let wide = vec![CellValue::Number(1.0); 16_385];
-        assert!(wb.append_row(&mut sheet, wide).is_err(), "column limit not enforced");
+        assert!(
+            wb.append_row(&mut sheet, wide).is_err(),
+            "column limit not enforced"
+        );
 
         sheet.current_row = 1_048_576;
         assert!(
-            wb.append_row(&mut sheet, vec![CellValue::Number(1.0)]).is_err(),
+            wb.append_row(&mut sheet, vec![CellValue::Number(1.0)])
+                .is_err(),
             "row limit not enforced"
         );
     }
@@ -438,17 +461,25 @@ mod tests {
         let mut sheet = wb.create_sheet("Test").unwrap();
 
         // Write header
-        wb.append_row(&mut sheet, vec![
-            CellValue::String(Arc::from("Name")),
-            CellValue::String(Arc::from("Value")),
-        ]).unwrap();
+        wb.append_row(
+            &mut sheet,
+            vec![
+                CellValue::String(Arc::from("Name")),
+                CellValue::String(Arc::from("Value")),
+            ],
+        )
+        .unwrap();
 
         // Write data rows
         for i in 0..100 {
-            wb.append_row(&mut sheet, vec![
-                CellValue::String(Arc::from(format!("Item {}", i))),
-                CellValue::Number(i as f64),
-            ]).unwrap();
+            wb.append_row(
+                &mut sheet,
+                vec![
+                    CellValue::String(Arc::from(format!("Item {}", i))),
+                    CellValue::Number(i as f64),
+                ],
+            )
+            .unwrap();
         }
 
         wb.close(sheet).unwrap();
@@ -456,7 +487,10 @@ mod tests {
         // Verify file exists and can be read
         let loaded = crate::Workbook::load(path).unwrap();
         let ws = loaded.get_sheet_by_name("Test").unwrap();
-        assert_eq!(ws.get_cell_value(1, 1), Some(&CellValue::String(Arc::from("Name"))));
+        assert_eq!(
+            ws.get_cell_value(1, 1),
+            Some(&CellValue::String(Arc::from("Name")))
+        );
         assert_eq!(ws.get_cell_value(101, 2), Some(&CellValue::Number(99.0)));
     }
 }

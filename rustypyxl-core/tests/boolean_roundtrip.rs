@@ -1,4 +1,4 @@
-use rustypyxl_core::{Workbook, CellValue};
+use rustypyxl_core::{CellValue, Workbook};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -22,8 +22,16 @@ fn test_boolean_roundtrip() {
     let val2 = loaded_ws.get_cell_value(1, 2);
 
     // Verify
-    assert_eq!(val1, Some(&CellValue::Boolean(false)), "Boolean false should roundtrip");
-    assert_eq!(val2, Some(&CellValue::Boolean(true)), "Boolean true should roundtrip");
+    assert_eq!(
+        val1,
+        Some(&CellValue::Boolean(false)),
+        "Boolean false should roundtrip"
+    );
+    assert_eq!(
+        val2,
+        Some(&CellValue::Boolean(true)),
+        "Boolean true should roundtrip"
+    );
 }
 
 #[test]
@@ -52,5 +60,9 @@ fn test_boolean_roundtrip_multiple_sheets() {
     println!("Cell C:1,1 value: {:?}", val);
 
     // Verify
-    assert_eq!(val, Some(&CellValue::Boolean(false)), "Boolean false in sheet C should roundtrip");
+    assert_eq!(
+        val,
+        Some(&CellValue::Boolean(false)),
+        "Boolean false in sheet C should roundtrip"
+    );
 }

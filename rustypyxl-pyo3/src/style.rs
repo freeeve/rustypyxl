@@ -324,12 +324,7 @@ pub struct PyColor {
 impl PyColor {
     #[new]
     #[pyo3(signature = (rgb=None, theme=None, tint=0.0, indexed=None))]
-    fn new(
-        rgb: Option<String>,
-        theme: Option<u32>,
-        tint: f64,
-        indexed: Option<u32>,
-    ) -> Self {
+    fn new(rgb: Option<String>, theme: Option<u32>, tint: f64, indexed: Option<u32>) -> Self {
         PyColor {
             rgb,
             theme,
@@ -422,7 +417,10 @@ impl PyGradientStop {
     }
 
     fn __str__(&self) -> String {
-        format!("<GradientStop position={} color={:?}>", self.position, self.color)
+        format!(
+            "<GradientStop position={} color={:?}>",
+            self.position, self.color
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -481,7 +479,9 @@ impl PyGradientFill {
     fn __str__(&self) -> String {
         format!(
             "<GradientFill type={:?} degree={:?} stops={}>",
-            self.fill_type, self.degree, self.stop.len()
+            self.fill_type,
+            self.degree,
+            self.stop.len()
         )
     }
 

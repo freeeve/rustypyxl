@@ -265,7 +265,10 @@ mod tests {
     #[test]
     fn test_value_filter() {
         let mut af = AutoFilter::new("A1:B10");
-        af.add_filter(FilterColumn::values(0, vec!["Apple".to_string(), "Orange".to_string()]));
+        af.add_filter(FilterColumn::values(
+            0,
+            vec!["Apple".to_string(), "Orange".to_string()],
+        ));
 
         assert_eq!(af.columns.len(), 1);
     }

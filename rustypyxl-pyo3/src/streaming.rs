@@ -1,8 +1,8 @@
 //! Python bindings for streaming workbook.
 
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use rustypyxl_core::streaming::{StreamingWorkbook, StreamingSheet};
+use pyo3::prelude::*;
+use rustypyxl_core::streaming::{StreamingSheet, StreamingWorkbook};
 use rustypyxl_core::CellValue;
 
 /// A write-only workbook that streams data directly to disk.
@@ -31,8 +31,7 @@ impl PyStreamingWorkbook {
     ///     path: Path to save the Excel file
     #[new]
     fn new(path: &str) -> PyResult<Self> {
-        let wb = StreamingWorkbook::new(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let wb = StreamingWorkbook::new(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyStreamingWorkbook {
             inner: Some(wb),
             current_sheet: None,
@@ -45,10 +44,13 @@ impl PyStreamingWorkbook {
     /// Args:
     ///     name: Sheet name
     fn create_sheet(&mut self, name: &str) -> PyResult<()> {
-        let wb = self.inner.as_mut()
+        let wb = self
+            .inner
+            .as_mut()
             .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
 
-        let sheet = wb.create_sheet(name)
+        let sheet = wb
+            .create_sheet(name)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         self.current_sheet = Some(sheet);
@@ -60,10 +62,14 @@ impl PyStreamingWorkbook {
     /// Args:
     ///     values: List of values (str, int, float, bool, or None)
     fn append_row(&mut self, values: Vec<PyObject>, py: Python<'_>) -> PyResult<()> {
-        let wb = self.inner.as_mut()
+        let wb = self
+            .inner
+            .as_mut()
             .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
 
-        let sheet = self.current_sheet.as_mut()
+        let sheet = self
+            .current_sheet
+            .as_mut()
             .ok_or_else(|| PyValueError::new_err("No sheet created. Call create_sheet() first."))?;
 
         let cell_values: Vec<CellValue> = values
@@ -118,7 +124,9 @@ impl PyStreamingWorkbook {
     /// Consume the inner workbook and finalize the file, with or without an
     /// open sheet.
     fn do_close(&mut self) -> PyResult<()> {
-        let wb = self.inner.take()
+        let wb = self
+            .inner
+            .take()
             .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
         let result = match self.current_sheet.take() {
             Some(sheet) => wb.close(sheet),
@@ -127,4 +135,3 @@ impl PyStreamingWorkbook {
         result.map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
-

@@ -5,18 +5,32 @@ use std::time::Instant;
 
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use rustypyxl_core::{Workbook, CellValue};
+use rustypyxl_core::{CellValue, Workbook};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     let rows: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10000);
     let cols: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let output_path = args.get(3).map(String::as_str).unwrap_or("profile_output.xlsx");
-    let flamegraph_path = args.get(4).map(String::as_str).unwrap_or("flamegraph_write.svg");
-    let pprof_path = args.get(5).map(String::as_str).unwrap_or("profile_write.pb");
+    let output_path = args
+        .get(3)
+        .map(String::as_str)
+        .unwrap_or("profile_output.xlsx");
+    let flamegraph_path = args
+        .get(4)
+        .map(String::as_str)
+        .unwrap_or("flamegraph_write.svg");
+    let pprof_path = args
+        .get(5)
+        .map(String::as_str)
+        .unwrap_or("profile_write.pb");
 
-    eprintln!("Creating workbook with {}x{} = {} cells...", rows, cols, rows * cols);
+    eprintln!(
+        "Creating workbook with {}x{} = {} cells...",
+        rows,
+        cols,
+        rows * cols
+    );
 
     // Create workbook with data (outside profiler)
     let mut wb = Workbook::new();
@@ -25,7 +39,8 @@ fn main() {
     for row in 1..=rows {
         for col in 1..=cols {
             let value = CellValue::String(format!("R{}C{}", row, col).into());
-            wb.set_cell_value_in_sheet("Sheet1", row, col, value).unwrap();
+            wb.set_cell_value_in_sheet("Sheet1", row, col, value)
+                .unwrap();
         }
     }
     eprintln!("Data created, starting profiler for save...");
@@ -43,7 +58,10 @@ fn main() {
     let elapsed = start.elapsed();
 
     eprintln!("Save completed in {:.3}s", elapsed.as_secs_f64());
-    eprintln!("Throughput: {:.0} cells/sec", (rows * cols) as f64 / elapsed.as_secs_f64());
+    eprintln!(
+        "Throughput: {:.0} cells/sec",
+        (rows * cols) as f64 / elapsed.as_secs_f64()
+    );
 
     let report = guard.report().build().expect("failed to build profile");
 
