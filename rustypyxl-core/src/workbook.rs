@@ -585,14 +585,27 @@ impl Workbook {
     }
 
     /// Read a file from the ZIP archive into a Vec<u8>.
+    /// The declared uncompressed size in the ZIP header is untrusted: it is
+    /// rejected past a hard cap and only used for pre-allocation up to a small
+    /// bound, so a crafted archive cannot trigger huge allocations up front.
     fn read_zip_file_to_vec<R: Read + Seek>(
         archive: &mut ZipArchive<R>,
         path: &str,
     ) -> Result<Vec<u8>> {
+        const MAX_PREALLOC: usize = 16 * 1024 * 1024;
+        const MAX_PART_SIZE: u64 = 4 * 1024 * 1024 * 1024;
+
         let mut file = archive.by_name(path).map_err(|e| {
             RustypyxlError::InvalidFormat(format!("Failed to find {} in archive: {}", path, e))
         })?;
-        let mut buf = Vec::with_capacity(file.size() as usize);
+        let declared_size = file.size();
+        if declared_size > MAX_PART_SIZE {
+            return Err(RustypyxlError::InvalidFormat(format!(
+                "Archive member {} declares an unreasonable uncompressed size of {} bytes",
+                path, declared_size
+            )));
+        }
+        let mut buf = Vec::with_capacity((declared_size as usize).min(MAX_PREALLOC));
         file.read_to_end(&mut buf)?;
         Ok(buf)
     }
@@ -1738,7 +1751,16 @@ impl Workbook {
                                         cell_col = Some(col);
                                     }
                                 } else if attr_key == b"t" {
-                                    cell_type = attr.value.first().copied().unwrap_or(0);
+                                    // Same one-byte type codes as the open-cell path below
+                                    cell_type = match attr.value.as_ref() {
+                                        b"s" => b's',
+                                        b"str" => b'f',
+                                        b"b" => b'b',
+                                        b"d" => b'd',
+                                        b"e" => b'e',
+                                        b"inlineStr" => b'i',
+                                        _ => 0,
+                                    };
                                 } else if attr_key == b"s" {
                                     style_id = parse_u32_bytes(&attr.value);
                                 }
@@ -1748,7 +1770,7 @@ impl Workbook {
                         if let (Some(row), Some(col)) = (cell_row, cell_col) {
                             // If it's marked as a string type (inline or shared), treat as empty string
                             // Otherwise it's truly empty
-                            let cell_value = if cell_type == b'i' || cell_type == b's' {
+                            let cell_value = if matches!(cell_type, b'i' | b's' | b'f') {
                                 CellValue::String(std::sync::Arc::from(""))
                             } else {
                                 CellValue::Empty
@@ -1760,7 +1782,9 @@ impl Workbook {
                                 b's' => Some("s".to_string()),
                                 b'b' => Some("b".to_string()),
                                 b'd' => Some("d".to_string()),
-                                b'i' => Some("str".to_string()),
+                                b'f' => Some("str".to_string()),
+                                b'e' => Some("e".to_string()),
+                                b'i' => Some("inlineStr".to_string()),
                                 _ => None,
                             };
 
@@ -1833,8 +1857,18 @@ impl Workbook {
                                         current_col = Some(col);
                                     }
                                 } else if attr_key == b"t" {
-                                    // Store just the first byte of type (s, b, d, i, n)
-                                    current_type = attr.value.first().copied().unwrap_or(0);
+                                    // Map the full type to a one-byte code; matching on the
+                                    // first byte alone would conflate t="s" (shared string)
+                                    // with t="str" (formula string result).
+                                    current_type = match attr.value.as_ref() {
+                                        b"s" => b's',
+                                        b"str" => b'f',
+                                        b"b" => b'b',
+                                        b"d" => b'd',
+                                        b"e" => b'e',
+                                        b"inlineStr" => b'i',
+                                        _ => 0,
+                                    };
                                 } else if attr_key == b"s" {
                                     // Parse style index directly from bytes
                                     current_style_id = parse_u32_bytes(&attr.value);
@@ -1912,6 +1946,8 @@ impl Workbook {
                                 Some(TempValue::Bool(is_true))
                             }
                             b'd' => Some(TempValue::Date(text.into_owned())),
+                            // Formula string results and error values are literal text
+                            b'f' | b'e' => Some(TempValue::String(text.into_owned())),
                             _ => {
                                 // Number (default) - try fast f64 parsing
                                 match parse_f64_bytes(text.as_bytes()) {
@@ -1960,7 +1996,10 @@ impl Workbook {
                                         if idx < shared_strings.len() {
                                             CellValue::String(shared_strings[idx].clone())
                                         } else {
-                                            CellValue::String(std::sync::Arc::from(idx.to_string()))
+                                            // A dangling index means a corrupt file; an empty
+                                            // string is less misleading than fabricating the
+                                            // index number as cell text.
+                                            CellValue::String(std::sync::Arc::from(""))
                                         }
                                     }
                                     TempValue::Bool(b) => CellValue::Boolean(b),
@@ -1971,7 +2010,7 @@ impl Workbook {
                             } else {
                                 // If it was marked as a string type but has no value,
                                 // treat it as an empty string (openpyxl writes empty strings this way)
-                                if current_type == b'i' || current_type == b's' {
+                                if matches!(current_type, b'i' | b's' | b'f') {
                                     CellValue::String(std::sync::Arc::from(""))
                                 } else {
                                     CellValue::Empty
@@ -1990,7 +2029,9 @@ impl Workbook {
                                 b's' => Some("s".to_string()),
                                 b'b' => Some("b".to_string()),
                                 b'd' => Some("d".to_string()),
-                                b'i' => Some("str".to_string()),
+                                b'f' => Some("str".to_string()),
+                                b'e' => Some("e".to_string()),
+                                b'i' => Some("inlineStr".to_string()),
                                 _ => None,
                             };
 

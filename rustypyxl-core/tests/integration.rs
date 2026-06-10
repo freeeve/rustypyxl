@@ -504,3 +504,68 @@ fn test_worksheet_element_order_follows_schema() {
 
     fs::remove_file(&path).ok();
 }
+
+/// A cell with t="str" (cached formula string result) holds literal text, not
+/// a shared-string index; matching only the first byte of the type attribute
+/// used to resolve "123" against the shared-strings table.
+#[test]
+fn test_t_str_cells_are_literal_text_not_shared_index() {
+    use std::io::Write;
+
+    let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData><row r="1">
+<c r="A1" t="s"><v>0</v></c>
+<c r="B1" t="str"><v>0</v></c>
+</row></sheetData></worksheet>"#;
+    let shared_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>real shared</t></si></sst>"#;
+    let workbook_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#;
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+</Types>"#;
+    let root_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+
+    let mut zip_buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut zip_buf);
+        let opts: zip::write::FileOptions<'_, zip::write::ExtendedFileOptions> =
+            zip::write::FileOptions::default();
+        for (path, content) in [
+            ("[Content_Types].xml", content_types),
+            ("_rels/.rels", root_rels),
+            ("xl/workbook.xml", workbook_xml),
+            ("xl/_rels/workbook.xml.rels", rels_xml),
+            ("xl/sharedStrings.xml", shared_xml),
+            ("xl/worksheets/sheet1.xml", sheet_xml),
+        ] {
+            zw.start_file(path, opts.clone()).unwrap();
+            zw.write_all(content.as_bytes()).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+
+    let wb = Workbook::load_from_bytes(zip_buf.get_ref()).unwrap();
+    let ws = wb.get_sheet_by_name("S").unwrap();
+
+    match &ws.get_cell(1, 1).expect("A1 missing").value {
+        CellValue::String(s) => assert_eq!(s.as_ref(), "real shared"),
+        other => panic!("A1: expected shared string, got {:?}", other),
+    }
+    match &ws.get_cell(1, 2).expect("B1 missing").value {
+        CellValue::String(s) => assert_eq!(s.as_ref(), "0"),
+        other => panic!("B1: expected literal \"0\", got {:?}", other),
+    }
+}
