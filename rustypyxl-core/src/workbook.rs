@@ -8,15 +8,18 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::sync::Arc;
 use zip::ZipArchive;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use rayon::prelude::*;
 
+use crate::autofilter::AutoFilter;
 use crate::cell::CellValue;
+use crate::pagesetup::{Orientation, PageSetup, PaperSize};
+use crate::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
 use crate::error::{Result, RustypyxlError};
 use crate::style::{Alignment, Border, BorderStyle, CellStyle, CellXf, Fill, Font, Protection, StyleRegistry};
 use crate::utils::{parse_coordinate, parse_coordinate_bytes, parse_u32_bytes, parse_f64_bytes};
-use crate::worksheet::{cell_key, CellData, DataValidation, Worksheet, WorksheetProtection};
+use crate::worksheet::{cell_key, CellData, DataValidation, SheetVisibility, Worksheet, WorksheetProtection};
 use crate::writer;
 
 /// A named range definition.
@@ -56,10 +59,56 @@ pub struct Workbook {
     pub compression: CompressionLevel,
     /// Style registry for fonts, fills, borders, number formats, and cell formats.
     pub styles: StyleRegistry,
+    /// Index of the active (selected) sheet tab.
+    pub active_sheet: usize,
 }
 
-/// (sheet name, sheet id, relationship id) parsed from workbook.xml.
-type SheetInfo = (String, u32, String);
+/// (sheet name, sheet id, relationship id, visibility) parsed from workbook.xml.
+type SheetInfo = (String, u32, String, SheetVisibility);
+
+/// A single entry from a worksheet's .rels part.
+#[derive(Clone, Debug)]
+pub(crate) struct SheetRel {
+    /// Relationship type URI (e.g. ".../hyperlink", ".../comments", ".../table").
+    pub rel_type: String,
+    /// Target, relative to the worksheet part unless `external`.
+    pub target: String,
+    /// TargetMode="External" (hyperlinks to URLs).
+    pub external: bool,
+}
+
+/// Everything read from the archive for one sheet before parsing.
+struct SheetParseInput {
+    name: String,
+    visibility: SheetVisibility,
+    sheet_xml: Vec<u8>,
+    comments_xml: Option<Vec<u8>>,
+    rels: HashMap<String, SheetRel>,
+    table_xmls: Vec<Vec<u8>>,
+}
+
+/// Resolve a relationship target relative to the part that declares it.
+/// `base_part` is a full package path like "xl/worksheets/sheet1.xml".
+fn resolve_rel_target(base_part: &str, target: &str) -> String {
+    if let Some(stripped) = target.strip_prefix('/') {
+        return stripped.to_string();
+    }
+    let base_dir = match base_part.rfind('/') {
+        Some(idx) => &base_part[..idx],
+        None => "",
+    };
+    let mut parts: Vec<&str> = base_dir.split('/').filter(|p| !p.is_empty()).collect();
+    for seg in target.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
 
 impl Workbook {
     /// Create a new empty workbook.
@@ -70,6 +119,7 @@ impl Workbook {
             named_ranges: Vec::new(),
             compression: CompressionLevel::default(),
             styles: StyleRegistry::new(),
+            active_sheet: 0,
         }
     }
 
@@ -301,13 +351,7 @@ impl Workbook {
             validation_type,
             formula1,
             formula2,
-            allow_blank: true,
-            show_error: true,
-            error_title: None,
-            error_message: None,
-            show_input: true,
-            prompt_title: None,
-            prompt_message: None,
+            ..Default::default()
         };
         ws.add_data_validation(row, column, validation);
         Ok(())
@@ -401,8 +445,42 @@ impl Workbook {
         let (shared_strings_vec, shared_strings_map) = writer::collect_shared_strings(&self.worksheets);
         let has_shared_strings = !shared_strings_vec.is_empty();
 
+        // Pre-compute per-sheet metadata so [Content_Types].xml, the sheet
+        // XML, and the sheet .rels parts all agree on ids and paths.
+        let comment_sheet_ids: Vec<u32> = self
+            .worksheets
+            .iter()
+            .enumerate()
+            .filter(|(_, ws)| ws.cells.values().any(|cd| cd.comment.is_some()))
+            .map(|(idx, _)| (idx + 1) as u32)
+            .collect();
+
+        // Assign each table a workbook-unique id; part path is xl/tables/table{id}.xml
+        let mut table_assignments: Vec<Vec<u32>> = Vec::with_capacity(self.worksheets.len());
+        let mut next_table_id: u32 = 1;
+        for worksheet in &self.worksheets {
+            let ids: Vec<u32> = worksheet
+                .tables
+                .iter()
+                .map(|_| {
+                    let id = next_table_id;
+                    next_table_id += 1;
+                    id
+                })
+                .collect();
+            table_assignments.push(ids);
+        }
+        let table_count = (next_table_id - 1) as usize;
+
         // Write [Content_Types].xml
-        writer::write_content_types(zip, &options, self.worksheets.len(), has_shared_strings)?;
+        writer::write_content_types(
+            zip,
+            &options,
+            self.worksheets.len(),
+            has_shared_strings,
+            &comment_sheet_ids,
+            table_count,
+        )?;
 
         // Write _rels/.rels
         writer::write_rels(zip, &options)?;
@@ -416,7 +494,13 @@ impl Workbook {
             .iter()
             .map(|nr| (nr.name.clone(), nr.range.clone()))
             .collect();
-        writer::write_workbook_xml(zip, &options, &self.sheet_names, &named_ranges)?;
+        let sheet_meta: Vec<(String, crate::worksheet::SheetVisibility)> = self
+            .sheet_names
+            .iter()
+            .zip(&self.worksheets)
+            .map(|(name, ws)| (name.clone(), ws.visibility))
+            .collect();
+        writer::write_workbook_xml(zip, &options, &sheet_meta, &named_ranges, self.active_sheet)?;
 
         // Write xl/_rels/workbook.xml.rels
         writer::write_workbook_rels(zip, &options, self.worksheets.len(), has_shared_strings)?;
@@ -429,12 +513,13 @@ impl Workbook {
         // Write styles.xml
         writer::write_styles_xml(zip, &options, &self.styles)?;
 
-        // Write each worksheet and comments
+        // Write each worksheet, its tables/comments, and its .rels part
         for (idx, worksheet) in self.worksheets.iter().enumerate() {
             let sheet_id = (idx + 1) as u32;
-
-            // Check if worksheet has comments
-            let has_comments = worksheet.cells.values().any(|cd| cd.comment.is_some());
+            let has_comments = comment_sheet_ids.contains(&sheet_id);
+            let table_ids = &table_assignments[idx];
+            let table_rel_ids: Vec<String> =
+                table_ids.iter().map(|id| format!("rIdTable{}", id)).collect();
 
             writer::write_worksheet_xml(
                 zip,
@@ -442,25 +527,49 @@ impl Workbook {
                 worksheet,
                 sheet_id,
                 &shared_strings_map,
-                has_comments,
+                &table_rel_ids,
             )?;
 
-            // Write comments if any exist
+            for (table, table_id) in worksheet.tables.iter().zip(table_ids) {
+                writer::write_table_xml(zip, &options, table, *table_id)?;
+            }
+
             if has_comments {
                 writer::write_comments_xml(zip, &options, worksheet, sheet_id)?;
+            }
 
-                // Write worksheet relationships for comments
+            // The sheet .rels part ties comments, external hyperlinks, and
+            // tables to the relationship ids used in the worksheet XML.
+            let external_links = writer::collect_external_hyperlinks(worksheet);
+            if has_comments || !external_links.is_empty() || !table_ids.is_empty() {
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
                 let rels_options: zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> =
                     FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
                 zip.start_file(&rels_path, rels_options)?;
-                let rels_content = format!(
-                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments/comment{}.xml" Id="comments" />
-</Relationships>"#,
-                    sheet_id
+
+                let mut rels_content = String::from(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
                 );
+                if has_comments {
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"rIdComments\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments/comment{}.xml\"/>\n",
+                        sheet_id
+                    ));
+                }
+                for (i, (_, url)) in external_links.iter().enumerate() {
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"rIdHL{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"{}\" TargetMode=\"External\"/>\n",
+                        i + 1,
+                        writer::escape_xml(url)
+                    ));
+                }
+                for table_id in table_ids {
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"rIdTable{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"../tables/table{}.xml\"/>\n",
+                        table_id, table_id
+                    ));
+                }
+                rels_content.push_str("</Relationships>");
                 zip.write_all(rels_content.as_bytes())?;
             }
         }
@@ -476,10 +585,12 @@ impl Workbook {
         let shared_strings_xml = Self::read_zip_file_to_vec(archive, "xl/sharedStrings.xml").ok();
         let styles_xml = Self::read_zip_file_to_vec(archive, "xl/styles.xml").ok();
 
-        // Parse workbook.xml to get sheet names, IDs, and relationship IDs
-        let (sheet_info, named_ranges) =
+        // Parse workbook.xml to get sheet names, IDs, relationship IDs,
+        // visibility, and the active tab
+        let (sheet_info, named_ranges, active_tab) =
             Self::parse_workbook_xml(Cursor::new(&workbook_xml))?;
         self.named_ranges = named_ranges;
+        self.active_sheet = active_tab;
 
         // Parse workbook.xml.rels to get the mapping from rId to actual file paths
         let rels_map: HashMap<String, String> = if let Some(rels_xml) = workbook_rels_xml {
@@ -488,11 +599,9 @@ impl Workbook {
             HashMap::new()
         };
 
-        // Load all worksheet and comments XML into memory
-        // (sheet name, sheet id, worksheet XML bytes, optional comments XML bytes)
-        type SheetXml = (String, u32, Vec<u8>, Option<Vec<u8>>);
-        let mut sheet_data: Vec<SheetXml> = Vec::with_capacity(sheet_info.len());
-        for (sheet_name, sheet_id, sheet_rid) in &sheet_info {
+        // Load all worksheet XML, sheet rels, comments, and table parts into memory
+        let mut sheet_data: Vec<SheetParseInput> = Vec::with_capacity(sheet_info.len());
+        for (sheet_name, sheet_id, sheet_rid, visibility) in &sheet_info {
             // Look up the actual sheet path from the relationships, or fall back to sheetId-based path
             let sheet_path = if let Some(target) = rels_map.get(sheet_rid) {
                 // Target is relative to xl/, e.g., "worksheets/sheet1.xml"
@@ -508,10 +617,47 @@ impl Workbook {
             };
             let sheet_xml = Self::read_zip_file_to_vec(archive, &sheet_path)?;
 
-            let comments_path = format!("xl/comments/comment{}.xml", sheet_id);
+            // The sheet's .rels part lives at <dir>/_rels/<file>.rels
+            let rels_path = match sheet_path.rfind('/') {
+                Some(idx) => format!(
+                    "{}/_rels/{}.rels",
+                    &sheet_path[..idx],
+                    &sheet_path[idx + 1..]
+                ),
+                None => format!("_rels/{}.rels", sheet_path),
+            };
+            let rels = match Self::read_zip_file_to_vec(archive, &rels_path) {
+                Ok(xml) => Self::parse_sheet_rels(Cursor::new(&xml)).unwrap_or_default(),
+                Err(_) => HashMap::new(),
+            };
+
+            // Comments: resolve via the sheet rels (real files use xl/comments1.xml),
+            // falling back to the legacy path this library used to write.
+            let comments_path = rels
+                .values()
+                .find(|r| r.rel_type.ends_with("/comments"))
+                .map(|r| resolve_rel_target(&sheet_path, &r.target))
+                .unwrap_or_else(|| format!("xl/comments/comment{}.xml", sheet_id));
             let comments_xml = Self::read_zip_file_to_vec(archive, &comments_path).ok();
 
-            sheet_data.push((sheet_name.clone(), *sheet_id, sheet_xml, comments_xml));
+            // Table parts referenced from this sheet
+            let table_xmls: Vec<Vec<u8>> = rels
+                .values()
+                .filter(|r| r.rel_type.ends_with("/table"))
+                .filter_map(|r| {
+                    Self::read_zip_file_to_vec(archive, &resolve_rel_target(&sheet_path, &r.target))
+                        .ok()
+                })
+                .collect();
+
+            sheet_data.push(SheetParseInput {
+                name: sheet_name.clone(),
+                visibility: *visibility,
+                sheet_xml,
+                comments_xml,
+                rels,
+                table_xmls,
+            });
         }
 
         // Phase 2: Parse shared data (must be done before worksheets)
@@ -531,46 +677,36 @@ impl Workbook {
         let shared_strings_ref = &shared_strings;
         let styles_ref = &styles;
 
+        let parse_one = |input: &SheetParseInput| -> Result<(String, Worksheet)> {
+            let mut worksheet = Worksheet::new(input.name.clone());
+            worksheet.visibility = input.visibility;
+            Self::parse_worksheet_xml(
+                Cursor::new(&input.sheet_xml),
+                shared_strings_ref,
+                styles_ref,
+                &input.rels,
+                &mut worksheet,
+            )?;
+
+            if let Some(comments) = &input.comments_xml {
+                Self::parse_comments_xml(Cursor::new(comments), &mut worksheet)?;
+            }
+
+            for table_xml in &input.table_xmls {
+                if let Ok(table) = Self::parse_table_xml(Cursor::new(table_xml)) {
+                    worksheet.tables.push(table);
+                }
+            }
+
+            Ok((input.name.clone(), worksheet))
+        };
+
         let worksheets: Vec<Result<(String, Worksheet)>> = if sheet_data.len() > 1 {
             // Parallel parsing for multiple sheets
-            sheet_data
-                .par_iter()
-                .map(|(sheet_name, _sheet_id, sheet_xml, comments_xml)| {
-                    let mut worksheet = Worksheet::new(sheet_name.clone());
-                    Self::parse_worksheet_xml(
-                        Cursor::new(sheet_xml),
-                        shared_strings_ref,
-                        styles_ref,
-                        &mut worksheet,
-                    )?;
-
-                    if let Some(comments) = comments_xml {
-                        Self::parse_comments_xml(Cursor::new(comments), &mut worksheet)?;
-                    }
-
-                    Ok((sheet_name.clone(), worksheet))
-                })
-                .collect()
+            sheet_data.par_iter().map(parse_one).collect()
         } else {
             // Sequential for single sheet (avoid Rayon overhead)
-            sheet_data
-                .iter()
-                .map(|(sheet_name, _sheet_id, sheet_xml, comments_xml)| {
-                    let mut worksheet = Worksheet::new(sheet_name.clone());
-                    Self::parse_worksheet_xml(
-                        Cursor::new(sheet_xml),
-                        shared_strings_ref,
-                        styles_ref,
-                        &mut worksheet,
-                    )?;
-
-                    if let Some(comments) = comments_xml {
-                        Self::parse_comments_xml(Cursor::new(comments), &mut worksheet)?;
-                    }
-
-                    Ok((sheet_name.clone(), worksheet))
-                })
-                .collect()
+            sheet_data.iter().map(parse_one).collect()
         };
 
         // Collect results in order
@@ -612,19 +748,22 @@ impl Workbook {
         Ok(buf)
     }
 
-    /// Parses workbook.xml and returns sheet info (name, sheetId, rId) and named ranges.
+    /// Parses workbook.xml and returns sheet info (name, sheetId, rId,
+    /// visibility), named ranges, and the active tab index.
     fn parse_workbook_xml<R: BufRead>(
         reader: R,
-    ) -> Result<(Vec<SheetInfo>, Vec<NamedRange>)> {
+    ) -> Result<(Vec<SheetInfo>, Vec<NamedRange>, usize)> {
         let mut reader = Reader::from_reader(reader);
         reader.config_mut().trim_text(true);
 
         let mut sheets = Vec::new();
         let mut named_ranges = Vec::new();
+        let mut active_tab: usize = 0;
         let mut buf = Vec::new();
         let mut current_sheet_name: Option<String> = None;
         let mut current_sheet_id: Option<u32> = None;
         let mut current_sheet_rid: Option<String> = None;
+        let mut current_sheet_state = SheetVisibility::Visible;
         let mut in_defined_names = false;
         let mut current_name: Option<String> = None;
         let mut current_range: Option<String> = None;
@@ -643,6 +782,7 @@ impl Workbook {
                         let mut sheet_name: Option<String> = None;
                         let mut sheet_id: Option<u32> = None;
                         let mut sheet_rid: Option<String> = None;
+                        let mut sheet_state = SheetVisibility::Visible;
 
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key;
@@ -656,6 +796,10 @@ impl Workbook {
                             } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
                                 let id_str = String::from_utf8_lossy(&attr.value);
                                 sheet_id = id_str.parse().ok();
+                            } else if attr_key == b"state" || attr_local == b"state" {
+                                sheet_state = SheetVisibility::from_attr(
+                                    &String::from_utf8_lossy(&attr.value),
+                                );
                             } else if attr_local == b"id" {
                                 // r:id attribute (namespace-qualified)
                                 sheet_rid =
@@ -664,7 +808,15 @@ impl Workbook {
                         }
 
                         if let (Some(name), Some(id), Some(rid)) = (sheet_name, sheet_id, sheet_rid) {
-                            sheets.push((name, id, rid));
+                            sheets.push((name, id, rid, sheet_state));
+                        }
+                    } else if name == b"workbookView" || local == b"workbookView" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"activeTab" {
+                                active_tab = String::from_utf8_lossy(&attr.value)
+                                    .parse()
+                                    .unwrap_or(0);
+                            }
                         }
                     }
                 }
@@ -704,6 +856,10 @@ impl Workbook {
                             } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
                                 let id_str = String::from_utf8_lossy(&attr.value);
                                 current_sheet_id = id_str.parse().ok();
+                            } else if attr_key == b"state" || attr_local == b"state" {
+                                current_sheet_state = SheetVisibility::from_attr(
+                                    &String::from_utf8_lossy(&attr.value),
+                                );
                             } else if attr_local == b"id" {
                                 // r:id attribute (namespace-qualified)
                                 current_sheet_rid =
@@ -739,8 +895,9 @@ impl Workbook {
                         if let (Some(name), Some(id), Some(rid)) =
                             (current_sheet_name.take(), current_sheet_id.take(), current_sheet_rid.take())
                         {
-                            sheets.push((name, id, rid));
+                            sheets.push((name, id, rid, current_sheet_state));
                         }
+                        current_sheet_state = SheetVisibility::Visible;
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -755,7 +912,74 @@ impl Workbook {
             buf.clear();
         }
 
-        Ok((sheets, named_ranges))
+        Ok((sheets, named_ranges, active_tab))
+    }
+
+    /// Parses a worksheet's .rels part into a map of relationship id -> SheetRel.
+    fn parse_sheet_rels<R: BufRead>(reader: R) -> Result<HashMap<String, SheetRel>> {
+        let mut reader = Reader::from_reader(reader);
+        reader.config_mut().trim_text(true);
+
+        let mut rels = HashMap::new();
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                    if e.local_name().as_ref() == b"Relationship" {
+                        let mut rel_id: Option<String> = None;
+                        let mut rel_type: Option<String> = None;
+                        let mut target: Option<String> = None;
+                        let mut external = false;
+
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"Id" => {
+                                    rel_id =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string())
+                                }
+                                b"Type" => {
+                                    rel_type =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string())
+                                }
+                                b"Target" => {
+                                    // Targets may contain escaped entities (e.g. &amp; in URLs)
+                                    target = attr.unescape_value().ok().map(|v| v.to_string())
+                                }
+                                b"TargetMode" => {
+                                    external = attr.value.as_ref() == b"External";
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let (Some(id), Some(rel_type), Some(target)) =
+                            (rel_id, rel_type, target)
+                        {
+                            rels.insert(
+                                id,
+                                SheetRel {
+                                    rel_type,
+                                    target,
+                                    external,
+                                },
+                            );
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(RustypyxlError::ParseError(format!(
+                        "XML parsing error in sheet rels: {}",
+                        e
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(rels)
     }
 
     /// Parses workbook.xml.rels and returns a mapping of relationship IDs to target paths.
@@ -1535,10 +1759,269 @@ impl Workbook {
         Some(cells as usize)
     }
 
+    /// Apply a frozen `<pane>` element to the worksheet's freeze_panes.
+    fn parse_pane_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
+        let mut top_left: Option<String> = None;
+        let mut frozen = false;
+        for attr in e.attributes().flatten() {
+            let val = String::from_utf8_lossy(&attr.value);
+            match attr.key.as_ref() {
+                b"topLeftCell" => top_left = Some(val.to_string()),
+                b"state" => frozen = val == "frozen" || val == "frozenSplit",
+                _ => {}
+            }
+        }
+        if frozen {
+            worksheet.freeze_panes = top_left;
+        }
+    }
+
+    /// Apply a worksheet-level `<autoFilter>` element (range only; individual
+    /// column filter criteria are not yet modeled on load).
+    fn parse_autofilter_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
+        for attr in e.attributes().flatten() {
+            if attr.key.as_ref() == b"ref" {
+                let range = String::from_utf8_lossy(&attr.value).to_string();
+                worksheet.auto_filter = Some(AutoFilter::new(range));
+            }
+        }
+    }
+
+    /// Apply `<pageMargins>` to the worksheet's page setup.
+    fn parse_page_margins_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
+        let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
+        for attr in e.attributes().flatten() {
+            if let Ok(v) = String::from_utf8_lossy(&attr.value).parse::<f64>() {
+                match attr.key.as_ref() {
+                    b"left" => ps.margins.left = v,
+                    b"right" => ps.margins.right = v,
+                    b"top" => ps.margins.top = v,
+                    b"bottom" => ps.margins.bottom = v,
+                    b"header" => ps.margins.header = v,
+                    b"footer" => ps.margins.footer = v,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Apply `<pageSetup>` to the worksheet's page setup.
+    fn parse_page_setup_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
+        let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
+        for attr in e.attributes().flatten() {
+            let val = String::from_utf8_lossy(&attr.value);
+            match attr.key.as_ref() {
+                b"paperSize" => {
+                    if let Ok(code) = val.parse() {
+                        ps.paper_size = PaperSize::from_code(code);
+                    }
+                }
+                b"orientation" => {
+                    ps.orientation = if val == "landscape" {
+                        Orientation::Landscape
+                    } else {
+                        Orientation::Portrait
+                    };
+                }
+                b"scale" => {
+                    if let Ok(v) = val.parse() {
+                        ps.scale = v;
+                    }
+                }
+                b"fitToWidth" => ps.fit_to_width = val.parse().ok(),
+                b"fitToHeight" => ps.fit_to_height = val.parse().ok(),
+                b"firstPageNumber" => ps.first_page_number = val.parse().ok(),
+                b"blackAndWhite" => ps.black_and_white = val == "1" || val == "true",
+                b"draft" => ps.draft = val == "1" || val == "true",
+                b"horizontalDpi" => ps.horizontal_dpi = val.parse().ok(),
+                b"verticalDpi" => ps.vertical_dpi = val.parse().ok(),
+                b"copies" => {
+                    if let Ok(v) = val.parse() {
+                        ps.copies = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Apply `<printOptions>` to the worksheet's page setup.
+    fn parse_print_options_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
+        let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
+        for attr in e.attributes().flatten() {
+            let val = String::from_utf8_lossy(&attr.value);
+            let on = val == "1" || val == "true";
+            match attr.key.as_ref() {
+                b"gridLines" => ps.print_gridlines = on,
+                b"headings" => ps.print_headings = on,
+                b"horizontalCentered" => ps.center_horizontally = on,
+                b"verticalCentered" => ps.center_vertically = on,
+                _ => {}
+            }
+        }
+    }
+
+    /// Build a DataValidation (and its sqref) from a `<dataValidation>` element.
+    /// Boolean attributes default to false when absent, per the schema.
+    fn parse_data_validation_attrs(e: &BytesStart) -> (DataValidation, Option<String>) {
+        let mut dv = DataValidation {
+            allow_blank: false,
+            show_error: false,
+            show_input: false,
+            ..Default::default()
+        };
+        let mut sqref = None;
+        for attr in e.attributes().flatten() {
+            let val = String::from_utf8_lossy(&attr.value).to_string();
+            let on = val == "1" || val == "true";
+            match attr.key.as_ref() {
+                b"type" => dv.validation_type = val,
+                b"allowBlank" => dv.allow_blank = on,
+                b"showErrorMessage" => dv.show_error = on,
+                b"showInputMessage" => dv.show_input = on,
+                b"errorTitle" => dv.error_title = Some(val),
+                b"error" => dv.error_message = Some(val),
+                b"promptTitle" => dv.prompt_title = Some(val),
+                b"prompt" => dv.prompt_message = Some(val),
+                b"sqref" => sqref = Some(val),
+                _ => {}
+            }
+        }
+        (dv, sqref)
+    }
+
+    /// Insert a parsed data validation, keyed by the first cell of its sqref.
+    fn insert_data_validation(
+        worksheet: &mut Worksheet,
+        mut dv: DataValidation,
+        sqref: Option<String>,
+    ) {
+        if let Some(sq) = sqref {
+            let first = sq
+                .split([' ', ':'])
+                .next()
+                .unwrap_or("")
+                .replace('$', "");
+            if let Ok((row, col)) = parse_coordinate(&first) {
+                dv.sqref = Some(sq);
+                worksheet.data_validations.insert((row, col), dv);
+            }
+        }
+    }
+
+    /// Parse an xl/tables/tableN.xml part into a Table.
+    fn parse_table_xml<R: BufRead>(reader: R) -> Result<Table> {
+        let mut reader = Reader::from_reader(reader);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut table = Table::new(0, "", "");
+        table.auto_filter = false;
+        let mut header_row_count: u32 = 1;
+        let mut totals_row_count: u32 = 0;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                    b"table" => {
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
+                            match attr.key.as_ref() {
+                                b"id" => table.id = val.parse().unwrap_or(0),
+                                b"name" => table.name = val,
+                                b"displayName" => table.display_name = val,
+                                b"ref" => table.range = val,
+                                b"headerRowCount" => {
+                                    header_row_count = val.parse().unwrap_or(1)
+                                }
+                                b"totalsRowCount" => {
+                                    totals_row_count = val.parse().unwrap_or(0)
+                                }
+                                b"comment" => table.comment = Some(val),
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"autoFilter" => table.auto_filter = true,
+                    b"tableColumn" => {
+                        let mut id = 0u32;
+                        let mut name = String::new();
+                        let mut totals_label: Option<String> = None;
+                        let mut totals_fn: Option<String> = None;
+                        let mut formula: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
+                            match attr.key.as_ref() {
+                                b"id" => id = val.parse().unwrap_or(0),
+                                b"name" => name = val,
+                                b"totalsRowLabel" => totals_label = Some(val),
+                                b"totalsRowFunction" => totals_fn = Some(val),
+                                b"calculatedColumnFormula" => formula = Some(val),
+                                _ => {}
+                            }
+                        }
+                        let mut col = TableColumn::new(id, &name);
+                        col.totals_row_label = totals_label;
+                        col.calculated_column_formula = formula;
+                        if let Some(f) = totals_fn {
+                            col.totals_row_function = match f.as_str() {
+                                "average" => TotalsRowFunction::Average,
+                                "count" => TotalsRowFunction::Count,
+                                "countNums" => TotalsRowFunction::CountNums,
+                                "max" => TotalsRowFunction::Max,
+                                "min" => TotalsRowFunction::Min,
+                                "stdDev" => TotalsRowFunction::StdDev,
+                                "sum" => TotalsRowFunction::Sum,
+                                "var" => TotalsRowFunction::Var,
+                                other => TotalsRowFunction::Custom(other.to_string()),
+                            };
+                        }
+                        table.columns.push(col);
+                    }
+                    b"tableStyleInfo" => {
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value);
+                            let on = val == "1" || val == "true";
+                            match attr.key.as_ref() {
+                                // Keep the exact style name for round-trip fidelity
+                                b"name" => table.style = TableStyle::Custom(val.to_string()),
+                                b"showFirstColumn" => table.show_first_column = on,
+                                b"showLastColumn" => table.show_last_column = on,
+                                b"showRowStripes" => table.show_row_stripes = on,
+                                b"showColumnStripes" => table.show_column_stripes = on,
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(RustypyxlError::ParseError(format!(
+                        "XML parsing error in table: {}",
+                        e
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        if table.range.is_empty() {
+            return Err(RustypyxlError::InvalidFormat(
+                "table part missing ref attribute".to_string(),
+            ));
+        }
+        table.header_row = header_row_count > 0;
+        table.totals_row = totals_row_count > 0;
+        Ok(table)
+    }
+
     fn parse_worksheet_xml<R: BufRead>(
         reader: R,
         shared_strings: &[crate::cell::InternedString],
         styles: &HashMap<u32, Arc<CellStyle>>,
+        rels: &HashMap<String, SheetRel>,
         worksheet: &mut Worksheet,
     ) -> Result<()> {
         let mut reader = Reader::from_reader(reader);
@@ -1571,6 +2054,9 @@ impl Workbook {
         let mut hyperlinks: HashMap<(u32, u32), String> = HashMap::new();
         let mut protection: Option<WorksheetProtection> = None;
         let mut reserved_cells = false;
+        let mut current_validation: Option<(DataValidation, Option<String>)> = None;
+        let mut in_formula1 = false;
+        let mut in_formula2 = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -1639,26 +2125,56 @@ impl Workbook {
                         }
                     } else if name == b"hyperlink" {
                         let mut hyperlink_ref: Option<String> = None;
-                        let mut hyperlink_url: Option<String> = None;
+                        let mut location: Option<String> = None;
+                        let mut rel_id: Option<String> = None;
                         for attr in e.attributes().flatten() {
                             let attr_key = attr.key.as_ref();
                             if attr_key == b"ref" {
                                 hyperlink_ref =
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
                             } else if attr_key == b"location" {
-                                hyperlink_url =
+                                location =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr.key.local_name().as_ref() == b"id" {
+                                // r:id pointing into the sheet rels (external URL)
+                                rel_id =
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                         if let Some(ref_coord) = hyperlink_ref {
                             if let Ok((row, col)) = parse_coordinate(&ref_coord) {
-                                if let Some(url) = hyperlink_url {
+                                let url = rel_id
+                                    .and_then(|id| rels.get(&id))
+                                    .filter(|rel| rel.external)
+                                    .map(|rel| rel.target.clone())
+                                    .or_else(|| {
+                                        location.map(|loc| {
+                                            if loc.starts_with('#') {
+                                                loc
+                                            } else {
+                                                format!("#{}", loc)
+                                            }
+                                        })
+                                    });
+                                if let Some(url) = url {
                                     hyperlinks.insert((row, col), url);
-                                } else {
-                                    hyperlinks.insert((row, col), format!("#{}", ref_coord));
                                 }
                             }
                         }
+                    } else if name == b"pane" {
+                        Self::parse_pane_attrs(&e, worksheet);
+                    } else if name == b"autoFilter" {
+                        Self::parse_autofilter_attrs(&e, worksheet);
+                    } else if name == b"pageMargins" {
+                        Self::parse_page_margins_attrs(&e, worksheet);
+                    } else if name == b"pageSetup" {
+                        Self::parse_page_setup_attrs(&e, worksheet);
+                    } else if name == b"printOptions" {
+                        Self::parse_print_options_attrs(&e, worksheet);
+                    } else if name == b"dataValidation" {
+                        // Self-closing form (no formula children)
+                        let (dv, sqref) = Self::parse_data_validation_attrs(&e);
+                        Self::insert_data_validation(worksheet, dv, sqref);
                     } else if name == b"col" {
                         let mut col_min: Option<u32> = None;
                         let mut col_max: Option<u32> = None;
@@ -1839,6 +2355,15 @@ impl Workbook {
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
+                    } else if name == b"autoFilter" {
+                        // Start form (with filter column children, which are not yet modeled)
+                        Self::parse_autofilter_attrs(&e, worksheet);
+                    } else if name == b"dataValidation" {
+                        current_validation = Some(Self::parse_data_validation_attrs(&e));
+                    } else if name == b"formula1" {
+                        in_formula1 = current_validation.is_some();
+                    } else if name == b"formula2" {
+                        in_formula2 = current_validation.is_some();
                     } else if name == b"col" {
                         let mut col_min: Option<u32> = None;
                         let mut col_max: Option<u32> = None;
@@ -1906,13 +2431,31 @@ impl Workbook {
                         current_value = Some(TempValue::String(text.into_owned()));
                     } else if in_f && in_cell {
                         current_formula = Some(text.to_string());
+                    } else if in_formula1 {
+                        if let Some((dv, _)) = current_validation.as_mut() {
+                            dv.formula1 = Some(text.to_string());
+                        }
+                    } else if in_formula2 {
+                        if let Some((dv, _)) = current_validation.as_mut() {
+                            dv.formula2 = Some(text.to_string());
+                        }
                     }
                 }
                 Ok(Event::End(e)) => {
                     let name = e.name();
                     let name = name.as_ref();
 
-                    if name == b"hyperlinks" {
+                    if name == b"formula1" {
+                        in_formula1 = false;
+                    } else if name == b"formula2" {
+                        in_formula2 = false;
+                    } else if name == b"dataValidation" {
+                        if let Some((dv, sqref)) = current_validation.take() {
+                            Self::insert_data_validation(worksheet, dv, sqref);
+                        }
+                        in_formula1 = false;
+                        in_formula2 = false;
+                    } else if name == b"hyperlinks" {
                         _in_hyperlinks = false;
                         for ((row, col), url) in &hyperlinks {
                             if let Some(cell_data) =
@@ -2189,11 +2732,17 @@ mod tests {
     </sheets>
 </workbook>"#;
 
-        let (sheets, _) = Workbook::parse_workbook_xml(Cursor::new(workbook_xml)).unwrap();
+        let (sheets, _, _) = Workbook::parse_workbook_xml(Cursor::new(workbook_xml)).unwrap();
 
         assert_eq!(sheets.len(), 2);
-        assert_eq!(sheets[0], ("Data".to_string(), 8, "rId1".to_string()));
-        assert_eq!(sheets[1], ("Summary".to_string(), 2, "rId2".to_string()));
+        assert_eq!(
+            sheets[0],
+            ("Data".to_string(), 8, "rId1".to_string(), SheetVisibility::Visible)
+        );
+        assert_eq!(
+            sheets[1],
+            ("Summary".to_string(), 2, "rId2".to_string(), SheetVisibility::Visible)
+        );
     }
 
     #[test]

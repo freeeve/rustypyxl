@@ -1,5 +1,5 @@
 use crate::cell::InternedString;
-use crate::worksheet::{decode_cell_key, Worksheet, CellData};
+use crate::worksheet::{decode_cell_key, SheetVisibility, Worksheet, CellData};
 use crate::cell::CellValue;
 use crate::utils::column_to_letter;
 use crate::error::Result;
@@ -241,6 +241,8 @@ pub fn write_content_types<W: Write + Seek>(
     options: &FileOptions<'static, ExtendedFileOptions>,
     sheet_count: usize,
     has_shared_strings: bool,
+    comment_sheet_ids: &[u32],
+    table_count: usize,
 ) -> Result<()> {
     zip.start_file("[Content_Types].xml", options.clone())?;
 
@@ -286,6 +288,22 @@ pub fn write_content_types<W: Write + Seek>(
     override3.push_attribute(("PartName", "/xl/styles.xml"));
     override3.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"));
     writer.write_event(quick_xml::events::Event::Empty(override3))?;
+
+    for sheet_id in comment_sheet_ids {
+        let part_name = format!("/xl/comments/comment{}.xml", sheet_id);
+        let mut override_elem = BytesStart::new("Override");
+        override_elem.push_attribute(("PartName", part_name.as_str()));
+        override_elem.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"));
+        writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
+    }
+
+    for table_id in 1..=table_count {
+        let part_name = format!("/xl/tables/table{}.xml", table_id);
+        let mut override_elem = BytesStart::new("Override");
+        override_elem.push_attribute(("PartName", part_name.as_str()));
+        override_elem.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"));
+        writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
+    }
 
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("Types")))?;
 
@@ -336,8 +354,9 @@ pub fn write_doc_props<W: Write + Seek>(
 pub fn write_workbook_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
-    sheet_names: &[String],
+    sheets: &[(String, SheetVisibility)],
     named_ranges: &[(String, String)],
+    active_tab: usize,
 ) -> Result<()> {
     zip.start_file("xl/workbook.xml", options.clone())?;
     
@@ -360,19 +379,20 @@ pub fn write_workbook_xml<W: Write + Seek>(
     view.push_attribute(("showSheetTabs", "1"));
     view.push_attribute(("tabRatio", "600"));
     view.push_attribute(("firstSheet", "0"));
-    view.push_attribute(("activeTab", "0"));
+    let active_tab = active_tab.min(sheets.len().saturating_sub(1));
+    view.push_attribute(("activeTab", active_tab.to_string().as_str()));
     writer.write_event(quick_xml::events::Event::Empty(view))?;
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("bookViews")))?;
     
     // sheets
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new("sheets")))?;
-    for (idx, name) in sheet_names.iter().enumerate() {
+    for (idx, (name, visibility)) in sheets.iter().enumerate() {
         let sheet_id = (idx + 1) as u32;
         let r_id = format!("rId{}", idx + 1);
         let mut sheet = BytesStart::new("sheet");
         sheet.push_attribute(("name", name.as_str()));
         sheet.push_attribute(("sheetId", sheet_id.to_string().as_str()));
-        sheet.push_attribute(("state", "visible"));
+        sheet.push_attribute(("state", visibility.as_str()));
         sheet.push_attribute(("r:id", r_id.as_str()));
         writer.write_event(quick_xml::events::Event::Empty(sheet))?;
     }
@@ -724,13 +744,31 @@ fn write_border_side(xml: &mut String, name: &str, side: &Option<crate::style::B
     }
 }
 
+/// External (URL) hyperlinks in deterministic cell order. The position in
+/// this list defines the relationship id (`rIdHL{i+1}`) shared between the
+/// worksheet XML and its .rels part, so both must derive it from here.
+pub fn collect_external_hyperlinks(worksheet: &Worksheet) -> Vec<((u32, u32), String)> {
+    let mut links: Vec<((u32, u32), String)> = worksheet
+        .cells
+        .iter()
+        .filter_map(|(key, cd)| {
+            cd.hyperlink
+                .as_ref()
+                .filter(|url| !url.starts_with('#'))
+                .map(|url| (decode_cell_key(*key), url.clone()))
+        })
+        .collect();
+    links.sort_by_key(|(coord, _)| *coord);
+    links
+}
+
 pub fn write_worksheet_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
     worksheet: &Worksheet,
     sheet_id: u32,
     shared_string_map: &HashMap<InternedString, usize>,
-    _has_comments: bool,
+    table_rel_ids: &[String],
 ) -> Result<()> {
     let path = format!("xl/worksheets/sheet{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
@@ -740,6 +778,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(estimated_size)));
     let mut worksheet_start = BytesStart::new("worksheet");
     worksheet_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
+    worksheet_start.push_attribute(("xmlns:r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"));
     writer.write_event(quick_xml::events::Event::Start(worksheet_start))?;
     
     // sheetPr
@@ -1001,7 +1040,8 @@ pub fn write_worksheet_xml<W: Write + Seek>(
             dv.push_attribute(("allowBlank", if validation.allow_blank { "1" } else { "0" }));
             dv.push_attribute(("showErrorMessage", if validation.show_error { "1" } else { "0" }));
             dv.push_attribute(("showInputMessage", if validation.show_input { "1" } else { "0" }));
-            dv.push_attribute(("sqref", coord.as_str()));
+            // A loaded rule may span multiple cells; fall back to the key cell
+            dv.push_attribute(("sqref", validation.sqref.as_deref().unwrap_or(coord.as_str())));
             writer.write_event(quick_xml::events::Event::Start(dv))?;
             if let Some(ref f1) = validation.formula1 {
                 writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula1")))?;
@@ -1018,43 +1058,44 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("dataValidations")))?;
     }
 
-    // hyperlinks
-    let hyperlink_cells: Vec<((u32, u32), String)> = worksheet.cells
+    // hyperlinks: external URLs reference the sheet rels via r:id; internal
+    // links (stored with a '#' prefix) use the location attribute.
+    let external_links = collect_external_hyperlinks(worksheet);
+    let mut internal_links: Vec<((u32, u32), String)> = worksheet
+        .cells
         .iter()
-        .filter_map(|(key, cell_data)| {
-            cell_data.hyperlink.as_ref().map(|url| {
-                let (row, col) = decode_cell_key(*key);
-                ((row, col), url.clone())
-            })
+        .filter_map(|(key, cd)| {
+            cd.hyperlink
+                .as_ref()
+                .filter(|url| url.starts_with('#'))
+                .map(|url| (decode_cell_key(*key), url.clone()))
         })
         .collect();
-    
-    if !hyperlink_cells.is_empty() {
-        let mut hyperlinks = BytesStart::new("hyperlinks");
-        hyperlinks.push_attribute(("count", hyperlink_cells.len().to_string().as_str()));
+    internal_links.sort_by_key(|(coord, _)| *coord);
+
+    if !external_links.is_empty() || !internal_links.is_empty() {
+        // CT_Hyperlinks has no count attribute, unlike mergeCells/dataValidations
+        let hyperlinks = BytesStart::new("hyperlinks");
         writer.write_event(quick_xml::events::Event::Start(hyperlinks))?;
-        
-        for ((row, col), url) in hyperlink_cells {
+
+        for (i, ((row, col), _url)) in external_links.iter().enumerate() {
+            let coord = format!("{}{}", column_to_letter(*col), row);
+            let rel_id = format!("rIdHL{}", i + 1);
+            let mut hyperlink = BytesStart::new("hyperlink");
+            hyperlink.push_attribute(("ref", coord.as_str()));
+            hyperlink.push_attribute(("r:id", rel_id.as_str()));
+            writer.write_event(quick_xml::events::Event::Empty(hyperlink))?;
+        }
+
+        for ((row, col), url) in internal_links {
             let coord = format!("{}{}", column_to_letter(col), row);
             let mut hyperlink = BytesStart::new("hyperlink");
             hyperlink.push_attribute(("ref", coord.as_str()));
-            
-            // Check if it's an external URL or internal reference
-            if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
-                // External URL - would need relationship ID in full implementation
-                // For now, store as location attribute
-                hyperlink.push_attribute(("location", url.as_str()));
-            } else if url.starts_with('#') {
-                // Internal reference
-                hyperlink.push_attribute(("location", url.as_str()));
-            } else {
-                // Assume it's a URL
-                hyperlink.push_attribute(("location", url.as_str()));
-            }
-            
+            // The location attribute holds the anchor without the '#' prefix
+            hyperlink.push_attribute(("location", url.trim_start_matches('#')));
             writer.write_event(quick_xml::events::Event::Empty(hyperlink))?;
         }
-        
+
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("hyperlinks")))?;
     }
     
@@ -1085,6 +1126,19 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     // pageSetup
     if let Some(ref ps) = worksheet.page_setup {
         write_page_setup(&mut writer, ps)?;
+    }
+
+    // tableParts (near the end of CT_Worksheet)
+    if !table_rel_ids.is_empty() {
+        let mut table_parts = BytesStart::new("tableParts");
+        table_parts.push_attribute(("count", table_rel_ids.len().to_string().as_str()));
+        writer.write_event(quick_xml::events::Event::Start(table_parts))?;
+        for rel_id in table_rel_ids {
+            let mut part = BytesStart::new("tablePart");
+            part.push_attribute(("r:id", rel_id.as_str()));
+            writer.write_event(quick_xml::events::Event::Empty(part))?;
+        }
+        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("tableParts")))?;
     }
 
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("worksheet")))?;
@@ -1591,7 +1645,8 @@ pub fn write_table_xml<W: Write + Seek>(
     let mut writer = Writer::new(Cursor::new(Vec::new()));
     let mut table_start = BytesStart::new("table");
     table_start.push_attribute(("xmlns", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
-    table_start.push_attribute(("id", table.id.to_string().as_str()));
+    // Use the workbook-assigned id, not table.id, to guarantee uniqueness
+    table_start.push_attribute(("id", table_id.to_string().as_str()));
     table_start.push_attribute(("name", table.name.as_str()));
     table_start.push_attribute(("displayName", table.display_name.as_str()));
     table_start.push_attribute(("ref", table.range.as_str()));
@@ -1605,10 +1660,24 @@ pub fn write_table_xml<W: Write + Seek>(
 
     writer.write_event(Event::Start(table_start))?;
 
-    // autoFilter
+    // autoFilter: the filter range must exclude the totals row
     if table.auto_filter {
+        let filter_ref = if table.totals_row {
+            match crate::utils::parse_range(&table.range) {
+                Ok(((r1, c1), (r2, c2))) if r2 > r1 => format!(
+                    "{}{}:{}{}",
+                    column_to_letter(c1),
+                    r1,
+                    column_to_letter(c2),
+                    r2 - 1
+                ),
+                _ => table.range.clone(),
+            }
+        } else {
+            table.range.clone()
+        };
         let mut af = BytesStart::new("autoFilter");
-        af.push_attribute(("ref", table.range.as_str()));
+        af.push_attribute(("ref", filter_ref.as_str()));
         writer.write_event(Event::Empty(af))?;
     }
 

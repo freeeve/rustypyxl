@@ -117,6 +117,30 @@ impl PyWorksheet {
         self.cached_title.clone()
     }
 
+    /// Sheet visibility: "visible", "hidden", or "veryHidden" (openpyxl-compatible).
+    #[getter]
+    fn sheet_state(&self, py: Python<'_>) -> String {
+        if let Some(ref wb) = self.workbook {
+            let this = wb.borrow(py);
+            if let Some(ws) = this.inner.worksheets.get(self.index) {
+                return ws.visibility.as_str().to_string();
+            }
+        }
+        "visible".to_string()
+    }
+
+    /// Set sheet visibility: "visible", "hidden", or "veryHidden".
+    #[setter]
+    fn set_sheet_state(&self, py: Python<'_>, value: &str) -> PyResult<()> {
+        if !matches!(value, "visible" | "hidden" | "veryHidden") {
+            return Err(PyValueError::new_err(
+                "sheet_state must be 'visible', 'hidden', or 'veryHidden'",
+            ));
+        }
+        let state = rustypyxl_core::SheetVisibility::from_attr(value);
+        self.with_sheet_mut(py, |ws| ws.visibility = state)
+    }
+
     /// Rename the worksheet (e.g. ws.title = "Results").
     #[setter]
     fn set_title(&mut self, value: String) -> PyResult<()> {

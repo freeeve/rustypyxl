@@ -61,6 +61,38 @@ impl CellData {
     }
 }
 
+/// Sheet visibility as stored on the workbook.xml `<sheet state>` attribute.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SheetVisibility {
+    /// Shown in the tab bar (default).
+    #[default]
+    Visible,
+    /// Hidden, but can be unhidden from the Excel UI.
+    Hidden,
+    /// Hidden and only unhideable through VBA / the object model.
+    VeryHidden,
+}
+
+impl SheetVisibility {
+    /// Attribute value for workbook.xml.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SheetVisibility::Visible => "visible",
+            SheetVisibility::Hidden => "hidden",
+            SheetVisibility::VeryHidden => "veryHidden",
+        }
+    }
+
+    /// Parse the workbook.xml attribute value; unknown values load as Visible.
+    pub fn from_attr(value: &str) -> Self {
+        match value {
+            "hidden" => SheetVisibility::Hidden,
+            "veryHidden" => SheetVisibility::VeryHidden,
+            _ => SheetVisibility::Visible,
+        }
+    }
+}
+
 /// Data validation rule for a cell.
 #[derive(Clone, Debug)]
 pub struct DataValidation {
@@ -84,6 +116,9 @@ pub struct DataValidation {
     pub prompt_title: Option<String>,
     /// Input prompt message.
     pub prompt_message: Option<String>,
+    /// Full sqref the rule applies to (may span multiple cells/ranges).
+    /// When None, the rule applies to the single cell it is keyed under.
+    pub sqref: Option<String>,
 }
 
 impl Default for DataValidation {
@@ -99,6 +134,7 @@ impl Default for DataValidation {
             show_input: true,
             prompt_title: None,
             prompt_message: None,
+            sqref: None,
         }
     }
 }
@@ -176,6 +212,8 @@ pub struct Worksheet {
     pub page_setup: Option<PageSetup>,
     /// Freeze panes anchor cell (e.g. "B2"); rows above and columns left of it stay frozen.
     pub freeze_panes: Option<String>,
+    /// Sheet visibility (visible / hidden / veryHidden).
+    pub visibility: SheetVisibility,
 }
 
 impl Worksheet {
@@ -196,6 +234,7 @@ impl Worksheet {
             tables: Vec::new(),
             page_setup: None,
             freeze_panes: None,
+            visibility: SheetVisibility::default(),
         }
     }
 

@@ -569,3 +569,108 @@ fn test_t_str_cells_are_literal_text_not_shared_index() {
         other => panic!("B1: expected literal \"0\", got {:?}", other),
     }
 }
+
+/// Load+save must preserve workbook structure: hidden sheets, active tab,
+/// freeze panes, autofilter, data validations, page setup, hyperlinks, and
+/// tables. Before this round-trip support existed, save silently stripped
+/// all of these from any loaded file.
+#[test]
+fn test_roundtrip_preserves_structure() {
+    use rustypyxl_core::{DataValidation, SheetVisibility};
+    use rustypyxl_core::pagesetup::PageMargins;
+
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("Main".to_string())).unwrap();
+    wb.create_sheet(Some("Secret".to_string())).unwrap();
+    wb.set_cell_value_in_sheet("Main", 1, 1, CellValue::from("data")).unwrap();
+    wb.set_cell_value_in_sheet("Secret", 1, 1, CellValue::from("hidden data")).unwrap();
+    wb.active_sheet = 0;
+
+    {
+        let ws = wb.get_sheet_by_name_mut("Secret").unwrap();
+        ws.visibility = SheetVisibility::Hidden;
+    }
+    {
+        let ws = wb.get_sheet_by_name_mut("Main").unwrap();
+        ws.set_freeze_panes(Some("B2".to_string()));
+        ws.set_auto_filter(AutoFilter::new("A1:C10"));
+
+        let dv = DataValidation {
+            validation_type: "list".to_string(),
+            formula1: Some("\"Yes,No\"".to_string()),
+            sqref: Some("D2:D10".to_string()),
+            ..Default::default()
+        };
+        ws.add_data_validation(2, 4, dv);
+
+        let mut ps = PageSetup::new();
+        ps.orientation = Orientation::Landscape;
+        ps.paper_size = PaperSize::A4;
+        ps.scale = 80;
+        ps.print_gridlines = true;
+        ps.margins = PageMargins { left: 1.5, right: 0.25, top: 2.0, bottom: 0.5, header: 0.1, footer: 0.9 };
+        ws.set_page_setup(ps);
+
+        ws.set_cell_hyperlink(3, 1, "https://example.com/page?a=1&b=2".to_string());
+        ws.set_cell_hyperlink(4, 1, "#Secret!A1".to_string());
+
+        let table = Table::with_headers(1, "MyTable", "F1:G3", &["Alpha", "Beta"]);
+        ws.add_table(table);
+    }
+
+    let path = temp_file("test_roundtrip_structure.xlsx");
+    wb.save(&path).unwrap();
+
+    let wb2 = Workbook::load(&path).unwrap();
+    assert_eq!(wb2.active_sheet, 0);
+
+    let secret = wb2.get_sheet_by_name("Secret").unwrap();
+    assert_eq!(secret.visibility, SheetVisibility::Hidden, "hidden sheet became visible");
+
+    let main = wb2.get_sheet_by_name("Main").unwrap();
+    assert_eq!(main.visibility, SheetVisibility::Visible);
+    assert_eq!(main.freeze_panes.as_deref(), Some("B2"), "freeze panes lost");
+
+    let af = main.auto_filter.as_ref().expect("autofilter lost");
+    assert_eq!(af.range, "A1:C10");
+
+    let dv = main.data_validations.get(&(2, 4)).expect("data validation lost");
+    assert_eq!(dv.validation_type, "list");
+    assert_eq!(dv.formula1.as_deref(), Some("\"Yes,No\""));
+    assert_eq!(dv.sqref.as_deref(), Some("D2:D10"), "validation range narrowed");
+
+    let ps = main.page_setup.as_ref().expect("page setup lost");
+    assert_eq!(ps.orientation, Orientation::Landscape);
+    assert_eq!(ps.paper_size, PaperSize::A4);
+    assert_eq!(ps.scale, 80);
+    assert!(ps.print_gridlines);
+    assert_eq!(ps.margins.left, 1.5);
+    assert_eq!(ps.margins.top, 2.0);
+
+    let link = main.get_cell(3, 1).and_then(|c| c.hyperlink.clone());
+    assert_eq!(link.as_deref(), Some("https://example.com/page?a=1&b=2"), "external hyperlink lost");
+    let internal = main.get_cell(4, 1).and_then(|c| c.hyperlink.clone());
+    assert_eq!(internal.as_deref(), Some("#Secret!A1"), "internal hyperlink lost");
+
+    assert_eq!(main.tables.len(), 1, "table lost");
+    let t = &main.tables[0];
+    assert_eq!(t.name, "MyTable");
+    assert_eq!(t.range, "F1:G3");
+    assert_eq!(t.columns.len(), 2);
+    assert_eq!(t.columns[0].name, "Alpha");
+    assert!(t.header_row);
+
+    // A second save+load cycle must not degrade anything further.
+    let path2 = temp_file("test_roundtrip_structure2.xlsx");
+    wb2.save(&path2).unwrap();
+    let wb3 = Workbook::load(&path2).unwrap();
+    assert_eq!(wb3.get_sheet_by_name("Secret").unwrap().visibility, SheetVisibility::Hidden);
+    assert_eq!(wb3.get_sheet_by_name("Main").unwrap().tables.len(), 1);
+    assert_eq!(
+        wb3.get_sheet_by_name("Main").unwrap().get_cell(3, 1).and_then(|c| c.hyperlink.clone()).as_deref(),
+        Some("https://example.com/page?a=1&b=2")
+    );
+
+    fs::remove_file(&path).ok();
+    fs::remove_file(&path2).ok();
+}

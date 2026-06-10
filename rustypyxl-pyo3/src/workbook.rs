@@ -71,17 +71,19 @@ impl PyWorkbook {
         ))
     }
 
-    /// Get the active worksheet.
+    /// Get the active worksheet (the active tab from the loaded file, or
+    /// the first sheet for new workbooks).
     #[getter]
     fn active(self_: Py<Self>, py: Python<'_>) -> PyResult<PyWorksheet> {
         let this = self_.borrow(py);
         if this.inner.worksheets.is_empty() {
             return Err(PyValueError::new_err("No worksheets in workbook"));
         }
-        let title = this.inner.sheet_names.first()
+        let idx = this.inner.active_sheet.min(this.inner.worksheets.len() - 1);
+        let title = this.inner.sheet_names.get(idx)
             .cloned()
             .unwrap_or_else(|| "Sheet1".to_string());
-        Ok(PyWorksheet::connected(self_.clone_ref(py), 0, title))
+        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, title))
     }
 
     /// Get all sheet names.

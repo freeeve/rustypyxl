@@ -45,6 +45,22 @@ impl PaperSize {
             PaperSize::Custom(code) => *code,
         }
     }
+
+    /// Resolve a numeric paperSize attribute back to a variant.
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            1 => PaperSize::Letter,
+            3 => PaperSize::Tabloid,
+            5 => PaperSize::Legal,
+            7 => PaperSize::Executive,
+            8 => PaperSize::A3,
+            9 => PaperSize::A4,
+            11 => PaperSize::A5,
+            12 => PaperSize::B4,
+            13 => PaperSize::B5,
+            other => PaperSize::Custom(other),
+        }
+    }
 }
 
 /// Page orientation.
