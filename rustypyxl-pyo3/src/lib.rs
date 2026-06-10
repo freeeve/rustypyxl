@@ -15,7 +15,7 @@ use cell::PyCell;
 use streaming::PyStreamingWorkbook;
 use style::{PyFont, PyAlignment, PyPatternFill, PyBorder, PySide, PyProtection, PyColor, PyGradientFill, PyGradientStop};
 use workbook::PyWorkbook;
-use worksheet::PyWorksheet;
+use worksheet::{PyCellRangeIterator, PyWorksheet};
 
 /// Load a workbook from a file path, bytes, or file-like object.
 ///
@@ -42,6 +42,7 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorkbook>()?;
     m.add_class::<PyWorksheet>()?;
     m.add_class::<PyCell>()?;
+    m.add_class::<PyCellRangeIterator>()?;
 
     // Streaming (write-only) classes
     m.add_class::<PyStreamingWorkbook>()?;

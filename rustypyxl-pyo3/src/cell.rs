@@ -402,4 +402,22 @@ impl PyCell {
     fn __repr__(&self, py: Python<'_>) -> String {
         self.__str__(py)
     }
+
+    /// GC support: a connected cell holds a workbook reference and possibly
+    /// an arbitrary cached value, so reference cycles through Python objects
+    /// must be traversable.
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref wb) = self.workbook {
+            visit.call(wb)?;
+        }
+        if let Some(ref value) = self.value_internal {
+            visit.call(value)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.workbook = None;
+        self.value_internal = None;
+    }
 }

@@ -1184,7 +1184,15 @@ pub(crate) fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObjec
     match value {
         CellValue::Empty => py.None(),
         CellValue::String(s) => s.as_ref().to_object(py),
-        CellValue::Number(n) => n.to_object(py),
+        CellValue::Number(n) => {
+            // openpyxl returns int for integral cells; xlsx numbers are f64,
+            // so this is exact within the 2^53 integer range
+            if n.fract() == 0.0 && n.is_finite() && n.abs() < 9.007_199_254_740_992e15 {
+                (*n as i64).to_object(py)
+            } else {
+                n.to_object(py)
+            }
+        }
         CellValue::Boolean(b) => b.to_object(py),
         CellValue::Formula(f) => format!("={}", f).to_object(py),
         CellValue::Date(d) => {

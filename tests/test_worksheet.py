@@ -130,13 +130,13 @@ class TestIterRows:
         ws = workbook_with_sheet.active
         ws.append([1, 2, 3])
         ws.append([4, 5, 6])
-        rows = ws.iter_rows(min_row=1, max_row=2, min_col=1, max_col=3, values_only=True)
-        assert rows == [[1, 2, 3], [4, 5, 6]]
+        rows = list(ws.iter_rows(min_row=1, max_row=2, min_col=1, max_col=3, values_only=True))
+        assert rows == [(1, 2, 3), (4, 5, 6)]
 
     def test_iter_rows_cells(self, workbook_with_sheet):
         ws = workbook_with_sheet.active
         ws.append(["a", "b"])
-        rows = ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=2)
+        rows = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=2))
         assert rows[0][0].value == "a"
         assert rows[0][1].value == "b"
 
@@ -144,8 +144,19 @@ class TestIterRows:
         ws = workbook_with_sheet.active
         ws.append([1, 2])
         ws.append([3, 4])
-        rows = ws.iter_rows(values_only=True)
-        assert rows == [[1, 2], [3, 4]]
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows == [(1, 2), (3, 4)]
+
+    def test_iter_rows_is_lazy(self, workbook_with_sheet):
+        ws = workbook_with_sheet.active
+        ws.append([1, 2])
+        ws.append([3, 4])
+        it = ws.iter_rows(values_only=True)
+        # openpyxl semantics: a real iterator, not a materialized list
+        assert next(it) == (1, 2)
+        assert next(it) == (3, 4)
+        with pytest.raises(StopIteration):
+            next(it)
 
 
 class TestIterCols:
@@ -153,8 +164,8 @@ class TestIterCols:
         ws = workbook_with_sheet.active
         ws.append([1, 2])
         ws.append([3, 4])
-        cols = ws.iter_cols(min_col=1, max_col=2, min_row=1, max_row=2, values_only=True)
-        assert cols == [[1, 3], [2, 4]]
+        cols = list(ws.iter_cols(min_col=1, max_col=2, min_row=1, max_row=2, values_only=True))
+        assert cols == [(1, 3), (2, 4)]
 
 
 class TestDimensions:

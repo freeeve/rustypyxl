@@ -74,18 +74,6 @@ impl PyWorksheet {
         Ok((1, 1, 1, 1))
     }
 
-    /// Read a single cell value into a Python object (None if empty/missing).
-    fn read_value(&self, row: u32, column: u32, py: Python<'_>) -> PyResult<PyObject> {
-        if let Some(ref wb) = self.workbook {
-            let this = wb.borrow(py);
-            let idx = self.resolve_index(&this)?;
-            if let Some(cell) = this.inner.worksheets[idx].get_cell(row, column) {
-                return Ok(cell_value_to_python(&cell.value, py));
-            }
-        }
-        Ok(py.None())
-    }
-
     /// Run a closure against the mutable core worksheet.
     fn with_sheet_mut<F: FnOnce(&mut Worksheet)>(&self, py: Python<'_>, f: F) -> PyResult<()> {
         if let Some(ref wb) = self.workbook {
@@ -234,9 +222,9 @@ impl PyWorksheet {
         Ok(self.make_cell(row, col, py))
     }
 
-    /// Iterate over rows. Returns a list of rows; each row is a list of Cell
-    /// objects, or of values when values_only=True. Bounds default to the
-    /// sheet's used range.
+    /// Iterate over rows lazily, like openpyxl: yields one tuple per row,
+    /// of Cell objects (or raw values when values_only=True). Bounds default
+    /// to the sheet's used range.
     #[pyo3(signature = (min_row=None, max_row=None, min_col=None, max_col=None, values_only=false))]
     fn iter_rows(
         &self,
@@ -246,29 +234,22 @@ impl PyWorksheet {
         max_col: Option<u32>,
         values_only: bool,
         py: Python<'_>,
-    ) -> PyResult<Vec<Vec<PyObject>>> {
+    ) -> PyResult<PyCellRangeIterator> {
         let (_, _, dmax_r, dmax_c) = self.sheet_dims(py)?;
-        let min_r = min_row.unwrap_or(1).max(1);
-        let max_r = max_row.unwrap_or(dmax_r);
-        let min_c = min_col.unwrap_or(1).max(1);
-        let max_c = max_col.unwrap_or(dmax_c);
-
-        let mut rows = Vec::new();
-        for r in min_r..=max_r {
-            let mut row = Vec::new();
-            for c in min_c..=max_c {
-                if values_only {
-                    row.push(self.read_value(r, c, py)?);
-                } else {
-                    row.push(Py::new(py, self.make_cell(r, c, py))?.into_any());
-                }
-            }
-            rows.push(row);
-        }
-        Ok(rows)
+        Ok(PyCellRangeIterator {
+            workbook: self.workbook.as_ref().map(|wb| wb.clone_ref(py)),
+            sheet_uid: self.uid,
+            min_row: min_row.unwrap_or(1).max(1),
+            max_row: max_row.unwrap_or(dmax_r),
+            min_col: min_col.unwrap_or(1).max(1),
+            max_col: max_col.unwrap_or(dmax_c),
+            values_only,
+            by_columns: false,
+            position: min_row.unwrap_or(1).max(1),
+        })
     }
 
-    /// Iterate over columns (column-major). See iter_rows for argument behavior.
+    /// Iterate over columns lazily (one tuple per column). See iter_rows.
     #[pyo3(signature = (min_col=None, max_col=None, min_row=None, max_row=None, values_only=false))]
     fn iter_cols(
         &self,
@@ -278,26 +259,19 @@ impl PyWorksheet {
         max_row: Option<u32>,
         values_only: bool,
         py: Python<'_>,
-    ) -> PyResult<Vec<Vec<PyObject>>> {
+    ) -> PyResult<PyCellRangeIterator> {
         let (_, _, dmax_r, dmax_c) = self.sheet_dims(py)?;
-        let min_c = min_col.unwrap_or(1).max(1);
-        let max_c = max_col.unwrap_or(dmax_c);
-        let min_r = min_row.unwrap_or(1).max(1);
-        let max_r = max_row.unwrap_or(dmax_r);
-
-        let mut cols = Vec::new();
-        for c in min_c..=max_c {
-            let mut col = Vec::new();
-            for r in min_r..=max_r {
-                if values_only {
-                    col.push(self.read_value(r, c, py)?);
-                } else {
-                    col.push(Py::new(py, self.make_cell(r, c, py))?.into_any());
-                }
-            }
-            cols.push(col);
-        }
-        Ok(cols)
+        Ok(PyCellRangeIterator {
+            workbook: self.workbook.as_ref().map(|wb| wb.clone_ref(py)),
+            sheet_uid: self.uid,
+            min_row: min_row.unwrap_or(1).max(1),
+            max_row: max_row.unwrap_or(dmax_r),
+            min_col: min_col.unwrap_or(1).max(1),
+            max_col: max_col.unwrap_or(dmax_c),
+            values_only,
+            by_columns: true,
+            position: min_col.unwrap_or(1).max(1),
+        })
     }
 
     /// Get the maximum row containing data.
@@ -382,16 +356,46 @@ impl PyWorksheet {
         Ok(Vec::new())
     }
 
-    /// Append a row of values after the last row containing data.
-    fn append(&self, iterable: Vec<Bound<'_, PyAny>>, py: Python<'_>) -> PyResult<()> {
+    /// Append a row after the last row containing data. Accepts any
+    /// iterable of values (list, tuple, generator), or a dict mapping
+    /// column letters or 1-based indices to values, like openpyxl.
+    fn append(&self, iterable: Bound<'_, PyAny>, py: Python<'_>) -> PyResult<()> {
+        // Collect (column, value) pairs before borrowing the workbook, since
+        // evaluating a generator can run arbitrary Python code
+        let mut cells: Vec<(u32, rustypyxl_core::CellValue)> = Vec::new();
+        if let Ok(dict) = iterable.downcast::<pyo3::types::PyDict>() {
+            for (key, value) in dict.iter() {
+                let column = if let Ok(idx) = key.extract::<u32>() {
+                    idx
+                } else if let Ok(letter) = key.extract::<String>() {
+                    let (_, col) = parse_coordinate(&format!("{}1", letter))
+                        .map_err(|_| {
+                            PyValueError::new_err(format!("Invalid column key '{}'", letter))
+                        })?;
+                    col
+                } else {
+                    return Err(PyValueError::new_err(
+                        "dict keys must be column letters or 1-based indices",
+                    ));
+                };
+                if column == 0 {
+                    return Err(PyValueError::new_err("Column index must be at least 1"));
+                }
+                cells.push((column, python_to_cell_value(&value)?));
+            }
+        } else {
+            for (i, item) in iterable.try_iter()?.enumerate() {
+                cells.push(((i as u32) + 1, python_to_cell_value(&item?)?));
+            }
+        }
+
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
             let idx = self.resolve_index(&this)?;
             let ws = &mut this.inner.worksheets[idx];
             let target_row = if ws.cells.is_empty() { 1 } else { ws.dimensions().2 + 1 };
-            for (i, value) in iterable.iter().enumerate() {
-                let cv = python_to_cell_value(value)?;
-                ws.set_cell_value(target_row, (i as u32) + 1, cv);
+            for (column, cv) in cells {
+                ws.set_cell_value(target_row, column, cv);
             }
             Ok(())
         } else {
@@ -450,5 +454,101 @@ impl PyWorksheet {
 
     fn __repr__(&self, py: Python<'_>) -> String {
         self.__str__(py)
+    }
+
+    /// GC support: worksheet handles hold a workbook reference.
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref wb) = self.workbook {
+            visit.call(wb)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.workbook = None;
+    }
+}
+
+
+/// Lazy iterator over a worksheet range, yielding one tuple per row (or per
+/// column for iter_cols) like openpyxl's generators. Resolves the sheet by
+/// stable uid on every step, so concurrent sheet removal raises instead of
+/// reading a neighbor.
+#[pyclass(name = "CellRangeIterator")]
+pub struct PyCellRangeIterator {
+    workbook: Option<Py<PyWorkbook>>,
+    sheet_uid: u64,
+    min_row: u32,
+    max_row: u32,
+    min_col: u32,
+    max_col: u32,
+    values_only: bool,
+    by_columns: bool,
+    /// Next row (or column when by_columns) to yield.
+    position: u32,
+}
+
+impl PyCellRangeIterator {
+    fn read_value(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
+        if let Some(ref wb) = self.workbook {
+            let this = wb.borrow(py);
+            let idx = this.inner.sheet_index_by_uid(self.sheet_uid).ok_or_else(|| {
+                PyValueError::new_err("Worksheet no longer exists in this workbook")
+            })?;
+            if let Some(cell) = this.inner.worksheets[idx].get_cell(row, col) {
+                return Ok(cell_value_to_python(&cell.value, py));
+            }
+        }
+        Ok(py.None())
+    }
+
+    fn make_item(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
+        if self.values_only {
+            self.read_value(row, col, py)
+        } else if let Some(ref wb) = self.workbook {
+            Ok(Py::new(py, PyCell::connected(row, col, wb.clone_ref(py), self.sheet_uid))?.into_any())
+        } else {
+            Ok(Py::new(py, PyCell::new(row, col))?.into_any())
+        }
+    }
+}
+
+#[pymethods]
+impl PyCellRangeIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        use pyo3::types::PyTuple;
+
+        let limit = if self.by_columns { self.max_col } else { self.max_row };
+        if self.position > limit {
+            return Ok(None);
+        }
+        let outer = self.position;
+        self.position += 1;
+
+        let items: Vec<PyObject> = if self.by_columns {
+            (self.min_row..=self.max_row)
+                .map(|row| self.make_item(row, outer, py))
+                .collect::<PyResult<_>>()?
+        } else {
+            (self.min_col..=self.max_col)
+                .map(|col| self.make_item(outer, col, py))
+                .collect::<PyResult<_>>()?
+        };
+        Ok(Some(PyTuple::new(py, items)?.into_any().unbind()))
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref wb) = self.workbook {
+            visit.call(wb)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.workbook = None;
     }
 }

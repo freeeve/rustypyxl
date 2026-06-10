@@ -2,7 +2,25 @@
 
 #![allow(non_snake_case)]
 
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+
+/// Accept either an rgb string or a Color object wherever openpyxl does.
+fn coerce_color(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<String>> {
+    let Some(v) = value else { return Ok(None) };
+    if v.is_none() {
+        return Ok(None);
+    }
+    if let Ok(s) = v.extract::<String>() {
+        return Ok(Some(s));
+    }
+    if let Ok(color) = v.extract::<PyColor>() {
+        return Ok(color.rgb);
+    }
+    Err(PyTypeError::new_err(
+        "expected an rgb string or a Color object",
+    ))
+}
 
 /// Font styling (openpyxl-compatible).
 #[pyclass(name = "Font")]
@@ -39,19 +57,19 @@ impl PyFont {
         italic: bool,
         underline: Option<String>,
         strike: bool,
-        color: Option<String>,
+        color: Option<Bound<'_, PyAny>>,
         vertAlign: Option<String>,
-    ) -> Self {
-        PyFont {
+    ) -> PyResult<Self> {
+        Ok(PyFont {
             name,
             size,
             bold,
             italic,
             underline,
             strike,
-            color,
+            color: coerce_color(color.as_ref())?,
             vertAlign,
-        }
+        })
     }
 
     fn copy(&self) -> PyFont {
@@ -143,19 +161,36 @@ pub struct PyPatternFill {
 #[pymethods]
 impl PyPatternFill {
     #[new]
-    #[pyo3(signature = (fill_type=None, fgColor=None, bgColor=None, patternType=None))]
+    // start_color/end_color are openpyxl's canonical aliases for fgColor/bgColor
+    #[pyo3(signature = (fill_type=None, fgColor=None, bgColor=None, patternType=None, start_color=None, end_color=None))]
     fn new(
         fill_type: Option<String>,
-        fgColor: Option<String>,
-        bgColor: Option<String>,
+        fgColor: Option<Bound<'_, PyAny>>,
+        bgColor: Option<Bound<'_, PyAny>>,
         patternType: Option<String>,
-    ) -> Self {
-        PyPatternFill {
+        start_color: Option<Bound<'_, PyAny>>,
+        end_color: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let fg = coerce_color(fgColor.as_ref())?.or(coerce_color(start_color.as_ref())?);
+        let bg = coerce_color(bgColor.as_ref())?.or(coerce_color(end_color.as_ref())?);
+        Ok(PyPatternFill {
             fill_type: fill_type.or(patternType.clone()),
-            fgColor,
-            bgColor,
+            fgColor: fg,
+            bgColor: bg,
             patternType,
-        }
+        })
+    }
+
+    /// openpyxl alias for fgColor.
+    #[getter]
+    fn start_color(&self) -> Option<String> {
+        self.fgColor.clone()
+    }
+
+    /// openpyxl alias for bgColor.
+    #[getter]
+    fn end_color(&self) -> Option<String> {
+        self.bgColor.clone()
     }
 
     fn copy(&self) -> PyPatternFill {
@@ -188,8 +223,11 @@ pub struct PySide {
 impl PySide {
     #[new]
     #[pyo3(signature = (style=None, color=None))]
-    fn new(style: Option<String>, color: Option<String>) -> Self {
-        PySide { style, color }
+    fn new(style: Option<String>, color: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(PySide {
+            style,
+            color: coerce_color(color.as_ref())?,
+        })
     }
 
     fn copy(&self) -> PySide {
