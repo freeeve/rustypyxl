@@ -196,22 +196,21 @@ impl HeaderFooterSection {
         self
     }
 
-    /// Build the header/footer string with section codes.
-    pub fn to_string(&self) -> String {
-        let mut result = String::new();
+}
+
+/// Builds the header/footer string with section codes.
+impl std::fmt::Display for HeaderFooterSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(ref left) = self.left {
-            result.push_str("&L");
-            result.push_str(left);
+            write!(f, "&L{}", left)?;
         }
         if let Some(ref center) = self.center {
-            result.push_str("&C");
-            result.push_str(center);
+            write!(f, "&C{}", center)?;
         }
         if let Some(ref right) = self.right {
-            result.push_str("&R");
-            result.push_str(right);
+            write!(f, "&R{}", right)?;
         }
-        result
+        Ok(())
     }
 }
 
@@ -500,7 +499,7 @@ mod tests {
     fn test_header_footer_section() {
         let section = HeaderFooterSection::new()
             .with_left("Left text")
-            .with_center(&format!("Page {} of {}", codes::PAGE_NUMBER, codes::TOTAL_PAGES))
+            .with_center(format!("Page {} of {}", codes::PAGE_NUMBER, codes::TOTAL_PAGES))
             .with_right(codes::DATE);
 
         let s = section.to_string();

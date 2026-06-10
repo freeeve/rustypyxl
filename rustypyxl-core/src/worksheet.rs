@@ -254,7 +254,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.value = value.into();
         self.update_dimensions(row, column);
     }
@@ -264,7 +264,7 @@ impl Worksheet {
         self.update_dimensions(row, column);
         self.cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new)
+            .or_default()
     }
 
     /// Set complete cell data at the specified position.
@@ -278,7 +278,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.value = CellValue::Formula(formula.into());
         self.update_dimensions(row, column);
     }
@@ -288,7 +288,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.hyperlink = Some(url);
         self.update_dimensions(row, column);
     }
@@ -298,7 +298,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.comment = Some(comment);
         self.update_dimensions(row, column);
     }
@@ -308,7 +308,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.style = Some(Arc::new(style));
         self.update_dimensions(row, column);
     }
@@ -318,7 +318,7 @@ impl Worksheet {
         let cell_data = self
             .cells
             .entry(cell_key(row, column))
-            .or_insert_with(CellData::new);
+            .or_default();
         cell_data.number_format = Some(format.into());
         self.update_dimensions(row, column);
     }
@@ -378,10 +378,11 @@ impl Worksheet {
 
     /// Enable sheet protection.
     pub fn enable_protection(&mut self, password: Option<String>) {
-        let mut protection = WorksheetProtection::default();
-        protection.sheet = true;
-        protection.password = password;
-        self.protection = Some(protection);
+        self.protection = Some(WorksheetProtection {
+            sheet: true,
+            password,
+            ..Default::default()
+        });
     }
 
     /// Disable sheet protection.
@@ -391,7 +392,7 @@ impl Worksheet {
 
     /// Check if sheet is protected.
     pub fn is_protected(&self) -> bool {
-        self.protection.as_ref().map_or(false, |p| p.sheet)
+        self.protection.as_ref().is_some_and(|p| p.sheet)
     }
 
     /// Get the maximum row number with data.

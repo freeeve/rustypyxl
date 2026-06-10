@@ -30,8 +30,10 @@ pub struct NamedRange {
 
 /// Compression level for saving workbooks.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Default)]
 pub enum CompressionLevel {
     /// No compression - fastest saves, largest files
+    #[default]
     None,
     /// Fast compression (deflate level 1) - good balance
     Fast,
@@ -41,11 +43,6 @@ pub enum CompressionLevel {
     Best,
 }
 
-impl std::default::Default for CompressionLevel {
-    fn default() -> Self {
-        CompressionLevel::None  // Default to fastest for benchmarking
-    }
-}
 
 /// An Excel workbook containing worksheets.
 pub struct Workbook {
@@ -60,6 +57,9 @@ pub struct Workbook {
     /// Style registry for fonts, fills, borders, number formats, and cell formats.
     pub styles: StyleRegistry,
 }
+
+/// (sheet name, sheet id, relationship id) parsed from workbook.xml.
+type SheetInfo = (String, u32, String);
 
 impl Workbook {
     /// Create a new empty workbook.
@@ -489,14 +489,16 @@ impl Workbook {
         };
 
         // Load all worksheet and comments XML into memory
-        let mut sheet_data: Vec<(String, u32, Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(sheet_info.len());
+        // (sheet name, sheet id, worksheet XML bytes, optional comments XML bytes)
+        type SheetXml = (String, u32, Vec<u8>, Option<Vec<u8>>);
+        let mut sheet_data: Vec<SheetXml> = Vec::with_capacity(sheet_info.len());
         for (sheet_name, sheet_id, sheet_rid) in &sheet_info {
             // Look up the actual sheet path from the relationships, or fall back to sheetId-based path
             let sheet_path = if let Some(target) = rels_map.get(sheet_rid) {
                 // Target is relative to xl/, e.g., "worksheets/sheet1.xml"
-                if target.starts_with('/') {
+                if let Some(stripped) = target.strip_prefix('/') {
                     // Absolute path within the package (rare)
-                    target[1..].to_string()
+                    stripped.to_string()
                 } else {
                     format!("xl/{}", target)
                 }
@@ -613,7 +615,7 @@ impl Workbook {
     /// Parses workbook.xml and returns sheet info (name, sheetId, rId) and named ranges.
     fn parse_workbook_xml<R: BufRead>(
         reader: R,
-    ) -> Result<(Vec<(String, u32, String)>, Vec<NamedRange>)> {
+    ) -> Result<(Vec<SheetInfo>, Vec<NamedRange>)> {
         let mut reader = Reader::from_reader(reader);
         reader.config_mut().trim_text(true);
 
@@ -642,24 +644,22 @@ impl Workbook {
                         let mut sheet_id: Option<u32> = None;
                         let mut sheet_rid: Option<String> = None;
 
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key;
-                                let attr_local = attr.key.local_name();
-                                let attr_key = attr_key.as_ref();
-                                let attr_local = attr_local.as_ref();
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key;
+                            let attr_local = attr.key.local_name();
+                            let attr_key = attr_key.as_ref();
+                            let attr_local = attr_local.as_ref();
 
-                                if attr_key == b"name" || attr_local == b"name" {
-                                    sheet_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
-                                    let id_str = String::from_utf8_lossy(&attr.value);
-                                    sheet_id = id_str.parse().ok();
-                                } else if attr_local == b"id" {
-                                    // r:id attribute (namespace-qualified)
-                                    sheet_rid =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                            if attr_key == b"name" || attr_local == b"name" {
+                                sheet_name =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
+                                let id_str = String::from_utf8_lossy(&attr.value);
+                                sheet_id = id_str.parse().ok();
+                            } else if attr_local == b"id" {
+                                // r:id attribute (namespace-qualified)
+                                sheet_rid =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
 
@@ -681,37 +681,33 @@ impl Workbook {
                         in_defined_names = true;
                     } else if is_defined_name && in_defined_names {
                         in_defined_name = true;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key;
-                                let attr_local = attr.key.local_name();
-                                let attr_key = attr_key.as_ref();
-                                let attr_local = attr_local.as_ref();
-                                if attr_key == b"name" || attr_local == b"name" {
-                                    current_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key;
+                            let attr_local = attr.key.local_name();
+                            let attr_key = attr_key.as_ref();
+                            let attr_local = attr_local.as_ref();
+                            if attr_key == b"name" || attr_local == b"name" {
+                                current_name =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     } else if is_sheet {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key;
-                                let attr_local = attr.key.local_name();
-                                let attr_key = attr_key.as_ref();
-                                let attr_local = attr_local.as_ref();
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key;
+                            let attr_local = attr.key.local_name();
+                            let attr_key = attr_key.as_ref();
+                            let attr_local = attr_local.as_ref();
 
-                                if attr_key == b"name" || attr_local == b"name" {
-                                    current_sheet_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
-                                    let id_str = String::from_utf8_lossy(&attr.value);
-                                    current_sheet_id = id_str.parse().ok();
-                                } else if attr_local == b"id" {
-                                    // r:id attribute (namespace-qualified)
-                                    current_sheet_rid =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                            if attr_key == b"name" || attr_local == b"name" {
+                                current_sheet_name =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"sheetId" || attr_local == b"sheetId" {
+                                let id_str = String::from_utf8_lossy(&attr.value);
+                                current_sheet_id = id_str.parse().ok();
+                            } else if attr_local == b"id" {
+                                // r:id attribute (namespace-qualified)
+                                current_sheet_rid =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     }
@@ -782,14 +778,12 @@ impl Workbook {
                         let mut rel_id: Option<String> = None;
                         let mut target: Option<String> = None;
 
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"Id" {
-                                    rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"Target" {
-                                    target = Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"Id" {
+                                rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"Target" {
+                                target = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
 
@@ -952,11 +946,7 @@ impl Workbook {
     fn parse_color_element(e: &quick_xml::events::BytesStart) -> Option<String> {
         if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
             Some(format!("#{}", rgb))
-        } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
-            Some(format!("theme:{}", theme))
-        } else {
-            None
-        }
+        } else { Self::get_attr_str(e, b"theme").map(|theme| format!("theme:{}", theme)) }
     }
 
     fn parse_styles_xml(xml: &[u8]) -> Result<(HashMap<u32, Arc<CellStyle>>, StyleRegistry)> {
@@ -1004,11 +994,9 @@ impl Workbook {
                                      || name == b"bottom" || name == b"diagonal") {
                         let mut style: Option<String> = None;
                         let color: Option<String> = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                if attr.key.as_ref() == b"style" {
-                                    style = Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"style" {
+                                style = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                         if let Some(s) = style {
@@ -1025,14 +1013,12 @@ impl Workbook {
                     }
                     // Handle color inside border side (self-closing)
                     if in_border && in_border_side.is_some() && name == b"color" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                if attr.key.as_ref() == b"rgb" {
-                                    current_border_color = Some(format!(
-                                        "#{}",
-                                        String::from_utf8_lossy(&attr.value)
-                                    ));
-                                }
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"rgb" {
+                                current_border_color = Some(format!(
+                                    "#{}",
+                                    String::from_utf8_lossy(&attr.value)
+                                ));
                             }
                         }
                     }
@@ -1040,16 +1026,14 @@ impl Workbook {
                     if name == b"numFmt" {
                         let mut fmt_id: Option<u32> = None;
                         let mut fmt_code: Option<String> = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"numFmtId" {
-                                    if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
-                                        fmt_id = Some(id);
-                                    }
-                                } else if attr_key == b"formatCode" {
-                                    fmt_code = Some(String::from_utf8_lossy(&attr.value).to_string());
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"numFmtId" {
+                                if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                    fmt_id = Some(id);
                                 }
+                            } else if attr_key == b"formatCode" {
+                                fmt_code = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                         if let (Some(id), Some(code)) = (fmt_id, fmt_code) {
@@ -1074,19 +1058,17 @@ impl Workbook {
                         _in_num_fmt = true;
                         current_num_fmt_id = None;
                         current_num_fmt_code = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"numFmtId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        current_num_fmt_id = Some(id);
-                                    }
-                                } else if attr_key == b"formatCode" {
-                                    current_num_fmt_code =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"numFmtId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    current_num_fmt_id = Some(id);
                                 }
+                            } else if attr_key == b"formatCode" {
+                                current_num_fmt_code =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     } else if in_font {
@@ -1110,25 +1092,21 @@ impl Workbook {
                             current_border_style = None;
                             current_border_color = None;
                             // Get style attribute
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    if attr.key.as_ref() == b"style" {
-                                        current_border_style = Some(
-                                            String::from_utf8_lossy(&attr.value).to_string()
-                                        );
-                                    }
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"style" {
+                                    current_border_style = Some(
+                                        String::from_utf8_lossy(&attr.value).to_string()
+                                    );
                                 }
                             }
                         } else if prop_name == b"color" && in_border_side.is_some() {
                             // Get color for current border side
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    if attr.key.as_ref() == b"rgb" {
-                                        current_border_color = Some(format!(
-                                            "#{}",
-                                            String::from_utf8_lossy(&attr.value)
-                                        ));
-                                    }
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"rgb" {
+                                    current_border_color = Some(format!(
+                                        "#{}",
+                                        String::from_utf8_lossy(&attr.value)
+                                    ));
                                 }
                             }
                         }
@@ -1212,56 +1190,54 @@ impl Workbook {
                         current_xf = CellStyle::default();
                         current_align = Alignment::default();
 
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"fontId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < fonts.len() {
-                                            current_xf.font = Some(fonts[id].clone());
-                                        }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"fontId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < fonts.len() {
+                                        current_xf.font = Some(fonts[id].clone());
                                     }
-                                } else if attr_key == b"fillId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < fills.len() {
-                                            current_xf.fill = Some(fills[id].clone());
-                                        }
+                                }
+                            } else if attr_key == b"fillId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < fills.len() {
+                                        current_xf.fill = Some(fills[id].clone());
                                     }
-                                } else if attr_key == b"borderId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < borders.len() {
-                                            current_xf.border = Some(borders[id].clone());
-                                        }
+                                }
+                            } else if attr_key == b"borderId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < borders.len() {
+                                        current_xf.border = Some(borders[id].clone());
                                     }
-                                } else if attr_key == b"numFmtId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        if let Some(format) = number_formats.get(&id) {
-                                            current_xf.number_format = Some(format.clone());
-                                        } else {
-                                            let builtin_format = match id {
-                                                0 => Some("General".to_string()),
-                                                1 => Some("0".to_string()),
-                                                2 => Some("0.00".to_string()),
-                                                3 => Some("#,##0".to_string()),
-                                                4 => Some("#,##0.00".to_string()),
-                                                9 => Some("0%".to_string()),
-                                                10 => Some("0.00%".to_string()),
-                                                11 => Some("0.00E+00".to_string()),
-                                                14 => Some("mm/dd/yyyy".to_string()),
-                                                22 => Some("m/d/yy h:mm".to_string()),
-                                                _ => None,
-                                            };
-                                            if let Some(format) = builtin_format {
-                                                current_xf.number_format = Some(format);
-                                            }
+                                }
+                            } else if attr_key == b"numFmtId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    if let Some(format) = number_formats.get(&id) {
+                                        current_xf.number_format = Some(format.clone());
+                                    } else {
+                                        let builtin_format = match id {
+                                            0 => Some("General".to_string()),
+                                            1 => Some("0".to_string()),
+                                            2 => Some("0.00".to_string()),
+                                            3 => Some("#,##0".to_string()),
+                                            4 => Some("#,##0.00".to_string()),
+                                            9 => Some("0%".to_string()),
+                                            10 => Some("0.00%".to_string()),
+                                            11 => Some("0.00E+00".to_string()),
+                                            14 => Some("mm/dd/yyyy".to_string()),
+                                            22 => Some("m/d/yy h:mm".to_string()),
+                                            _ => None,
+                                        };
+                                        if let Some(format) = builtin_format {
+                                            current_xf.number_format = Some(format);
                                         }
                                     }
                                 }
@@ -1270,45 +1246,41 @@ impl Workbook {
                     } else if name == b"alignment" && in_xf {
                         has_alignment = true;
                         current_align = Alignment::default();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"horizontal" {
-                                    current_align.horizontal =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"vertical" {
-                                    current_align.vertical =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"wrapText" {
-                                    current_align.wrap_text =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"textRotation" {
-                                    if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
-                                        current_align.text_rotation = Some(rotation);
-                                    }
-                                } else if attr_key == b"shrinkToFit" {
-                                    current_align.shrink_to_fit =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"indent" {
-                                    if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
-                                        current_align.indent = Some(indent);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"horizontal" {
+                                current_align.horizontal =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"vertical" {
+                                current_align.vertical =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"wrapText" {
+                                current_align.wrap_text =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"textRotation" {
+                                if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                    current_align.text_rotation = Some(rotation);
+                                }
+                            } else if attr_key == b"shrinkToFit" {
+                                current_align.shrink_to_fit =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"indent" {
+                                if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                    current_align.indent = Some(indent);
                                 }
                             }
                         }
                     } else if name == b"protection" && in_xf {
                         has_protection = true;
                         current_protection = Protection::default();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"locked" {
-                                    current_protection.locked =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"hidden" {
-                                    current_protection.hidden =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"locked" {
+                                current_protection.locked =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"hidden" {
+                                current_protection.hidden =
+                                    String::from_utf8_lossy(&attr.value) == "1";
                             }
                         }
                     }
@@ -1344,99 +1316,93 @@ impl Workbook {
                     if name == b"alignment" && in_xf && in_cell_xfs {
                         has_alignment = true;
                         current_align = Alignment::default();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"horizontal" {
-                                    current_align.horizontal =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"vertical" {
-                                    current_align.vertical =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"wrapText" {
-                                    current_align.wrap_text =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"textRotation" {
-                                    if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
-                                        current_align.text_rotation = Some(rotation);
-                                    }
-                                } else if attr_key == b"shrinkToFit" {
-                                    current_align.shrink_to_fit =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"indent" {
-                                    if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
-                                        current_align.indent = Some(indent);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"horizontal" {
+                                current_align.horizontal =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"vertical" {
+                                current_align.vertical =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"wrapText" {
+                                current_align.wrap_text =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"textRotation" {
+                                if let Ok(rotation) = String::from_utf8_lossy(&attr.value).parse::<i32>() {
+                                    current_align.text_rotation = Some(rotation);
+                                }
+                            } else if attr_key == b"shrinkToFit" {
+                                current_align.shrink_to_fit =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"indent" {
+                                if let Ok(indent) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
+                                    current_align.indent = Some(indent);
                                 }
                             }
                         }
                     } else if name == b"protection" && in_xf && in_cell_xfs {
                         has_protection = true;
                         current_protection = Protection::default();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"locked" {
-                                    current_protection.locked =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                } else if attr_key == b"hidden" {
-                                    current_protection.hidden =
-                                        String::from_utf8_lossy(&attr.value) == "1";
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"locked" {
+                                current_protection.locked =
+                                    String::from_utf8_lossy(&attr.value) == "1";
+                            } else if attr_key == b"hidden" {
+                                current_protection.hidden =
+                                    String::from_utf8_lossy(&attr.value) == "1";
                             }
                         }
                     } else if name == b"xf" && in_cell_xfs {
                         let mut xf = CellStyle::default();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"fontId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < fonts.len() {
-                                            xf.font = Some(fonts[id].clone());
-                                        }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"fontId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < fonts.len() {
+                                        xf.font = Some(fonts[id].clone());
                                     }
-                                } else if attr_key == b"fillId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < fills.len() {
-                                            xf.fill = Some(fills[id].clone());
-                                        }
+                                }
+                            } else if attr_key == b"fillId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < fills.len() {
+                                        xf.fill = Some(fills[id].clone());
                                     }
-                                } else if attr_key == b"borderId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
-                                        if id < borders.len() {
-                                            xf.border = Some(borders[id].clone());
-                                        }
+                                }
+                            } else if attr_key == b"borderId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                {
+                                    if id < borders.len() {
+                                        xf.border = Some(borders[id].clone());
                                     }
-                                } else if attr_key == b"numFmtId" {
-                                    if let Ok(id) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        if let Some(format) = number_formats.get(&id) {
-                                            xf.number_format = Some(format.clone());
-                                        } else {
-                                            let builtin = match id {
-                                                0 => Some("General".to_string()),
-                                                1 => Some("0".to_string()),
-                                                2 => Some("0.00".to_string()),
-                                                3 => Some("#,##0".to_string()),
-                                                4 => Some("#,##0.00".to_string()),
-                                                9 => Some("0%".to_string()),
-                                                10 => Some("0.00%".to_string()),
-                                                11 => Some("0.00E+00".to_string()),
-                                                14 => Some("mm/dd/yyyy".to_string()),
-                                                22 => Some("m/d/yy h:mm".to_string()),
-                                                _ => None,
-                                            };
-                                            if let Some(fmt) = builtin {
-                                                xf.number_format = Some(fmt);
-                                            }
+                                }
+                            } else if attr_key == b"numFmtId" {
+                                if let Ok(id) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    if let Some(format) = number_formats.get(&id) {
+                                        xf.number_format = Some(format.clone());
+                                    } else {
+                                        let builtin = match id {
+                                            0 => Some("General".to_string()),
+                                            1 => Some("0".to_string()),
+                                            2 => Some("0.00".to_string()),
+                                            3 => Some("#,##0".to_string()),
+                                            4 => Some("#,##0.00".to_string()),
+                                            9 => Some("0%".to_string()),
+                                            10 => Some("0.00%".to_string()),
+                                            11 => Some("0.00E+00".to_string()),
+                                            14 => Some("mm/dd/yyyy".to_string()),
+                                            22 => Some("m/d/yy h:mm".to_string()),
+                                            _ => None,
+                                        };
+                                        if let Some(fmt) = builtin {
+                                            xf.number_format = Some(fmt);
                                         }
                                     }
                                 }
@@ -1612,82 +1578,76 @@ impl Workbook {
                     let name = e.name();
                     let name = name.as_ref();
                     if name == b"sheetProtection" {
-                        let mut prot = WorksheetProtection::default();
-                        prot.sheet = true;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                let attr_value = String::from_utf8_lossy(&attr.value);
-                                let value_bool = attr_value == "1";
-                                match attr_key {
-                                    b"password" => {
-                                        prot.password_hash = Some(attr_value.to_string())
-                                    }
-                                    b"selectLockedCells" => prot.select_locked_cells = value_bool,
-                                    b"selectUnlockedCells" => {
-                                        prot.select_unlocked_cells = value_bool
-                                    }
-                                    b"formatCells" => prot.format_cells = value_bool,
-                                    b"formatColumns" => prot.format_columns = value_bool,
-                                    b"formatRows" => prot.format_rows = value_bool,
-                                    b"insertColumns" => prot.insert_columns = value_bool,
-                                    b"insertRows" => prot.insert_rows = value_bool,
-                                    b"insertHyperlinks" => prot.insert_hyperlinks = value_bool,
-                                    b"deleteColumns" => prot.delete_columns = value_bool,
-                                    b"deleteRows" => prot.delete_rows = value_bool,
-                                    b"sort" => prot.sort = value_bool,
-                                    b"autoFilter" => prot.auto_filter = value_bool,
-                                    b"pivotTables" => prot.pivot_tables = value_bool,
-                                    b"objects" => prot.objects = value_bool,
-                                    b"scenarios" => prot.scenarios = value_bool,
-                                    _ => {}
+                        let mut prot = WorksheetProtection {
+                            sheet: true,
+                            ..Default::default()
+                        };
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            let attr_value = String::from_utf8_lossy(&attr.value);
+                            let value_bool = attr_value == "1";
+                            match attr_key {
+                                b"password" => {
+                                    prot.password_hash = Some(attr_value.to_string())
                                 }
+                                b"selectLockedCells" => prot.select_locked_cells = value_bool,
+                                b"selectUnlockedCells" => {
+                                    prot.select_unlocked_cells = value_bool
+                                }
+                                b"formatCells" => prot.format_cells = value_bool,
+                                b"formatColumns" => prot.format_columns = value_bool,
+                                b"formatRows" => prot.format_rows = value_bool,
+                                b"insertColumns" => prot.insert_columns = value_bool,
+                                b"insertRows" => prot.insert_rows = value_bool,
+                                b"insertHyperlinks" => prot.insert_hyperlinks = value_bool,
+                                b"deleteColumns" => prot.delete_columns = value_bool,
+                                b"deleteRows" => prot.delete_rows = value_bool,
+                                b"sort" => prot.sort = value_bool,
+                                b"autoFilter" => prot.auto_filter = value_bool,
+                                b"pivotTables" => prot.pivot_tables = value_bool,
+                                b"objects" => prot.objects = value_bool,
+                                b"scenarios" => prot.scenarios = value_bool,
+                                _ => {}
                             }
                         }
                         protection = Some(prot);
                     } else if name == b"dimension" && !reserved_cells {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key;
-                                let attr_key = attr_key.as_ref();
-                                if attr_key == b"ref" {
-                                    let ref_str = String::from_utf8_lossy(&attr.value);
-                                    if let Some(cap) =
-                                        Self::estimate_dimension_cells(ref_str.as_ref())
-                                    {
-                                        worksheet.cells.reserve(cap);
-                                        reserved_cells = true;
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key;
+                            let attr_key = attr_key.as_ref();
+                            if attr_key == b"ref" {
+                                let ref_str = String::from_utf8_lossy(&attr.value);
+                                if let Some(cap) =
+                                    Self::estimate_dimension_cells(ref_str.as_ref())
+                                {
+                                    worksheet.cells.reserve(cap);
+                                    reserved_cells = true;
                                 }
                             }
                         }
                     } else if name == b"mergeCell" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"ref" {
-                                    let ref_str = String::from_utf8_lossy(&attr.value);
-                                    if let Some(dash_pos) = ref_str.find(':') {
-                                        let start = ref_str[..dash_pos].to_string();
-                                        let end = ref_str[dash_pos + 1..].to_string();
-                                        worksheet.add_merged_cell(start, end);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"ref" {
+                                let ref_str = String::from_utf8_lossy(&attr.value);
+                                if let Some(dash_pos) = ref_str.find(':') {
+                                    let start = ref_str[..dash_pos].to_string();
+                                    let end = ref_str[dash_pos + 1..].to_string();
+                                    worksheet.add_merged_cell(start, end);
                                 }
                             }
                         }
                     } else if name == b"hyperlink" {
                         let mut hyperlink_ref: Option<String> = None;
                         let mut hyperlink_url: Option<String> = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"ref" {
-                                    hyperlink_ref =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                } else if attr_key == b"location" {
-                                    hyperlink_url =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"ref" {
+                                hyperlink_ref =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"location" {
+                                hyperlink_url =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                         if let Some(ref_coord) = hyperlink_ref {
@@ -1703,27 +1663,25 @@ impl Workbook {
                         let mut col_min: Option<u32> = None;
                         let mut col_max: Option<u32> = None;
                         let mut width: Option<f64> = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"min" {
-                                    if let Ok(num) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        col_min = Some(num);
-                                    }
-                                } else if attr_key == b"max" {
-                                    if let Ok(num) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        col_max = Some(num);
-                                    }
-                                } else if attr_key == b"width" {
-                                    if let Ok(w) =
-                                        String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                    {
-                                        width = Some(w);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"min" {
+                                if let Ok(num) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    col_min = Some(num);
+                                }
+                            } else if attr_key == b"max" {
+                                if let Ok(num) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    col_max = Some(num);
+                                }
+                            } else if attr_key == b"width" {
+                                if let Ok(w) =
+                                    String::from_utf8_lossy(&attr.value).parse::<f64>()
+                                {
+                                    width = Some(w);
                                 }
                             }
                         }
@@ -1742,28 +1700,26 @@ impl Workbook {
                         let mut cell_type: u8 = 0;
                         let mut style_id: Option<u32> = None;
 
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"r" {
-                                    if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
-                                        cell_row = Some(row);
-                                        cell_col = Some(col);
-                                    }
-                                } else if attr_key == b"t" {
-                                    // Same one-byte type codes as the open-cell path below
-                                    cell_type = match attr.value.as_ref() {
-                                        b"s" => b's',
-                                        b"str" => b'f',
-                                        b"b" => b'b',
-                                        b"d" => b'd',
-                                        b"e" => b'e',
-                                        b"inlineStr" => b'i',
-                                        _ => 0,
-                                    };
-                                } else if attr_key == b"s" {
-                                    style_id = parse_u32_bytes(&attr.value);
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"r" {
+                                if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
+                                    cell_row = Some(row);
+                                    cell_col = Some(col);
                                 }
+                            } else if attr_key == b"t" {
+                                // Same one-byte type codes as the open-cell path below
+                                cell_type = match attr.value.as_ref() {
+                                    b"s" => b's',
+                                    b"str" => b'f',
+                                    b"b" => b'b',
+                                    b"d" => b'd',
+                                    b"e" => b'e',
+                                    b"inlineStr" => b'i',
+                                    _ => 0,
+                                };
+                            } else if attr_key == b"s" {
+                                style_id = parse_u32_bytes(&attr.value);
                             }
                         }
 
@@ -1807,35 +1763,31 @@ impl Workbook {
                     let name = name.as_ref();
 
                     if name == b"dimension" && !reserved_cells {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key;
-                                let attr_key = attr_key.as_ref();
-                                if attr_key == b"ref" {
-                                    let ref_str = String::from_utf8_lossy(&attr.value);
-                                    if let Some(cap) =
-                                        Self::estimate_dimension_cells(ref_str.as_ref())
-                                    {
-                                        worksheet.cells.reserve(cap);
-                                        reserved_cells = true;
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key;
+                            let attr_key = attr_key.as_ref();
+                            if attr_key == b"ref" {
+                                let ref_str = String::from_utf8_lossy(&attr.value);
+                                if let Some(cap) =
+                                    Self::estimate_dimension_cells(ref_str.as_ref())
+                                {
+                                    worksheet.cells.reserve(cap);
+                                    reserved_cells = true;
                                 }
                             }
                         }
                     } else if name == b"row" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"r" {
-                                    let r_str = String::from_utf8_lossy(&attr.value);
-                                    current_row = r_str.parse().ok();
-                                } else if attr_key == b"ht" {
-                                    if let (Some(row), Ok(height)) = (
-                                        current_row,
-                                        String::from_utf8_lossy(&attr.value).parse::<f64>(),
-                                    ) {
-                                        worksheet.set_row_height(row, height);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"r" {
+                                let r_str = String::from_utf8_lossy(&attr.value);
+                                current_row = r_str.parse().ok();
+                            } else if attr_key == b"ht" {
+                                if let (Some(row), Ok(height)) = (
+                                    current_row,
+                                    String::from_utf8_lossy(&attr.value).parse::<f64>(),
+                                ) {
+                                    worksheet.set_row_height(row, height);
                                 }
                             }
                         }
@@ -1847,32 +1799,30 @@ impl Workbook {
                         current_formula = None;
                         current_number_format = None;
 
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"r" {
-                                    // Use byte-based coordinate parsing (no String allocation)
-                                    if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
-                                        current_row = Some(row);
-                                        current_col = Some(col);
-                                    }
-                                } else if attr_key == b"t" {
-                                    // Map the full type to a one-byte code; matching on the
-                                    // first byte alone would conflate t="s" (shared string)
-                                    // with t="str" (formula string result).
-                                    current_type = match attr.value.as_ref() {
-                                        b"s" => b's',
-                                        b"str" => b'f',
-                                        b"b" => b'b',
-                                        b"d" => b'd',
-                                        b"e" => b'e',
-                                        b"inlineStr" => b'i',
-                                        _ => 0,
-                                    };
-                                } else if attr_key == b"s" {
-                                    // Parse style index directly from bytes
-                                    current_style_id = parse_u32_bytes(&attr.value);
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"r" {
+                                // Use byte-based coordinate parsing (no String allocation)
+                                if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
+                                    current_row = Some(row);
+                                    current_col = Some(col);
                                 }
+                            } else if attr_key == b"t" {
+                                // Map the full type to a one-byte code; matching on the
+                                // first byte alone would conflate t="s" (shared string)
+                                // with t="str" (formula string result).
+                                current_type = match attr.value.as_ref() {
+                                    b"s" => b's',
+                                    b"str" => b'f',
+                                    b"b" => b'b',
+                                    b"d" => b'd',
+                                    b"e" => b'e',
+                                    b"inlineStr" => b'i',
+                                    _ => 0,
+                                };
+                            } else if attr_key == b"s" {
+                                // Parse style index directly from bytes
+                                current_style_id = parse_u32_bytes(&attr.value);
                             }
                         }
                     } else if name == b"v" {
@@ -1882,40 +1832,36 @@ impl Workbook {
                     } else if name == b"f" {
                         in_f = true;
                     } else if name == b"mergeCell" {
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"ref" {
-                                    current_merge_ref =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"ref" {
+                                current_merge_ref =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     } else if name == b"col" {
                         let mut col_min: Option<u32> = None;
                         let mut col_max: Option<u32> = None;
                         let mut width: Option<f64> = None;
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"min" {
-                                    if let Ok(num) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        col_min = Some(num);
-                                    }
-                                } else if attr_key == b"max" {
-                                    if let Ok(num) =
-                                        String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                    {
-                                        col_max = Some(num);
-                                    }
-                                } else if attr_key == b"width" {
-                                    if let Ok(w) =
-                                        String::from_utf8_lossy(&attr.value).parse::<f64>()
-                                    {
-                                        width = Some(w);
-                                    }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"min" {
+                                if let Ok(num) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    col_min = Some(num);
+                                }
+                            } else if attr_key == b"max" {
+                                if let Ok(num) =
+                                    String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                {
+                                    col_max = Some(num);
+                                }
+                            } else if attr_key == b"width" {
+                                if let Ok(w) =
+                                    String::from_utf8_lossy(&attr.value).parse::<f64>()
+                                {
+                                    width = Some(w);
                                 }
                             }
                         }
@@ -2104,13 +2050,11 @@ impl Workbook {
                     if name == b"comment" {
                         in_comment = true;
                         current_comment_text.clear();
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let attr_key = attr.key.as_ref();
-                                if attr_key == b"ref" {
-                                    current_cell_ref =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
+                        for attr in e.attributes().flatten() {
+                            let attr_key = attr.key.as_ref();
+                            if attr_key == b"ref" {
+                                current_cell_ref =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     } else if name == b"text" && in_comment {

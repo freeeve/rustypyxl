@@ -29,6 +29,8 @@ pub struct PyFont {
 #[pymethods]
 impl PyFont {
     #[new]
+    // Mirrors openpyxl's Font keyword arguments
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (name=None, size=None, bold=false, italic=false, underline=None, strike=false, color=None, vertAlign=None))]
     fn new(
         name: Option<String>,

@@ -331,7 +331,7 @@ impl GradientFill {
 }
 
 /// Cell protection properties.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Protection {
     /// Whether the cell is locked (default is true in Excel).
     pub locked: bool,
@@ -339,13 +339,21 @@ pub struct Protection {
     pub hidden: bool,
 }
 
-impl Protection {
-    /// Create a new Protection with default values (locked=true, hidden=false).
-    pub fn new() -> Self {
+/// Default matches Excel semantics (locked=true); a derived Default would
+/// silently unlock cells.
+impl Default for Protection {
+    fn default() -> Self {
         Protection {
             locked: true,
             hidden: false,
         }
+    }
+}
+
+impl Protection {
+    /// Create a new Protection with default values (locked=true, hidden=false).
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create an unlocked protection.

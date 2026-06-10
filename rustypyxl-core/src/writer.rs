@@ -499,10 +499,10 @@ pub fn write_shared_strings<W: Write + Seek>(
 /// - `"#AARRGGBB"` or `"AARRGGBB"` (8-char aRGB from XML roundtrip)
 /// - `"#RRGGBB"` or `"RRGGBB"` (6-char RGB, needs FF alpha prefix)
 fn write_color_attr(xml: &mut String, element: &str, color: &str) {
-    if color.starts_with("theme:") {
-        xml.push_str(&format!(r#"<{} theme="{}"/>"#, element, &color[6..]));
+    if let Some(theme) = color.strip_prefix("theme:") {
+        xml.push_str(&format!(r#"<{} theme="{}"/>"#, element, theme));
     } else {
-        let hex = if color.starts_with('#') { &color[1..] } else { color };
+        let hex = color.strip_prefix('#').unwrap_or(color);
         if hex.len() >= 8 {
             xml.push_str(&format!(r#"<{} rgb="{}"/>"#, element, hex));
         } else {
@@ -626,7 +626,7 @@ fn write_cell_xf_xml(xml: &mut String, xf: &crate::style::CellXf) {
 
     let has_children = xf.alignment.is_some() || xf.protection.is_some();
     if has_children {
-        xml.push_str(">");
+        xml.push('>');
         if let Some(ref align) = xf.alignment {
             write_alignment_xml(xml, align);
         }
@@ -829,10 +829,11 @@ pub fn write_worksheet_xml<W: Write + Seek>(
 
     // Group cells by row - pre-allocate based on max_row
     let estimated_rows = worksheet.max_row as usize;
-    let mut rows: HashMap<u32, Vec<((u32, u32), &CellData)>> = HashMap::with_capacity(estimated_rows);
+    type RowCells<'a> = HashMap<u32, Vec<((u32, u32), &'a CellData)>>;
+    let mut rows: RowCells = HashMap::with_capacity(estimated_rows);
     for (key, cell_data) in &worksheet.cells {
         let (row, col) = decode_cell_key(*key);
-        rows.entry(row).or_insert_with(Vec::new).push(((row, col), cell_data));
+        rows.entry(row).or_default().push(((row, col), cell_data));
     }
 
     // Write rows in order
@@ -858,7 +859,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
                     let cells = rows.get(&row_num).unwrap();
 
                     // Sort cells by column (need to clone since we're in parallel)
-                    let mut sorted_cells: Vec<_> = cells.iter().cloned().collect();
+                    let mut sorted_cells: Vec<_> = cells.to_vec();
                     sorted_cells.sort_by_key(|((_, col), _)| *col);
 
                     // Write row start
@@ -1345,11 +1346,10 @@ fn write_conditional_formatting<W: std::io::Write>(
         }
 
         // AboveAverage attributes
-        if rule.rule_type == ConditionalFormatType::AboveAverage {
-            if !rule.above_average {
+        if rule.rule_type == ConditionalFormatType::AboveAverage
+            && !rule.above_average {
                 cf_rule.push_attribute(("aboveAverage", "0"));
             }
-        }
 
         // Text value for text rules
         if let Some(ref text) = rule.text {

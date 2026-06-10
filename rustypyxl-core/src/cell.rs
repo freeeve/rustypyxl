@@ -7,6 +7,7 @@ pub type InternedString = Arc<str>;
 
 /// Represents the value of a cell in an Excel worksheet.
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum CellValue {
     /// String value.
     String(InternedString),
@@ -19,6 +20,7 @@ pub enum CellValue {
     /// Formula (without the leading '=' sign).
     Formula(String),
     /// Empty cell.
+    #[default]
     Empty,
 }
 
@@ -78,11 +80,6 @@ impl CellValue {
     }
 }
 
-impl Default for CellValue {
-    fn default() -> Self {
-        CellValue::Empty
-    }
-}
 
 impl fmt::Display for CellValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

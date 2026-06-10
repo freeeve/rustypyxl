@@ -80,7 +80,7 @@ impl ParquetImportResult {
 }
 
 /// Options for parquet import.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ParquetImportOptions {
     /// Column name mappings (original_name -> new_name).
     pub column_renames: HashMap<String, String>,
@@ -92,14 +92,22 @@ pub struct ParquetImportOptions {
     pub batch_size: usize,
 }
 
-impl ParquetImportOptions {
-    pub fn new() -> Self {
+/// Default matches `new()`: a derived Default would zero `batch_size` and
+/// disable headers, silently diverging from the documented defaults.
+impl Default for ParquetImportOptions {
+    fn default() -> Self {
         Self {
             column_renames: HashMap::new(),
             include_headers: true,
             columns: Vec::new(),
             batch_size: 65536,
         }
+    }
+}
+
+impl ParquetImportOptions {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Add a column rename mapping.
@@ -151,7 +159,7 @@ impl Workbook {
         start_col: u32,
         options: Option<ParquetImportOptions>,
     ) -> Result<ParquetImportResult> {
-        let options = options.unwrap_or_else(ParquetImportOptions::new);
+        let options = options.unwrap_or_default();
         let opts = if options.batch_size == 0 {
             ParquetImportOptions {
                 batch_size: 65536,
@@ -293,14 +301,14 @@ fn write_arrow_array_to_worksheet(
                 }
             }
         }
-        DataType::Int8 => write_int_array::<Int8Array>(worksheet, array, start_row, col, num_rows),
-        DataType::Int16 => write_int_array::<Int16Array>(worksheet, array, start_row, col, num_rows),
-        DataType::Int32 => write_int_array::<Int32Array>(worksheet, array, start_row, col, num_rows),
-        DataType::Int64 => write_int_array::<Int64Array>(worksheet, array, start_row, col, num_rows),
-        DataType::UInt8 => write_uint_array::<UInt8Array>(worksheet, array, start_row, col, num_rows),
-        DataType::UInt16 => write_uint_array::<UInt16Array>(worksheet, array, start_row, col, num_rows),
-        DataType::UInt32 => write_uint_array::<UInt32Array>(worksheet, array, start_row, col, num_rows),
-        DataType::UInt64 => write_uint_array::<UInt64Array>(worksheet, array, start_row, col, num_rows),
+        DataType::Int8 => write_int_array(worksheet, array, start_row, col, num_rows),
+        DataType::Int16 => write_int_array(worksheet, array, start_row, col, num_rows),
+        DataType::Int32 => write_int_array(worksheet, array, start_row, col, num_rows),
+        DataType::Int64 => write_int_array(worksheet, array, start_row, col, num_rows),
+        DataType::UInt8 => write_uint_array(worksheet, array, start_row, col, num_rows),
+        DataType::UInt16 => write_uint_array(worksheet, array, start_row, col, num_rows),
+        DataType::UInt32 => write_uint_array(worksheet, array, start_row, col, num_rows),
+        DataType::UInt64 => write_uint_array(worksheet, array, start_row, col, num_rows),
         DataType::Float16 => {
             let arr = array.as_any().downcast_ref::<Float16Array>().unwrap();
             for i in 0..num_rows {
@@ -469,15 +477,13 @@ fn write_arrow_array_to_worksheet(
     }
 }
 
-fn write_int_array<T: arrow::array::Array + 'static>(
+fn write_int_array(
     worksheet: &mut Worksheet,
     array: &ArrayRef,
     start_row: u32,
     col: u32,
     num_rows: usize,
-) where
-    T: std::fmt::Debug,
-{
+) {
     // Use the primitive array trait for numeric types
     if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
         for i in 0..num_rows {
@@ -506,15 +512,13 @@ fn write_int_array<T: arrow::array::Array + 'static>(
     }
 }
 
-fn write_uint_array<T: arrow::array::Array + 'static>(
+fn write_uint_array(
     worksheet: &mut Worksheet,
     array: &ArrayRef,
     start_row: u32,
     col: u32,
     num_rows: usize,
-) where
-    T: std::fmt::Debug,
-{
+) {
     if let Some(arr) = array.as_any().downcast_ref::<UInt8Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
@@ -561,8 +565,10 @@ pub struct ParquetExportResult {
 
 /// Column type hint for parquet export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ColumnType {
     /// Infer type from data (default).
+    #[default]
     Auto,
     /// Force string type.
     String,
@@ -578,14 +584,9 @@ pub enum ColumnType {
     DateTime,
 }
 
-impl Default for ColumnType {
-    fn default() -> Self {
-        ColumnType::Auto
-    }
-}
 
 /// Options for parquet export.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ParquetExportOptions {
     /// Column name mappings (original_name -> new_name).
     pub column_renames: HashMap<String, String>,
@@ -627,13 +628,23 @@ impl From<ParquetCompression> for Compression {
     }
 }
 
+/// Default matches `new()`: a derived Default would set `row_group_size`
+/// to 0, which the parquet writer rejects, and disable headers.
+impl Default for ParquetExportOptions {
+    fn default() -> Self {
+        Self {
+            column_renames: HashMap::new(),
+            has_headers: true,
+            compression: ParquetCompression::default(),
+            column_types: HashMap::new(),
+            row_group_size: 65536,
+        }
+    }
+}
+
 impl ParquetExportOptions {
     pub fn new() -> Self {
-        Self {
-            has_headers: true,
-            row_group_size: 65536,
-            ..Default::default()
-        }
+        Self::default()
     }
 
     /// Set whether the first row contains headers.
@@ -699,7 +710,7 @@ impl Workbook {
         path: &str,
         options: Option<ParquetExportOptions>,
     ) -> Result<ParquetExportResult> {
-        let options = options.unwrap_or_else(ParquetExportOptions::new);
+        let options = options.unwrap_or_default();
         let worksheet = self.get_sheet_by_name(sheet_name)?;
 
         // Get worksheet dimensions
@@ -807,6 +818,7 @@ impl Workbook {
     /// * `max_row` - Ending row (1-indexed)
     /// * `max_col` - Ending column (1-indexed)
     /// * `options` - Export options
+    #[allow(clippy::too_many_arguments)]
     pub fn export_range_to_parquet(
         &self,
         sheet_name: &str,
@@ -817,7 +829,7 @@ impl Workbook {
         max_col: u32,
         options: Option<ParquetExportOptions>,
     ) -> Result<ParquetExportResult> {
-        let options = options.unwrap_or_else(ParquetExportOptions::new);
+        let options = options.unwrap_or_default();
         let worksheet = self.get_sheet_by_name(sheet_name)?;
 
         if max_row < min_row || max_col < min_col {
@@ -980,7 +992,7 @@ fn build_arrow_column(
         ColumnType::Float64 => {
             let arr: Float64Array = values
                 .iter()
-                .map(|v| v.and_then(|cv| cell_value_to_f64(cv)))
+                .map(|v| v.and_then(cell_value_to_f64))
                 .collect();
             (
                 Field::new(name, DataType::Float64, true),
@@ -990,7 +1002,7 @@ fn build_arrow_column(
         ColumnType::Int64 => {
             let arr: Int64Array = values
                 .iter()
-                .map(|v| v.and_then(|cv| cell_value_to_i64(cv)))
+                .map(|v| v.and_then(cell_value_to_i64))
                 .collect();
             (
                 Field::new(name, DataType::Int64, true),
@@ -1000,7 +1012,7 @@ fn build_arrow_column(
         ColumnType::Boolean => {
             let arr: BooleanArray = values
                 .iter()
-                .map(|v| v.and_then(|cv| cell_value_to_bool(cv)))
+                .map(|v| v.and_then(cell_value_to_bool))
                 .collect();
             (
                 Field::new(name, DataType::Boolean, true),
@@ -1011,7 +1023,7 @@ fn build_arrow_column(
             // Excel serial number to days since Unix epoch
             let arr: Date32Array = values
                 .iter()
-                .map(|v| v.and_then(|cv| cell_value_to_date32(cv)))
+                .map(|v| v.and_then(cell_value_to_date32))
                 .collect();
             (
                 Field::new(name, DataType::Date32, true),
@@ -1022,7 +1034,7 @@ fn build_arrow_column(
             // Excel serial number to milliseconds since Unix epoch
             let arr: TimestampMillisecondArray = values
                 .iter()
-                .map(|v| v.and_then(|cv| cell_value_to_timestamp_ms(cv)))
+                .map(|v| v.and_then(cell_value_to_timestamp_ms))
                 .collect();
             (
                 Field::new(name, DataType::Timestamp(TimeUnit::Millisecond, None), true),

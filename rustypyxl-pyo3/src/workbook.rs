@@ -78,7 +78,7 @@ impl PyWorkbook {
         if this.inner.worksheets.is_empty() {
             return Err(PyValueError::new_err("No worksheets in workbook"));
         }
-        let title = this.inner.sheet_names.get(0)
+        let title = this.inner.sheet_names.first()
             .cloned()
             .unwrap_or_else(|| "Sheet1".to_string());
         Ok(PyWorksheet::connected(self_.clone_ref(py), 0, title))
@@ -525,6 +525,8 @@ impl PyWorkbook {
     ///     alignment: Optional alignment style
     ///     number_format: Optional number format string
     #[pyo3(signature = (sheet_name, row, column, font=None, fill=None, border=None, alignment=None, number_format=None))]
+    // Mirrors a Python keyword-argument API
+    #[allow(clippy::too_many_arguments)]
     fn set_cell_style(
         &mut self,
         sheet_name: &str,
@@ -726,6 +728,8 @@ impl PyWorkbook {
     ///     range (e.g. "A1:Z1000"), header_range, data_range, column_names
     #[cfg(feature = "parquet")]
     #[pyo3(signature = (sheet_name, path, start_row=1, start_col=1, include_headers=true, column_renames=None, columns=None))]
+    // Mirrors a Python keyword-argument API
+    #[allow(clippy::too_many_arguments)]
     fn insert_from_parquet(
         &mut self,
         sheet_name: &str,
@@ -789,6 +793,8 @@ impl PyWorkbook {
     ///     Dict with export results: rows_exported, columns_exported, column_names, file_size
     #[cfg(feature = "parquet")]
     #[pyo3(signature = (sheet_name, path, has_headers=true, compression="snappy", column_renames=None, column_types=None))]
+    // Mirrors a Python keyword-argument API
+    #[allow(clippy::too_many_arguments)]
     fn export_to_parquet(
         &self,
         sheet_name: &str,
@@ -871,6 +877,8 @@ impl PyWorkbook {
     ///     Dict with export results
     #[cfg(feature = "parquet")]
     #[pyo3(signature = (sheet_name, path, min_row, min_col, max_row, max_col, has_headers=true, compression="snappy"))]
+    // Mirrors a Python keyword-argument API
+    #[allow(clippy::too_many_arguments)]
     fn export_range_to_parquet(
         &self,
         sheet_name: &str,
@@ -1210,11 +1218,11 @@ fn borderstyle_to_pyside(bs: &BorderStyle) -> PySide {
 /// Convert PyBorder to Rust Border.
 fn pyborder_to_border(pb: &PyBorder) -> Border {
     Border {
-        left: pb.left.as_ref().and_then(|s| pyside_to_borderstyle(s)),
-        right: pb.right.as_ref().and_then(|s| pyside_to_borderstyle(s)),
-        top: pb.top.as_ref().and_then(|s| pyside_to_borderstyle(s)),
-        bottom: pb.bottom.as_ref().and_then(|s| pyside_to_borderstyle(s)),
-        diagonal: pb.diagonal.as_ref().and_then(|s| pyside_to_borderstyle(s)),
+        left: pb.left.as_ref().and_then(pyside_to_borderstyle),
+        right: pb.right.as_ref().and_then(pyside_to_borderstyle),
+        top: pb.top.as_ref().and_then(pyside_to_borderstyle),
+        bottom: pb.bottom.as_ref().and_then(pyside_to_borderstyle),
+        diagonal: pb.diagonal.as_ref().and_then(pyside_to_borderstyle),
     }
 }
 

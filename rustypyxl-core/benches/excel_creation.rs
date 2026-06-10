@@ -2,7 +2,6 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Benchmark
 use rustypyxl_core::workbook::Workbook;
 use rustypyxl_core::worksheet::Worksheet;
 use rustypyxl_core::cell::CellValue;
-use std::collections::HashMap;
 
 fn create_large_workbook(rows: u32, cols: u32) -> Workbook {
     let mut workbook = Workbook::new();
