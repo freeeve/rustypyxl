@@ -1,7 +1,5 @@
 """Tests for named range support."""
 
-import os
-import pytest
 import rustypyxl
 
 
@@ -45,14 +43,9 @@ class TestNamedRangeRoundtrip:
         names = wb2.defined_names
         assert any("TestRange" in n[0] for n in names)
 
-    def test_load_existing_named_ranges(self):
-        """Load an existing file with named ranges."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_named_ranges.xlsx")
-        if not os.path.exists(path):
-            pytest.skip("test_named_ranges.xlsx not found")
-
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
-        # Check that named ranges were loaded
-        names = wb.defined_names
-        assert isinstance(names, list)
+    def test_load_existing_named_ranges(self, fixtures_dir):
+        """Load an externally-authored file with named ranges."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "named_ranges.xlsx"))
+        names = dict(wb.defined_names)
+        assert "MyRange" in names, f"named range lost: {names}"
+        assert "Named" in names["MyRange"]

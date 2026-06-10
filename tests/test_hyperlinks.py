@@ -1,7 +1,5 @@
 """Tests for hyperlink support."""
 
-import os
-import pytest
 import rustypyxl
 
 
@@ -47,12 +45,9 @@ class TestHyperlinkBasics:
 class TestHyperlinkRoundtrip:
     """Test hyperlinks survive save/load cycle."""
 
-    def test_load_existing_hyperlinks(self):
-        """Load an existing file with hyperlinks."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_hyperlinks.xlsx")
-        if not os.path.exists(path):
-            pytest.skip("test_hyperlinks.xlsx not found")
-
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
-        assert len(wb) > 0
+    def test_load_existing_hyperlinks(self, fixtures_dir):
+        """Load an externally-authored file with hyperlinks."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "hyperlinks.xlsx"))
+        ws = wb["Links"]
+        assert ws["A1"].hyperlink == "https://example.com/page", "external URL lost"
+        assert ws["A2"].hyperlink == "mailto:someone@example.com"

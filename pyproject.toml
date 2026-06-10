@@ -40,6 +40,11 @@ features = ["pyo3/extension-module"]
 module-name = "rustypyxl"
 manifest-path = "rustypyxl-pyo3/Cargo.toml"
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: long-running tests (deselect with '-m \"not slow\"')",
+]
+
 [tool.coverage.run]
 source = ["rustypyxl"]
 omit = [

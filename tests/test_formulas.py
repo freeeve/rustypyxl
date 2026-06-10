@@ -1,7 +1,5 @@
 """Tests for formula support."""
 
-import os
-import pytest
 import rustypyxl
 
 
@@ -47,12 +45,10 @@ class TestFormulaRoundtrip:
         wb2 = rustypyxl.load_workbook(temp_xlsx_path)
         assert "Formulas" in wb2.sheetnames
 
-    def test_load_existing_formulas(self):
-        """Load an existing file with formulas."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_formulas.xlsx")
-        if not os.path.exists(path):
-            pytest.skip("test_formulas.xlsx not found")
-
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
-        assert len(wb) > 0
+    def test_load_existing_formulas(self, fixtures_dir):
+        """Load an externally-authored file with formulas."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "formulas.xlsx"))
+        ws = wb["Formulas"]
+        assert ws["A3"].value == "=SUM(A1:A2)", "formula lost on load"
+        assert ws["B1"].value == '=CONCATENATE("a","b")'
+        assert ws["A1"].value == 2

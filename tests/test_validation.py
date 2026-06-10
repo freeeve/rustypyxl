@@ -1,19 +1,27 @@
 """Tests for data validation support."""
 
-import os
-import pytest
+import openpyxl
+
 import rustypyxl
 
 
 class TestValidationRoundtrip:
     """Test data validation survives save/load cycle."""
 
-    def test_load_existing_validation(self):
-        """Load an existing file with validation."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_validation.xlsx")
-        if not os.path.exists(path):
-            pytest.skip("test_validation.xlsx not found")
+    def test_load_existing_validation(self, fixtures_dir):
+        """Load an externally-authored file with data validation."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "validation.xlsx"))
+        assert wb.sheetnames == ["Validated"]
+        assert wb["Validated"]["A1"].value == "pick one"
 
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
-        assert len(wb) > 0
+    def test_validation_survives_roundtrip(self, fixtures_dir, temp_xlsx_path):
+        """The validation rule must survive load+save."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "validation.xlsx"))
+        wb.save(temp_xlsx_path)
+
+        chk = openpyxl.load_workbook(temp_xlsx_path)
+        rules = chk["Validated"].data_validations.dataValidation
+        assert len(rules) == 1, "validation rule stripped on round-trip"
+        assert rules[0].type == "list"
+        assert rules[0].formula1 == '"Yes,No,Maybe"'
+        assert str(rules[0].sqref) == "B1:B10"

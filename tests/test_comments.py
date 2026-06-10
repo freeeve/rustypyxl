@@ -1,7 +1,5 @@
 """Tests for comment support."""
 
-import os
-import pytest
 import rustypyxl
 
 
@@ -41,12 +39,10 @@ class TestCommentBasics:
 class TestCommentRoundtrip:
     """Test comments survive save/load cycle."""
 
-    def test_load_existing_comments(self):
-        """Load an existing file with comments."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_comments.xlsx")
-        if not os.path.exists(path):
-            pytest.skip("test_comments.xlsx not found")
-
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
-        assert len(wb) > 0
+    def test_load_existing_comments(self, fixtures_dir):
+        """Load an externally-authored file with comments."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / "comments.xlsx"))
+        ws = wb["Commented"]
+        assert ws["A1"].comment is not None, "comment lost on load"
+        assert "first comment" in ws["A1"].comment
+        assert "second comment" in ws.cell(2, 2).comment

@@ -93,13 +93,11 @@ class TestWorkbookSaveLoad:
         assert "Test" in wb2.sheetnames
 
     def test_load_existing_file(self, sample_xlsx_path):
-        """Load an existing xlsx file."""
-        if sample_xlsx_path is None:
-            pytest.skip("No sample xlsx file available")
-
+        """Load an externally-authored xlsx file."""
         wb = rustypyxl.load_workbook(sample_xlsx_path)
-        assert wb is not None
-        assert len(wb) > 0
+        assert wb.sheetnames == ["Data"]
+        assert wb["Data"]["A1"].value == "Name"
+        assert wb["Data"]["B2"].value == 42
 
     def test_load_nonexistent_file_raises(self):
         """Loading a nonexistent file raises ValueError."""

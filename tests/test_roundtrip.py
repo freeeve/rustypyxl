@@ -1,8 +1,9 @@
 """Tests for saving and loading workbooks (roundtrip)."""
 
-import os
 import pytest
 import rustypyxl
+
+from conftest import FIXTURE_NAMES
 
 
 class TestRoundtrip:
@@ -44,27 +45,20 @@ class TestRoundtrip:
 
 
 class TestLoadExistingFiles:
-    """Test loading existing xlsx files from the project."""
+    """Load+save+reload every generated feature fixture file."""
 
-    @pytest.mark.parametrize("filename", [
-        "test_simple.xlsx",
-        "test_formatting.xlsx",
-        "test_formulas.xlsx",
-        "test_comments.xlsx",
-        "test_hyperlinks.xlsx",
-        "test_named_ranges.xlsx",
-        "test_protection.xlsx",
-        "test_validation.xlsx",
-    ])
-    def test_load_existing_xlsx(self, filename):
-        """Load existing test xlsx files."""
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), filename)
-        if not os.path.exists(path):
-            pytest.skip(f"Test file {filename} not found")
-
-        wb = rustypyxl.load_workbook(path)
-        assert wb is not None
+    @pytest.mark.parametrize("filename", FIXTURE_NAMES)
+    def test_load_existing_xlsx(self, filename, fixtures_dir, temp_xlsx_path):
+        """Externally-authored files load, resave, and reload cleanly."""
+        wb = rustypyxl.load_workbook(str(fixtures_dir / filename))
         assert len(wb) > 0
+        first_sheet = wb.sheetnames[0]
+        a1 = wb[first_sheet]["A1"].value
+
+        wb.save(temp_xlsx_path)
+        wb2 = rustypyxl.load_workbook(temp_xlsx_path)
+        assert wb2.sheetnames == wb.sheetnames
+        assert wb2[first_sheet]["A1"].value == a1, "cell content changed on round-trip"
 
 
 class TestFileIntegrity:
