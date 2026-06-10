@@ -1,7 +1,7 @@
 # Build artifacts
 /target/
 **/fuzz/target/
-Cargo.lock
+rustypyxl-core/fuzz/Cargo.lock
 
 # Python
 .venv/
