@@ -1304,8 +1304,6 @@ impl PySheetNameIterator {
 
 /// Convert a Python value to a CellValue.
 pub(crate) fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellValue> {
-    use pyo3::types::{PyDate, PyDateTime, PyTime};
-
     if value.is_none() {
         return Ok(CellValue::Empty);
     }
@@ -1326,17 +1324,24 @@ pub(crate) fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellVal
     if let Ok(n) = value.extract::<f64>() {
         return Ok(CellValue::Number(n));
     }
-    // datetime/date/time become ISO-8601 date cells (t="d"); PyDateTime must be
-    // checked before PyDate since datetime subclasses date
-    if value.is_instance_of::<PyDateTime>()
-        || value.is_instance_of::<PyDate>()
-        || value.is_instance_of::<PyTime>()
-    {
+    // datetime/date/time become ISO-8601 date cells (t="d"). The check goes
+    // through the Python datetime module rather than pyo3's PyDateTime types,
+    // which don't exist under abi3-forward-compatibility builds (the wheels
+    // for Python versions newer than pyo3's tested range, e.g. 3.13/3.14).
+    if is_datetime_like(value)? {
         let iso = value.call_method0("isoformat")?.extract::<String>()?;
         return Ok(CellValue::Date(iso));
     }
     // Try to convert to string as fallback
     Ok(CellValue::from(value.str()?.to_string()))
+}
+
+/// True when the value is a datetime.datetime, datetime.date, or
+/// datetime.time instance (datetime subclasses date, so two checks suffice).
+fn is_datetime_like(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let module = value.py().import("datetime")?;
+    Ok(value.is_instance(&module.getattr("date")?)?
+        || value.is_instance(&module.getattr("time")?)?)
 }
 
 /// Parse an ISO-8601 date/time string into the matching Python datetime,
