@@ -19,7 +19,9 @@ pub struct StreamingSheet {
     name: String,
     current_row: u32,
     max_col: u32,
-    finalized: bool,
+    /// Position of this sheet in the workbook; append_row rejects handles
+    /// whose sheet is no longer the open one.
+    index: usize,
 }
 
 /// A write-only workbook that streams data directly to disk.
@@ -49,7 +51,11 @@ pub struct StreamingSheet {
 ///     ]).unwrap();
 /// }
 ///
-/// wb.close(sheet).unwrap();
+/// // Creating another sheet finalizes the previous one automatically
+/// let mut summary = wb.create_sheet("Summary").unwrap();
+/// wb.append_row(&mut summary, vec![CellValue::Number(1000.0)]).unwrap();
+///
+/// wb.close(summary).unwrap();
 /// ```
 pub struct StreamingWorkbook {
     zip: ZipWriter<BufWriter<File>>,
@@ -79,12 +85,26 @@ impl StreamingWorkbook {
         })
     }
 
-    /// Create a new sheet. Returns a StreamingSheet handle for writing rows.
+    /// Create a new sheet, finalizing the previously open sheet (if any).
+    /// Returns a StreamingSheet handle for writing rows; the old handle
+    /// becomes unusable once a new sheet is opened.
     pub fn create_sheet(&mut self, name: &str) -> Result<StreamingSheet> {
-        if self.current_sheet_idx.is_some() {
+        if name.is_empty() || name.chars().count() > 31 {
             return Err(RustypyxlError::custom(
-                "Must close current sheet before creating a new one"
+                "Sheet name must be between 1 and 31 characters",
             ));
+        }
+        if name.contains(['[', ']', ':', '*', '?', '/', '\\']) {
+            return Err(RustypyxlError::custom(
+                "Sheet name contains characters Excel forbids: []:*?/\\",
+            ));
+        }
+        if self.sheets.iter().any(|existing| existing == name) {
+            return Err(RustypyxlError::WorksheetAlreadyExists(name.to_string()));
+        }
+
+        if self.current_sheet_idx.is_some() {
+            self.finalize_current_sheet()?;
         }
 
         self.sheets.push(name.to_string());
@@ -106,14 +126,26 @@ impl StreamingWorkbook {
             name: name.to_string(),
             current_row: 0,
             max_col: 0,
-            finalized: false,
+            index: idx,
         })
     }
 
-    /// Append a row to the current sheet.
+    /// Append a row to the given sheet, which must be the currently open one.
     pub fn append_row(&mut self, sheet: &mut StreamingSheet, values: Vec<CellValue>) -> Result<()> {
-        if self.current_sheet_idx.is_none() {
-            return Err(RustypyxlError::custom("No sheet is open"));
+        if self.current_sheet_idx != Some(sheet.index) {
+            return Err(RustypyxlError::custom(
+                "This sheet is no longer the open sheet (a newer sheet was created or it was closed)",
+            ));
+        }
+        if sheet.current_row >= 1_048_576 {
+            return Err(RustypyxlError::custom(
+                "Exceeded Excel's row limit of 1,048,576",
+            ));
+        }
+        if values.len() > 16_384 {
+            return Err(RustypyxlError::custom(
+                "Row exceeds Excel's column limit of 16,384",
+            ));
         }
 
         sheet.current_row += 1;
@@ -143,8 +175,8 @@ impl StreamingWorkbook {
         Ok(())
     }
 
-    /// Finalize the current sheet.
-    fn finalize_sheet(&mut self, _sheet: &StreamingSheet) -> Result<()> {
+    /// Finalize the currently open sheet's XML part.
+    fn finalize_current_sheet(&mut self) -> Result<()> {
         if !self.sheet_xml_started {
             return Ok(());
         }
@@ -162,11 +194,23 @@ impl StreamingWorkbook {
         Ok(())
     }
 
-    /// Close the workbook and finalize the ZIP file.
-    pub fn close(mut self, mut sheet: StreamingSheet) -> Result<()> {
-        // Finalize current sheet if open
-        self.finalize_sheet(&sheet)?;
-        sheet.finalized = true;
+    /// Close the workbook and finalize the ZIP file. The sheet handle is
+    /// consumed for convenience; `finish` does the same without one.
+    pub fn close(self, sheet: StreamingSheet) -> Result<()> {
+        let _ = sheet;
+        self.finish()
+    }
+
+    /// Finalize any open sheet and the ZIP file. A workbook with zero
+    /// sheets gets an empty "Sheet1", since xlsx requires at least one.
+    pub fn finish(mut self) -> Result<()> {
+        if self.current_sheet_idx.is_some() {
+            self.finalize_current_sheet()?;
+        }
+        if self.sheets.is_empty() {
+            self.create_sheet("Sheet1")?;
+            self.finalize_current_sheet()?;
+        }
 
         // Write [Content_Types].xml
         self.write_content_types()?;
@@ -308,6 +352,82 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_streaming_multiple_sheets() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_str().unwrap();
+
+        let mut wb = StreamingWorkbook::new(path).unwrap();
+        let mut first = wb.create_sheet("First").unwrap();
+        wb.append_row(&mut first, vec![CellValue::String(Arc::from("a"))]).unwrap();
+
+        // Creating the second sheet finalizes the first automatically
+        let mut second = wb.create_sheet("Second").unwrap();
+        wb.append_row(&mut second, vec![CellValue::Number(42.0)]).unwrap();
+
+        // The stale first-sheet handle must be rejected, not write into Second
+        let err = wb.append_row(&mut first, vec![CellValue::Number(1.0)]);
+        assert!(err.is_err(), "stale sheet handle accepted");
+
+        wb.close(second).unwrap();
+
+        let loaded = crate::Workbook::load(path).unwrap();
+        assert_eq!(loaded.sheet_names(), ["First", "Second"]);
+        let first_ws = loaded.get_sheet_by_name("First").unwrap();
+        assert!(matches!(
+            &first_ws.get_cell(1, 1).unwrap().value,
+            CellValue::String(v) if v.as_ref() == "a"
+        ));
+        let second_ws = loaded.get_sheet_by_name("Second").unwrap();
+        assert!(matches!(
+            &second_ws.get_cell(1, 1).unwrap().value,
+            CellValue::Number(n) if *n == 42.0
+        ));
+    }
+
+    #[test]
+    fn test_streaming_finish_without_sheets_creates_default() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_str().unwrap();
+
+        let wb = StreamingWorkbook::new(path).unwrap();
+        wb.finish().unwrap();
+
+        let loaded = crate::Workbook::load(path).unwrap();
+        assert_eq!(loaded.sheet_names(), ["Sheet1"]);
+    }
+
+    #[test]
+    fn test_streaming_row_and_column_limits() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_str().unwrap();
+
+        let mut wb = StreamingWorkbook::new(path).unwrap();
+        let mut sheet = wb.create_sheet("S").unwrap();
+
+        let wide = vec![CellValue::Number(1.0); 16_385];
+        assert!(wb.append_row(&mut sheet, wide).is_err(), "column limit not enforced");
+
+        sheet.current_row = 1_048_576;
+        assert!(
+            wb.append_row(&mut sheet, vec![CellValue::Number(1.0)]).is_err(),
+            "row limit not enforced"
+        );
+    }
+
+    #[test]
+    fn test_streaming_sheet_name_validation() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_str().unwrap();
+
+        let mut wb = StreamingWorkbook::new(path).unwrap();
+        assert!(wb.create_sheet("").is_err());
+        assert!(wb.create_sheet(&"x".repeat(32)).is_err());
+        assert!(wb.create_sheet("bad/name").is_err());
+        wb.create_sheet("Fine").unwrap();
+        assert!(wb.create_sheet("Fine").is_err(), "duplicate name accepted");
+    }
 
     #[test]
     fn test_streaming_write() {

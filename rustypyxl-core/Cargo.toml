@@ -23,6 +23,7 @@ arrow = { version = "54", optional = true, default-features = false }
 # S3 support (optional)
 aws-sdk-s3 = { version = "1", optional = true }
 aws-config = { version = "1", optional = true, features = ["behavior-version-latest"] }
+aws-smithy-types = { version = "1", optional = true }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
@@ -35,7 +36,7 @@ bench = []
 pprof = ["dep:pprof"]
 fast-hash = ["dep:ahash", "dep:hashbrown"]
 parquet = ["dep:parquet", "dep:arrow"]
-s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-smithy-types", "dep:tokio"]
 
 [[bin]]
 name = "profile_read"

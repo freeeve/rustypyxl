@@ -93,17 +93,16 @@ class TestOpenpyxlCompatErrors:
 
         assert Font is not None
 
-    def test_streaming_early_close_does_not_brick_workbook(self, temp_xlsx_path):
+    def test_streaming_close_without_sheet_yields_valid_file(self, temp_xlsx_path):
+        # Closing before creating any sheet finalizes a valid empty workbook
+        # (xlsx requires at least one sheet, so a default one is added).
         swb = rustypyxl.WriteOnlyWorkbook(str(temp_xlsx_path))
-        with pytest.raises(ValueError):
-            swb.close()
-        # The workbook must still be usable after the failed close.
-        swb.create_sheet("S")
-        swb.append_row(["ok"])
         swb.close()
 
         wb = rustypyxl.load_workbook(temp_xlsx_path)
-        assert wb["S"]["A1"].value == "ok"
+        assert wb.sheetnames == ["Sheet1"]
+        with pytest.raises(ValueError):
+            swb.close()  # double close still errors
 
 
 class TestGilRelease:

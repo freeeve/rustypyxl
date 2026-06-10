@@ -2914,6 +2914,7 @@ dependencies = [
  "arrow",
  "aws-config",
  "aws-sdk-s3",
+ "aws-smithy-types",
  "chrono",
  "criterion",
  "hashbrown 0.14.5",

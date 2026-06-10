@@ -186,14 +186,16 @@ class TestWriteOnlyWorkbookErrors:
         with pytest.raises(ValueError):
             wb.append_row(["This", "should", "fail"])
 
-    def test_close_before_create_sheet_raises(self, tmp_path):
-        """Should raise error if closing before creating sheet."""
+    def test_close_before_create_sheet_writes_default_sheet(self, tmp_path):
+        """Closing with no sheets produces a valid workbook with a default
+        sheet, since xlsx requires at least one."""
         path = tmp_path / "test.xlsx"
 
         wb = rustypyxl.WriteOnlyWorkbook(str(path))
+        wb.close()
 
-        with pytest.raises(ValueError):
-            wb.close()
+        chk = rustypyxl.load_workbook(str(path))
+        assert chk.sheetnames == ["Sheet1"]
 
     def test_double_close_raises(self, tmp_path):
         """Should raise error on double close."""
@@ -216,3 +218,52 @@ class TestWriteOnlyWorkbookErrors:
 
         with pytest.raises(ValueError):
             wb.append_row(["Too", "late"])
+
+
+class TestStreamingMultiSheet:
+    """Multi-sheet streaming and context-manager support (task 008)."""
+
+    def test_multiple_sheets(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("First")
+        wb.append_row(["a", 1])
+        wb.create_sheet("Second")  # finalizes "First" automatically
+        wb.append_row([42])
+        wb.close()
+
+        chk = rustypyxl.load_workbook(temp_xlsx_path)
+        assert chk.sheetnames == ["First", "Second"]
+        assert chk["First"]["A1"].value == "a"
+        assert chk["Second"]["A1"].value == 42
+
+    def test_context_manager_closes_file(self, temp_xlsx_path):
+        with rustypyxl.WriteOnlyWorkbook(temp_xlsx_path) as wb:
+            wb.create_sheet("S")
+            wb.append_row(["from with-block"])
+
+        chk = rustypyxl.load_workbook(temp_xlsx_path)
+        assert chk["S"]["A1"].value == "from with-block"
+
+    def test_context_manager_does_not_mask_exceptions(self, temp_xlsx_path):
+        with pytest.raises(RuntimeError, match="boom"):
+            with rustypyxl.WriteOnlyWorkbook(temp_xlsx_path) as wb:
+                wb.create_sheet("S")
+                raise RuntimeError("boom")
+
+    def test_too_many_columns_rejected(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("S")
+        with pytest.raises(ValueError, match="column limit"):
+            wb.append_row([1] * 16_385)
+        wb.close()
+
+    def test_invalid_sheet_names_rejected(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        with pytest.raises(ValueError):
+            wb.create_sheet("bad/name")
+        with pytest.raises(ValueError):
+            wb.create_sheet("x" * 32)
+        wb.create_sheet("Fine")
+        with pytest.raises(ValueError):
+            wb.create_sheet("Fine")
+        wb.close()

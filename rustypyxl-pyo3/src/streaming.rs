@@ -11,13 +11,12 @@ use rustypyxl_core::CellValue;
 /// holding them in memory. Similar to openpyxl's write_only mode.
 ///
 /// Example:
-///     wb = WriteOnlyWorkbook("output.xlsx")
-///     wb.create_sheet("Data")
-///
-///     for i in range(1_000_000):
-///         wb.append_row([f"Row {i}", i, i * 1.5])
-///
-///     wb.close()
+///     with WriteOnlyWorkbook("output.xlsx") as wb:
+///         wb.create_sheet("Data")
+///         for i in range(1_000_000):
+///             wb.append_row([f"Row {i}", i, i * 1.5])
+///         wb.create_sheet("Summary")  # finalizes "Data" automatically
+///         wb.append_row(["total", 1_000_000])
 #[pyclass(name = "WriteOnlyWorkbook")]
 pub struct PyStreamingWorkbook {
     inner: Option<StreamingWorkbook>,
@@ -40,10 +39,8 @@ impl PyStreamingWorkbook {
         })
     }
 
-    /// Create a new sheet.
-    ///
-    /// Note: Only one sheet can be open at a time. Creating a new sheet
-    /// will finalize the previous one.
+    /// Create a new sheet. Only one sheet is open at a time: creating a
+    /// new sheet finalizes the previous one.
     ///
     /// Args:
     ///     name: Sheet name
@@ -82,28 +79,52 @@ impl PyStreamingWorkbook {
 
     /// Close the workbook and finalize the file.
     ///
-    /// This must be called to properly save the file.
+    /// This must be called (or the workbook used as a context manager) to
+    /// produce a valid file; dropping without closing leaves it truncated.
     fn close(&mut self) -> PyResult<()> {
-        // Validate both halves before take() so a failed close leaves the
-        // workbook usable instead of consuming it.
         if self.inner.is_none() {
             return Err(PyValueError::new_err("Workbook already closed"));
         }
-        if self.current_sheet.is_none() {
-            return Err(PyValueError::new_err(
-                "No sheet created. Call create_sheet() first.",
-            ));
+        self.do_close()
+    }
+
+    /// Context-manager support: `with WriteOnlyWorkbook(path) as wb:`.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (exc_type=None, exc_value=None, traceback=None))]
+    fn __exit__(
+        &mut self,
+        exc_type: Option<Bound<'_, PyAny>>,
+        exc_value: Option<Bound<'_, PyAny>>,
+        traceback: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        let _ = (exc_value, traceback);
+        if self.inner.is_some() {
+            if exc_type.is_none() {
+                self.do_close()?;
+            } else {
+                // An exception is already propagating; finalize best-effort
+                // without masking it
+                let _ = self.do_close();
+            }
         }
+        Ok(false)
+    }
+}
+
+impl PyStreamingWorkbook {
+    /// Consume the inner workbook and finalize the file, with or without an
+    /// open sheet.
+    fn do_close(&mut self) -> PyResult<()> {
         let wb = self.inner.take()
             .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
-
-        let sheet = self.current_sheet.take()
-            .ok_or_else(|| PyValueError::new_err("No sheet created"))?;
-
-        wb.close(sheet)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        Ok(())
+        let result = match self.current_sheet.take() {
+            Some(sheet) => wb.close(sheet),
+            None => wb.finish(),
+        };
+        result.map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
 
