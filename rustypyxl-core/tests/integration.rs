@@ -2,7 +2,7 @@
 
 use rustypyxl_core::{Workbook, CellValue};
 use rustypyxl_core::autofilter::{AutoFilter, FilterColumn, CustomFilter, FilterOperator};
-use rustypyxl_core::conditional::{ConditionalFormatting, ConditionalRule, ConditionalFormatType, ColorScale, DataBar, ConditionalColor};
+use rustypyxl_core::conditional::{ConditionalFormatting, ConditionalRule, ConditionalFormatType, ConditionalOperator, ColorScale, DataBar, ConditionalColor};
 use rustypyxl_core::table::{Table, TableStyle, TableColumn, TotalsRowFunction};
 use rustypyxl_core::pagesetup::{PageSetup, PaperSize, Orientation, PageMargins, HeaderFooterSection};
 use std::fs;
@@ -669,6 +669,119 @@ fn test_roundtrip_preserves_structure() {
     assert_eq!(
         wb3.get_sheet_by_name("Main").unwrap().get_cell(3, 1).and_then(|c| c.hyperlink.clone()).as_deref(),
         Some("https://example.com/page?a=1&b=2")
+    );
+
+    fs::remove_file(&path).ok();
+    fs::remove_file(&path2).ok();
+}
+
+/// Conditional formatting must round-trip with its differential formats
+/// (dxfs): previously dxfId was never written, so rules matched but applied
+/// no formatting, and nothing was parsed back on load.
+#[test]
+fn test_conditional_formatting_roundtrip_with_dxfs() {
+    use rustypyxl_core::conditional::{ConditionalFormat, IconSet, IconSetStyle};
+    use std::io::Read;
+
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("CF".to_string())).unwrap();
+    for r in 1..=10 {
+        wb.set_cell_value_in_sheet("CF", r, 1, CellValue::Number(r as f64 * 10.0)).unwrap();
+    }
+
+    {
+        let ws = wb.get_sheet_by_name_mut("CF").unwrap();
+
+        let mut cf1 = ConditionalFormatting::new("A1:A10");
+        cf1.add_rule(
+            ConditionalRule::cell_is(ConditionalOperator::GreaterThan, "50").with_format(
+                ConditionalFormat::new()
+                    .with_fill(ConditionalColor::rgb("FFFFC7CE"))
+                    .with_font_color(ConditionalColor::rgb("FF9C0006"))
+                    .with_bold(true),
+            ),
+        );
+        cf1.add_rule(ConditionalRule::with_color_scale(ColorScale::red_yellow_green()).with_priority(2));
+        ws.add_conditional_formatting(cf1);
+
+        let mut cf2 = ConditionalFormatting::new("B1:B10");
+        cf2.add_rule(ConditionalRule::with_data_bar(DataBar::new().with_color(ConditionalColor::blue())));
+        // Empty thresholds previously produced schema-invalid <iconSet/>
+        cf2.add_rule(ConditionalRule::with_icon_set(IconSet::new(IconSetStyle::ThreeArrows)).with_priority(2));
+        cf2.add_rule(
+            ConditionalRule::contains_text("err")
+                .with_priority(3)
+                .with_format(ConditionalFormat::new().with_fill(ConditionalColor::yellow())),
+        );
+        ws.add_conditional_formatting(cf2);
+    }
+
+    let path = temp_file("test_cf_roundtrip.xlsx");
+    wb.save(&path).unwrap();
+
+    // The sheet XML must wire rules to dxfs via dxfId, and styles.xml must
+    // actually contain the dxf entries.
+    {
+        let file = fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut sheet_xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
+        assert!(sheet_xml.contains("dxfId=\"0\""), "missing dxfId in {}", sheet_xml);
+        assert!(sheet_xml.contains("SEARCH("), "missing implied text-rule formula");
+        // 3 icons -> three cfvo thresholds at 0/33/66 percent
+        assert!(sheet_xml.contains(r#"<iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="66"/></iconSet>"#),
+            "icon set missing default thresholds: {}", sheet_xml);
+
+        let mut styles_xml = String::new();
+        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles_xml).unwrap();
+        assert!(styles_xml.contains("<dxfs count=\"2\">"), "dxfs missing in {}", styles_xml);
+        assert!(styles_xml.contains("FFFFC7CE"));
+    }
+
+    // Load back and verify the model round-trips
+    let wb2 = Workbook::load(&path).unwrap();
+    let ws2 = wb2.get_sheet_by_name("CF").unwrap();
+    assert_eq!(ws2.conditional_formatting.len(), 2, "CF blocks lost on load");
+
+    let cf1 = &ws2.conditional_formatting[0];
+    assert_eq!(cf1.range, "A1:A10");
+    assert_eq!(cf1.rules.len(), 2);
+    let rule = &cf1.rules[0];
+    assert_eq!(rule.rule_type, ConditionalFormatType::CellIs);
+    assert_eq!(rule.operator, Some(ConditionalOperator::GreaterThan));
+    assert_eq!(rule.formula1.as_deref(), Some("50"));
+    let fmt = rule.format.as_ref().expect("dxf format lost on load");
+    assert_eq!(fmt.fill_color.as_ref().and_then(|c| c.rgb.as_deref()), Some("FFFFC7CE"));
+    assert_eq!(fmt.font_color.as_ref().and_then(|c| c.rgb.as_deref()), Some("FF9C0006"));
+    assert_eq!(fmt.bold, Some(true));
+
+    let scale_rule = &cf1.rules[1];
+    let cs = scale_rule.color_scale.as_ref().expect("color scale lost");
+    assert!(cs.mid_color.is_some());
+    assert_eq!(cs.min_type, "min");
+    assert_eq!(cs.max_type, "max");
+
+    let cf2 = &ws2.conditional_formatting[1];
+    assert_eq!(cf2.rules.len(), 3);
+    let db = cf2.rules[0].data_bar.as_ref().expect("data bar lost");
+    assert_eq!(db.fill_color.rgb.as_deref(), Some("FF0000FF"));
+    let is = cf2.rules[1].icon_set.as_ref().expect("icon set lost");
+    assert_eq!(is.thresholds.len(), 3);
+    let text_rule = &cf2.rules[2];
+    assert_eq!(text_rule.rule_type, ConditionalFormatType::ContainsText);
+    assert_eq!(text_rule.text.as_deref(), Some("err"));
+    assert!(text_rule.format.is_some());
+
+    // Second save+load cycle must be stable
+    let path2 = temp_file("test_cf_roundtrip2.xlsx");
+    wb2.save(&path2).unwrap();
+    let wb3 = Workbook::load(&path2).unwrap();
+    let ws3 = wb3.get_sheet_by_name("CF").unwrap();
+    assert_eq!(ws3.conditional_formatting.len(), 2);
+    assert_eq!(
+        ws3.conditional_formatting[0].rules[0].format.as_ref()
+            .and_then(|f| f.fill_color.as_ref()).and_then(|c| c.rgb.as_deref()),
+        Some("FFFFC7CE")
     );
 
     fs::remove_file(&path).ok();

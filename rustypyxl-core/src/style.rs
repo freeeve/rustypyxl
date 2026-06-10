@@ -489,6 +489,10 @@ pub struct StyleRegistry {
     pub num_fmts: Vec<(usize, String)>,
     /// Cell formats that combine font/fill/border/numFmt indices.
     pub cell_xfs: Vec<CellXf>,
+    /// Differential formats parsed from styles.xml `<dxfs>`, indexed by
+    /// dxfId. Only populated on load; save regenerates the list from the
+    /// conditional-formatting rules themselves.
+    pub dxfs: Vec<crate::conditional::ConditionalFormat>,
 }
 
 impl StyleRegistry {

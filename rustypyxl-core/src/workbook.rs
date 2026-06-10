@@ -13,6 +13,10 @@ use quick_xml::Reader;
 use rayon::prelude::*;
 
 use crate::autofilter::AutoFilter;
+use crate::conditional::{
+    ColorScale, ConditionalColor, ConditionalFormat, ConditionalFormatType,
+    ConditionalFormatting, ConditionalOperator, ConditionalRule, DataBar, IconSet, IconSetStyle,
+};
 use crate::cell::CellValue;
 use crate::pagesetup::{Orientation, PageSetup, PaperSize};
 use crate::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
@@ -510,8 +514,10 @@ impl Workbook {
             writer::write_shared_strings(zip, &options, &shared_strings_vec)?;
         }
 
-        // Write styles.xml
-        writer::write_styles_xml(zip, &options, &self.styles)?;
+        // Write styles.xml with the differential formats used by
+        // conditional-formatting rules (referenced by dxfId)
+        let dxfs = writer::collect_dxfs(&self.worksheets);
+        writer::write_styles_xml(zip, &options, &self.styles, &dxfs)?;
 
         // Write each worksheet, its tables/comments, and its .rels part
         for (idx, worksheet) in self.worksheets.iter().enumerate() {
@@ -528,6 +534,7 @@ impl Workbook {
                 sheet_id,
                 &shared_strings_map,
                 &table_rel_ids,
+                &dxfs,
             )?;
 
             for (table, table_id) in worksheet.tables.iter().zip(table_ids) {
@@ -667,16 +674,20 @@ impl Workbook {
             Vec::new()
         };
 
-        let (styles, style_registry) = if let Some(xml) = styles_xml {
-            Self::parse_styles_xml(&xml)?
+        let (styles, mut style_registry) = if let Some(ref xml) = styles_xml {
+            Self::parse_styles_xml(xml)?
         } else {
             (HashMap::new(), StyleRegistry::new())
         };
+        if let Some(ref xml) = styles_xml {
+            style_registry.dxfs = Self::parse_dxfs_xml(xml).unwrap_or_default();
+        }
 
         // Phase 3: Parse worksheets in parallel using Rayon
         let shared_strings_ref = &shared_strings;
         let styles_ref = &styles;
 
+        let dxfs_ref: &[ConditionalFormat] = &style_registry.dxfs;
         let parse_one = |input: &SheetParseInput| -> Result<(String, Worksheet)> {
             let mut worksheet = Worksheet::new(input.name.clone());
             worksheet.visibility = input.visibility;
@@ -685,6 +696,7 @@ impl Workbook {
                 shared_strings_ref,
                 styles_ref,
                 &input.rels,
+                dxfs_ref,
                 &mut worksheet,
             )?;
 
@@ -1909,6 +1921,148 @@ impl Workbook {
         }
     }
 
+    /// Parse a `<color>`-shaped element's attributes into a ConditionalColor.
+    fn parse_conditional_color(e: &BytesStart) -> ConditionalColor {
+        let mut color = ConditionalColor {
+            rgb: None,
+            theme: None,
+            tint: None,
+        };
+        for attr in e.attributes().flatten() {
+            let val = String::from_utf8_lossy(&attr.value);
+            match attr.key.as_ref() {
+                b"rgb" => color.rgb = Some(val.to_string()),
+                b"theme" => color.theme = val.parse().ok(),
+                b"tint" => color.tint = val.parse().ok(),
+                _ => {}
+            }
+        }
+        color
+    }
+
+    /// Parse the `<dxfs>` section of styles.xml into differential formats,
+    /// indexed by dxfId.
+    fn parse_dxfs_xml(data: &[u8]) -> Result<Vec<ConditionalFormat>> {
+        let mut reader = Reader::from_reader(data);
+        reader.config_mut().trim_text(true);
+
+        let mut dxfs = Vec::new();
+        let mut buf = Vec::new();
+        let mut in_dxfs = false;
+        let mut current: Option<ConditionalFormat> = None;
+        let mut in_font = false;
+        let mut in_fill = false;
+        let mut in_border = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let is_empty_tag = false; // handled uniformly below
+                    let _ = is_empty_tag;
+                    let name = e.local_name();
+                    let name = name.as_ref();
+                    match name {
+                        b"dxfs" => in_dxfs = true,
+                        b"dxf" if in_dxfs => current = Some(ConditionalFormat::default()),
+                        b"font" if current.is_some() => in_font = true,
+                        b"fill" if current.is_some() => in_fill = true,
+                        b"border" if current.is_some() => in_border = true,
+                        b"b" if in_font => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.bold = Some(!Self::attr_is_off(&e));
+                            }
+                        }
+                        b"i" if in_font => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.italic = Some(!Self::attr_is_off(&e));
+                            }
+                        }
+                        b"strike" if in_font => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.strikethrough = Some(!Self::attr_is_off(&e));
+                            }
+                        }
+                        b"u" if in_font => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.underline = Some(!Self::attr_is_off(&e));
+                            }
+                        }
+                        b"color" if in_font => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.font_color = Some(Self::parse_conditional_color(&e));
+                            }
+                        }
+                        b"color" if in_border => {
+                            if let Some(fmt) = current.as_mut() {
+                                if fmt.border_color.is_none() {
+                                    fmt.border_color = Some(Self::parse_conditional_color(&e));
+                                }
+                            }
+                        }
+                        b"bgColor" if in_fill => {
+                            if let Some(fmt) = current.as_mut() {
+                                fmt.fill_color = Some(Self::parse_conditional_color(&e));
+                            }
+                        }
+                        b"fgColor" if in_fill => {
+                            if let Some(fmt) = current.as_mut() {
+                                if fmt.fill_color.is_none() {
+                                    fmt.fill_color = Some(Self::parse_conditional_color(&e));
+                                }
+                            }
+                        }
+                        b"numFmt" if current.is_some() => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"formatCode" {
+                                    if let (Some(fmt), Ok(code)) =
+                                        (current.as_mut(), attr.unescape_value())
+                                    {
+                                        fmt.number_format = Some(code.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::End(e)) => match e.local_name().as_ref() {
+                    b"dxfs" => break,
+                    b"dxf" => {
+                        if let Some(fmt) = current.take() {
+                            dxfs.push(fmt);
+                        }
+                    }
+                    b"font" => in_font = false,
+                    b"fill" => in_fill = false,
+                    b"border" => in_border = false,
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(RustypyxlError::ParseError(format!(
+                        "XML parsing error in dxfs: {}",
+                        e
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(dxfs)
+    }
+
+    /// True when a toggle element like `<b val="0"/>` or `<u val="none"/>`
+    /// explicitly disables the property; a bare `<b/>` enables it.
+    fn attr_is_off(e: &BytesStart) -> bool {
+        for attr in e.attributes().flatten() {
+            if attr.key.as_ref() == b"val" {
+                return matches!(attr.value.as_ref(), b"0" | b"false" | b"none");
+            }
+        }
+        false
+    }
+
     /// Parse an xl/tables/tableN.xml part into a Table.
     fn parse_table_xml<R: BufRead>(reader: R) -> Result<Table> {
         let mut reader = Reader::from_reader(reader);
@@ -2022,6 +2176,7 @@ impl Workbook {
         shared_strings: &[crate::cell::InternedString],
         styles: &HashMap<u32, Arc<CellStyle>>,
         rels: &HashMap<String, SheetRel>,
+        dxfs: &[ConditionalFormat],
         worksheet: &mut Worksheet,
     ) -> Result<()> {
         let mut reader = Reader::from_reader(reader);
@@ -2057,6 +2212,17 @@ impl Workbook {
         let mut current_validation: Option<(DataValidation, Option<String>)> = None;
         let mut in_formula1 = false;
         let mut in_formula2 = false;
+        // Conditional formatting state
+        let mut current_cf: Option<ConditionalFormatting> = None;
+        let mut current_cf_rule: Option<ConditionalRule> = None;
+        let mut in_cf_formula = false;
+        let mut cf_formula_count: u8 = 0;
+        // 0 = none, 1 = colorScale, 2 = dataBar, 3 = iconSet
+        let mut cf_container: u8 = 0;
+        let mut cf_cfvos: Vec<(String, String)> = Vec::new();
+        let mut cf_colors: Vec<ConditionalColor> = Vec::new();
+        let mut cf_show_value = true;
+        let mut cf_icon: Option<IconSet> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -2161,6 +2327,20 @@ impl Workbook {
                                 }
                             }
                         }
+                    } else if name == b"cfvo" && cf_container != 0 {
+                        let mut cfvo_type = String::new();
+                        let mut cfvo_val = String::new();
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
+                            match attr.key.as_ref() {
+                                b"type" => cfvo_type = val,
+                                b"val" => cfvo_val = val,
+                                _ => {}
+                            }
+                        }
+                        cf_cfvos.push((cfvo_type, cfvo_val));
+                    } else if name == b"color" && cf_container != 0 {
+                        cf_colors.push(Self::parse_conditional_color(&e));
                     } else if name == b"pane" {
                         Self::parse_pane_attrs(&e, worksheet);
                     } else if name == b"autoFilter" {
@@ -2355,6 +2535,86 @@ impl Workbook {
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
+                    } else if name == b"conditionalFormatting" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"sqref" {
+                                current_cf = Some(ConditionalFormatting::new(
+                                    String::from_utf8_lossy(&attr.value).to_string(),
+                                ));
+                            }
+                        }
+                    } else if name == b"cfRule" && current_cf.is_some() {
+                        let mut rule = ConditionalRule::default();
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
+                            let on = val == "1" || val == "true";
+                            match attr.key.as_ref() {
+                                b"type" => {
+                                    if let Some(t) = ConditionalFormatType::from_xml(&val) {
+                                        rule.rule_type = t;
+                                    }
+                                }
+                                b"dxfId" => {
+                                    rule.format = val
+                                        .parse::<usize>()
+                                        .ok()
+                                        .and_then(|id| dxfs.get(id))
+                                        .cloned();
+                                }
+                                b"priority" => rule.priority = val.parse().unwrap_or(1),
+                                b"operator" => rule.operator = ConditionalOperator::from_xml(&val),
+                                b"stopIfTrue" => rule.stop_if_true = on,
+                                b"text" => rule.text = Some(val),
+                                b"rank" => rule.rank = val.parse().ok(),
+                                b"percent" => rule.percent = on,
+                                b"bottom" => rule.bottom = on,
+                                b"aboveAverage" => rule.above_average = on,
+                                b"equalAverage" => rule.equal_average = on,
+                                b"stdDev" => rule.std_dev = val.parse().ok(),
+                                b"timePeriod" => rule.time_period = Some(val),
+                                _ => {}
+                            }
+                        }
+                        cf_formula_count = 0;
+                        current_cf_rule = Some(rule);
+                    } else if name == b"formula" && current_cf_rule.is_some() {
+                        in_cf_formula = true;
+                    } else if name == b"colorScale" && current_cf_rule.is_some() {
+                        cf_container = 1;
+                        cf_cfvos.clear();
+                        cf_colors.clear();
+                    } else if name == b"dataBar" && current_cf_rule.is_some() {
+                        cf_container = 2;
+                        cf_cfvos.clear();
+                        cf_colors.clear();
+                        cf_show_value = true;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"showValue" {
+                                cf_show_value =
+                                    !matches!(attr.value.as_ref(), b"0" | b"false");
+                            }
+                        }
+                    } else if name == b"iconSet" && current_cf_rule.is_some() {
+                        cf_container = 3;
+                        cf_cfvos.clear();
+                        cf_colors.clear();
+                        let mut icon = IconSet::new(IconSetStyle::ThreeTrafficLights);
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value);
+                            match attr.key.as_ref() {
+                                b"iconSet" => {
+                                    if let Some(style) = IconSetStyle::from_xml(&val) {
+                                        icon.style = style;
+                                    }
+                                }
+                                b"showValue" => {
+                                    icon.show_value = !matches!(val.as_ref(), "0" | "false")
+                                }
+                                b"reverse" => icon.reverse = val == "1" || val == "true",
+                                _ => {}
+                            }
+                        }
+                        cf_icon = Some(icon);
                     } else if name == b"autoFilter" {
                         // Start form (with filter column children, which are not yet modeled)
                         Self::parse_autofilter_attrs(&e, worksheet);
@@ -2439,13 +2699,88 @@ impl Workbook {
                         if let Some((dv, _)) = current_validation.as_mut() {
                             dv.formula2 = Some(text.to_string());
                         }
+                    } else if in_cf_formula {
+                        if let Some(rule) = current_cf_rule.as_mut() {
+                            if cf_formula_count == 0 {
+                                rule.formula1 = Some(text.to_string());
+                            } else {
+                                rule.formula2 = Some(text.to_string());
+                            }
+                        }
                     }
                 }
                 Ok(Event::End(e)) => {
                     let name = e.name();
                     let name = name.as_ref();
 
-                    if name == b"formula1" {
+                    if name == b"formula" && in_cf_formula {
+                        in_cf_formula = false;
+                        cf_formula_count = cf_formula_count.saturating_add(1);
+                    } else if name == b"colorScale" {
+                        if let Some(rule) = current_cf_rule.as_mut() {
+                            if cf_colors.len() >= 2 && cf_cfvos.len() >= 2 {
+                                let three = cf_colors.len() >= 3 && cf_cfvos.len() >= 3;
+                                let last = cf_cfvos.len() - 1;
+                                let opt = |v: &str| {
+                                    if v.is_empty() {
+                                        None
+                                    } else {
+                                        Some(v.to_string())
+                                    }
+                                };
+                                rule.color_scale = Some(ColorScale {
+                                    min_color: cf_colors[0].clone(),
+                                    mid_color: three.then(|| cf_colors[1].clone()),
+                                    max_color: cf_colors[cf_colors.len() - 1].clone(),
+                                    min_type: cf_cfvos[0].0.clone(),
+                                    min_value: opt(&cf_cfvos[0].1),
+                                    mid_type: three.then(|| cf_cfvos[1].0.clone()),
+                                    mid_value: if three { opt(&cf_cfvos[1].1) } else { None },
+                                    max_type: cf_cfvos[last].0.clone(),
+                                    max_value: opt(&cf_cfvos[last].1),
+                                });
+                            }
+                        }
+                        cf_container = 0;
+                    } else if name == b"dataBar" {
+                        if let Some(rule) = current_cf_rule.as_mut() {
+                            let mut db = DataBar::new();
+                            db.show_value = cf_show_value;
+                            if let Some((t, v)) = cf_cfvos.first() {
+                                db.min_type = t.clone();
+                                db.min_value = (!v.is_empty()).then(|| v.clone());
+                            }
+                            if let Some((t, v)) = cf_cfvos.get(1) {
+                                db.max_type = t.clone();
+                                db.max_value = (!v.is_empty()).then(|| v.clone());
+                            }
+                            if let Some(color) = cf_colors.first() {
+                                db.fill_color = color.clone();
+                            }
+                            rule.data_bar = Some(db);
+                        }
+                        cf_container = 0;
+                    } else if name == b"iconSet" {
+                        if let Some(rule) = current_cf_rule.as_mut() {
+                            if let Some(mut icon) = cf_icon.take() {
+                                icon.thresholds = std::mem::take(&mut cf_cfvos);
+                                rule.icon_set = Some(icon);
+                            }
+                        }
+                        cf_container = 0;
+                    } else if name == b"cfRule" {
+                        if let (Some(cf), Some(rule)) =
+                            (current_cf.as_mut(), current_cf_rule.take())
+                        {
+                            cf.rules.push(rule);
+                        }
+                    } else if name == b"conditionalFormatting" {
+                        if let Some(cf) = current_cf.take() {
+                            if !cf.rules.is_empty() {
+                                worksheet.add_conditional_formatting(cf);
+                            }
+                        }
+                    } else if name == b"formula1" {
                         in_formula1 = false;
                     } else if name == b"formula2" {
                         in_formula2 = false;

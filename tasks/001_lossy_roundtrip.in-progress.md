@@ -24,9 +24,8 @@ everything else. For an openpyxl-compatible library this is silent data loss.
 - [x] Tables: write side fully wired (parts, tableParts, rels, content
       types, workbook-unique ids, totals-row-aware autoFilter ref) and
       parsed on load.
-- [ ] Conditional formatting: parse `<conditionalFormatting>` on load, and
-      write a `<dxfs>` section in styles.xml wired to `dxfId` so rule formats
-      actually apply (see tasks/004).
+- [x] Conditional formatting: `<dxfs>` written and wired via `dxfId`, rules
+      and differential formats parsed on load (see tasks/004, done).
 - [ ] Sheet-scoped defined names: preserve `localSheetId`/`hidden` on
       defined names (they currently become global on save).
 - [ ] Cached formula values: `<f>` is written without `<v>`, so viewers that

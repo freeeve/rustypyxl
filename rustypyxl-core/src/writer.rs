@@ -4,7 +4,7 @@ use crate::cell::CellValue;
 use crate::utils::column_to_letter;
 use crate::error::Result;
 use crate::autofilter::FilterType;
-use crate::conditional::{ConditionalFormatType, ConditionalOperator};
+use crate::conditional::{ConditionalColor, ConditionalFormat, ConditionalFormatType};
 use crate::pagesetup::Orientation;
 use crate::style::StyleRegistry;
 use zip::write::{FileOptions, ExtendedFileOptions};
@@ -659,10 +659,119 @@ fn write_cell_xf_xml(xml: &mut String, xf: &crate::style::CellXf) {
     }
 }
 
+/// Collect the deduplicated differential formats (dxf entries) used by all
+/// conditional-formatting rules, in deterministic order. The index of a
+/// format in this list is its dxfId, shared between styles.xml and each
+/// worksheet's cfRule elements.
+pub fn collect_dxfs(worksheets: &[Worksheet]) -> Vec<ConditionalFormat> {
+    let mut dxfs: Vec<ConditionalFormat> = Vec::new();
+    for ws in worksheets {
+        for cf in &ws.conditional_formatting {
+            for rule in &cf.rules {
+                if let Some(fmt) = &rule.format {
+                    if !dxfs.contains(fmt) {
+                        dxfs.push(fmt.clone());
+                    }
+                }
+            }
+        }
+    }
+    dxfs
+}
+
+/// Write one color element for a dxf child (font color / bgColor / border color).
+fn write_dxf_color(xml: &mut String, element: &str, color: &ConditionalColor) {
+    xml.push('<');
+    xml.push_str(element);
+    if let Some(ref rgb) = color.rgb {
+        let hex = rgb.strip_prefix('#').unwrap_or(rgb);
+        if hex.len() >= 8 {
+            xml.push_str(&format!(r#" rgb="{}""#, escape_xml(hex)));
+        } else {
+            xml.push_str(&format!(r#" rgb="FF{}""#, escape_xml(hex)));
+        }
+    } else if let Some(theme) = color.theme {
+        xml.push_str(&format!(r#" theme="{}""#, theme));
+    }
+    if let Some(tint) = color.tint {
+        xml.push_str(&format!(r#" tint="{}""#, tint));
+    }
+    xml.push_str("/>");
+}
+
+/// Write the dxfs (differential formats) section referenced by cfRule dxfId.
+/// CT_Dxf child order: font, numFmt, fill, alignment, border, protection.
+fn write_dxfs_xml(xml: &mut String, dxfs: &[ConditionalFormat]) {
+    if dxfs.is_empty() {
+        xml.push_str(r#"<dxfs count="0"/>"#);
+        return;
+    }
+    xml.push_str(&format!(r#"<dxfs count="{}">"#, dxfs.len()));
+    for (idx, fmt) in dxfs.iter().enumerate() {
+        xml.push_str("<dxf>");
+
+        let has_font = fmt.font_color.is_some()
+            || fmt.bold.is_some()
+            || fmt.italic.is_some()
+            || fmt.underline.is_some()
+            || fmt.strikethrough.is_some();
+        if has_font {
+            xml.push_str("<font>");
+            if let Some(b) = fmt.bold {
+                xml.push_str(if b { "<b/>" } else { r#"<b val="0"/>"# });
+            }
+            if let Some(i) = fmt.italic {
+                xml.push_str(if i { "<i/>" } else { r#"<i val="0"/>"# });
+            }
+            if let Some(st) = fmt.strikethrough {
+                xml.push_str(if st { "<strike/>" } else { r#"<strike val="0"/>"# });
+            }
+            if let Some(u) = fmt.underline {
+                xml.push_str(if u { "<u/>" } else { r#"<u val="none"/>"# });
+            }
+            if let Some(ref color) = fmt.font_color {
+                write_dxf_color(xml, "color", color);
+            }
+            xml.push_str("</font>");
+        }
+
+        if let Some(ref code) = fmt.number_format {
+            // dxf numFmt ids only need to be unique among dxfs; 200+ avoids
+            // the builtin (0-163) and workbook custom (164+) ranges in use
+            xml.push_str(&format!(
+                r#"<numFmt numFmtId="{}" formatCode="{}"/>"#,
+                200 + idx,
+                escape_xml(code)
+            ));
+        }
+
+        if let Some(ref fill) = fmt.fill_color {
+            // In a dxf, the highlight color of a solid pattern goes in bgColor
+            xml.push_str("<fill><patternFill>");
+            write_dxf_color(xml, "bgColor", fill);
+            xml.push_str("</patternFill></fill>");
+        }
+
+        if let Some(ref border) = fmt.border_color {
+            xml.push_str("<border>");
+            for side in ["left", "right", "top", "bottom"] {
+                xml.push_str(&format!(r#"<{} style="thin">"#, side));
+                write_dxf_color(xml, "color", border);
+                xml.push_str(&format!("</{}>", side));
+            }
+            xml.push_str("</border>");
+        }
+
+        xml.push_str("</dxf>");
+    }
+    xml.push_str("</dxfs>");
+}
+
 pub fn write_styles_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
     styles: &StyleRegistry,
+    dxfs: &[ConditionalFormat],
 ) -> Result<()> {
     zip.start_file("xl/styles.xml", options.clone())?;
 
@@ -725,6 +834,9 @@ pub fn write_styles_xml<W: Write + Seek>(
     xml.push_str(r#"<cellStyle name="Normal" xfId="0" builtinId="0"/>"#);
     xml.push_str("</cellStyles>");
 
+    // Differential formats for conditional formatting (referenced by dxfId)
+    write_dxfs_xml(&mut xml, dxfs);
+
     xml.push_str("</styleSheet>");
 
     zip.write_all(xml.as_bytes())?;
@@ -769,6 +881,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     sheet_id: u32,
     shared_string_map: &HashMap<InternedString, usize>,
     table_rel_ids: &[String],
+    dxfs: &[ConditionalFormat],
 ) -> Result<()> {
     let path = format!("xl/worksheets/sheet{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
@@ -1023,7 +1136,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     // conditionalFormatting
     if !worksheet.conditional_formatting.is_empty() {
         for cf in &worksheet.conditional_formatting {
-            write_conditional_formatting(&mut writer, cf)?;
+            write_conditional_formatting(&mut writer, cf, dxfs)?;
         }
     }
 
@@ -1334,55 +1447,135 @@ fn write_conditional_color<W: std::io::Write>(
 }
 
 /// Write conditionalFormatting element.
+/// Excel evaluates text/blank/error/time-period rules through a hidden
+/// formula anchored at the top-left cell of the rule's range; without it
+/// the rule never matches. Returns None for rule types that don't need one
+/// or when the caller supplied formula1 explicitly.
+fn implied_rule_formula(
+    rule: &crate::conditional::ConditionalRule,
+    anchor: &str,
+) -> Option<String> {
+    if rule.formula1.is_some() {
+        return None;
+    }
+    let text = rule.text.as_deref().unwrap_or("");
+    // Embedded quotes in the matched text are doubled in Excel formulas
+    let quoted = format!("\"{}\"", text.replace('"', "\"\""));
+    match rule.rule_type {
+        ConditionalFormatType::ContainsText => Some(format!(
+            "NOT(ISERROR(SEARCH({},{})))",
+            quoted, anchor
+        )),
+        ConditionalFormatType::NotContainsText => {
+            Some(format!("ISERROR(SEARCH({},{}))", quoted, anchor))
+        }
+        ConditionalFormatType::BeginsWith => Some(format!(
+            "LEFT({},LEN({}))={}",
+            anchor, quoted, quoted
+        )),
+        ConditionalFormatType::EndsWith => Some(format!(
+            "RIGHT({},LEN({}))={}",
+            anchor, quoted, quoted
+        )),
+        ConditionalFormatType::ContainsBlanks => {
+            Some(format!("LEN(TRIM({}))=0", anchor))
+        }
+        ConditionalFormatType::NotContainsBlanks => {
+            Some(format!("LEN(TRIM({}))>0", anchor))
+        }
+        ConditionalFormatType::ContainsErrors => Some(format!("ISERROR({})", anchor)),
+        ConditionalFormatType::NotContainsErrors => {
+            Some(format!("NOT(ISERROR({}))", anchor))
+        }
+        ConditionalFormatType::TimePeriod => {
+            let period = rule.time_period.as_deref()?;
+            Some(match period {
+                "today" => format!("FLOOR({},1)=TODAY()", anchor),
+                "yesterday" => format!("FLOOR({},1)=TODAY()-1", anchor),
+                "tomorrow" => format!("FLOOR({},1)=TODAY()+1", anchor),
+                "last7Days" => format!(
+                    "AND(TODAY()-FLOOR({},1)<=6,FLOOR({},1)<=TODAY())",
+                    anchor, anchor
+                ),
+                "thisWeek" => format!(
+                    "AND(TODAY()-ROUNDDOWN({},0)<=WEEKDAY(TODAY())-1,ROUNDDOWN({},0)-TODAY()<=7-WEEKDAY(TODAY()))",
+                    anchor, anchor
+                ),
+                "lastWeek" => format!(
+                    "AND(TODAY()-ROUNDDOWN({},0)>=(WEEKDAY(TODAY())),TODAY()-ROUNDDOWN({},0)<(WEEKDAY(TODAY())+7))",
+                    anchor, anchor
+                ),
+                "nextWeek" => format!(
+                    "AND(ROUNDDOWN({},0)-TODAY()>(7-WEEKDAY(TODAY())),ROUNDDOWN({},0)-TODAY()<(15-WEEKDAY(TODAY())))",
+                    anchor, anchor
+                ),
+                "thisMonth" => format!(
+                    "AND(MONTH({})=MONTH(TODAY()),YEAR({})=YEAR(TODAY()))",
+                    anchor, anchor
+                ),
+                "lastMonth" => format!(
+                    "AND(MONTH({})=MONTH(EDATE(TODAY(),0-1)),YEAR({})=YEAR(EDATE(TODAY(),0-1)))",
+                    anchor, anchor
+                ),
+                "nextMonth" => format!(
+                    "AND(MONTH({})=MONTH(EDATE(TODAY(),0+1)),YEAR({})=YEAR(EDATE(TODAY(),0+1)))",
+                    anchor, anchor
+                ),
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Default icon-set thresholds: N icons split the range into N equal
+/// percent bands (Excel's own defaults), e.g. 3 icons -> 0/33/67.
+fn default_icon_thresholds(icon_count: u32) -> Vec<(String, String)> {
+    (0..icon_count)
+        .map(|i| {
+            (
+                "percent".to_string(),
+                ((100 * i) / icon_count).to_string(),
+            )
+        })
+        .collect()
+}
+
 fn write_conditional_formatting<W: std::io::Write>(
     writer: &mut Writer<W>,
     cf: &crate::conditional::ConditionalFormatting,
+    dxfs: &[ConditionalFormat],
 ) -> Result<()> {
     let mut cond_fmt = BytesStart::new("conditionalFormatting");
     cond_fmt.push_attribute(("sqref", cf.range.as_str()));
     writer.write_event(Event::Start(cond_fmt))?;
 
+    // Top-left cell of the range, used to anchor implied formulas
+    let anchor: String = cf
+        .range
+        .split([':', ' '])
+        .next()
+        .unwrap_or("A1")
+        .replace('$', "");
+
     for rule in &cf.rules {
         let mut cf_rule = BytesStart::new("cfRule");
+        cf_rule.push_attribute(("type", rule.rule_type.xml_value()));
 
-        // Type
-        let type_str = match &rule.rule_type {
-            ConditionalFormatType::CellIs => "cellIs",
-            ConditionalFormatType::Expression => "expression",
-            ConditionalFormatType::ColorScale => "colorScale",
-            ConditionalFormatType::DataBar => "dataBar",
-            ConditionalFormatType::IconSet => "iconSet",
-            ConditionalFormatType::Top10 => "top10",
-            ConditionalFormatType::AboveAverage => "aboveAverage",
-            ConditionalFormatType::DuplicateValues => "duplicateValues",
-            ConditionalFormatType::UniqueValues => "uniqueValues",
-            ConditionalFormatType::ContainsText => "containsText",
-            ConditionalFormatType::NotContainsText => "notContainsText",
-            ConditionalFormatType::BeginsWith => "beginsWith",
-            ConditionalFormatType::EndsWith => "endsWith",
-            ConditionalFormatType::ContainsBlanks => "containsBlanks",
-            ConditionalFormatType::NotContainsBlanks => "notContainsBlanks",
-            ConditionalFormatType::ContainsErrors => "containsErrors",
-            ConditionalFormatType::NotContainsErrors => "notContainsErrors",
-            ConditionalFormatType::TimePeriod => "timePeriod",
-        };
-        cf_rule.push_attribute(("type", type_str));
+        // dxfId ties the rule to its differential format in styles.xml;
+        // without it the rule matches but applies no formatting
+        if let Some(ref fmt) = rule.format {
+            if let Some(dxf_id) = dxfs.iter().position(|d| d == fmt) {
+                cf_rule.push_attribute(("dxfId", dxf_id.to_string().as_str()));
+            }
+        }
+
         cf_rule.push_attribute(("priority", rule.priority.to_string().as_str()));
 
         // Operator for cellIs rules
         if rule.rule_type == ConditionalFormatType::CellIs {
             if let Some(ref op) = rule.operator {
-                let op_str = match op {
-                    ConditionalOperator::Equal => "equal",
-                    ConditionalOperator::NotEqual => "notEqual",
-                    ConditionalOperator::GreaterThan => "greaterThan",
-                    ConditionalOperator::GreaterThanOrEqual => "greaterThanOrEqual",
-                    ConditionalOperator::LessThan => "lessThan",
-                    ConditionalOperator::LessThanOrEqual => "lessThanOrEqual",
-                    ConditionalOperator::Between => "between",
-                    ConditionalOperator::NotBetween => "notBetween",
-                };
-                cf_rule.push_attribute(("operator", op_str));
+                cf_rule.push_attribute(("operator", op.xml_value()));
             }
         }
 
@@ -1400,10 +1593,24 @@ fn write_conditional_formatting<W: std::io::Write>(
         }
 
         // AboveAverage attributes
-        if rule.rule_type == ConditionalFormatType::AboveAverage
-            && !rule.above_average {
+        if rule.rule_type == ConditionalFormatType::AboveAverage {
+            if !rule.above_average {
                 cf_rule.push_attribute(("aboveAverage", "0"));
             }
+            if rule.equal_average {
+                cf_rule.push_attribute(("equalAverage", "1"));
+            }
+            if let Some(std_dev) = rule.std_dev {
+                cf_rule.push_attribute(("stdDev", std_dev.to_string().as_str()));
+            }
+        }
+
+        // Required timePeriod attribute for date rules
+        if rule.rule_type == ConditionalFormatType::TimePeriod {
+            if let Some(ref period) = rule.time_period {
+                cf_rule.push_attribute(("timePeriod", period.as_str()));
+            }
+        }
 
         // Text value for text rules
         if let Some(ref text) = rule.text {
@@ -1416,8 +1623,10 @@ fn write_conditional_formatting<W: std::io::Write>(
 
         writer.write_event(Event::Start(cf_rule))?;
 
-        // Write formula if present
-        if let Some(ref formula) = rule.formula1 {
+        // Write formula if present, or the formula Excel requires for
+        // text/blank/error/time-period rules
+        let implied = implied_rule_formula(rule, &anchor);
+        if let Some(formula) = rule.formula1.as_deref().or(implied.as_deref()) {
             writer.write_event(Event::Start(BytesStart::new("formula")))?;
             writer.write_event(Event::Text(BytesText::new(formula)))?;
             writer.write_event(Event::End(BytesEnd::new("formula")))?;
@@ -1507,7 +1716,24 @@ fn write_conditional_formatting<W: std::io::Write>(
             }
             writer.write_event(Event::Start(icon_set))?;
 
-            for (threshold_type, threshold_val) in &is.thresholds {
+            // CT_IconSet requires one cfvo per icon (>= 2); an empty
+            // thresholds list previously produced files Excel repairs away
+            let icon_count: u32 = is
+                .style
+                .xml_type()
+                .chars()
+                .next()
+                .and_then(|c| c.to_digit(10))
+                .unwrap_or(3);
+            let defaults;
+            let thresholds: &[(String, String)] = if is.thresholds.is_empty() {
+                defaults = default_icon_thresholds(icon_count);
+                &defaults
+            } else {
+                &is.thresholds
+            };
+
+            for (threshold_type, threshold_val) in thresholds {
                 let mut cfvo = BytesStart::new("cfvo");
                 cfvo.push_attribute(("type", threshold_type.as_str()));
                 if !threshold_val.is_empty() {

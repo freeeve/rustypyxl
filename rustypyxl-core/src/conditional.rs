@@ -43,6 +43,57 @@ pub enum ConditionalFormatType {
     TimePeriod,
 }
 
+impl ConditionalFormatType {
+    /// Get the cfRule type attribute value.
+    pub fn xml_value(&self) -> &'static str {
+        match self {
+            ConditionalFormatType::CellIs => "cellIs",
+            ConditionalFormatType::Expression => "expression",
+            ConditionalFormatType::ColorScale => "colorScale",
+            ConditionalFormatType::DataBar => "dataBar",
+            ConditionalFormatType::IconSet => "iconSet",
+            ConditionalFormatType::Top10 => "top10",
+            ConditionalFormatType::AboveAverage => "aboveAverage",
+            ConditionalFormatType::DuplicateValues => "duplicateValues",
+            ConditionalFormatType::UniqueValues => "uniqueValues",
+            ConditionalFormatType::ContainsText => "containsText",
+            ConditionalFormatType::NotContainsText => "notContainsText",
+            ConditionalFormatType::BeginsWith => "beginsWith",
+            ConditionalFormatType::EndsWith => "endsWith",
+            ConditionalFormatType::ContainsBlanks => "containsBlanks",
+            ConditionalFormatType::NotContainsBlanks => "notContainsBlanks",
+            ConditionalFormatType::ContainsErrors => "containsErrors",
+            ConditionalFormatType::NotContainsErrors => "notContainsErrors",
+            ConditionalFormatType::TimePeriod => "timePeriod",
+        }
+    }
+
+    /// Parse the cfRule type attribute back into a rule type.
+    pub fn from_xml(value: &str) -> Option<Self> {
+        Some(match value {
+            "cellIs" => ConditionalFormatType::CellIs,
+            "expression" => ConditionalFormatType::Expression,
+            "colorScale" => ConditionalFormatType::ColorScale,
+            "dataBar" => ConditionalFormatType::DataBar,
+            "iconSet" => ConditionalFormatType::IconSet,
+            "top10" => ConditionalFormatType::Top10,
+            "aboveAverage" => ConditionalFormatType::AboveAverage,
+            "duplicateValues" => ConditionalFormatType::DuplicateValues,
+            "uniqueValues" => ConditionalFormatType::UniqueValues,
+            "containsText" => ConditionalFormatType::ContainsText,
+            "notContainsText" => ConditionalFormatType::NotContainsText,
+            "beginsWith" => ConditionalFormatType::BeginsWith,
+            "endsWith" => ConditionalFormatType::EndsWith,
+            "containsBlanks" => ConditionalFormatType::ContainsBlanks,
+            "notContainsBlanks" => ConditionalFormatType::NotContainsBlanks,
+            "containsErrors" => ConditionalFormatType::ContainsErrors,
+            "notContainsErrors" => ConditionalFormatType::NotContainsErrors,
+            "timePeriod" => ConditionalFormatType::TimePeriod,
+            _ => return None,
+        })
+    }
+}
+
 /// Operator for cell value comparisons.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConditionalOperator {
@@ -65,6 +116,21 @@ pub enum ConditionalOperator {
 }
 
 impl ConditionalOperator {
+    /// Parse the XML attribute value back into an operator.
+    pub fn from_xml(value: &str) -> Option<Self> {
+        Some(match value {
+            "lessThan" => ConditionalOperator::LessThan,
+            "lessThanOrEqual" => ConditionalOperator::LessThanOrEqual,
+            "equal" => ConditionalOperator::Equal,
+            "notEqual" => ConditionalOperator::NotEqual,
+            "greaterThanOrEqual" => ConditionalOperator::GreaterThanOrEqual,
+            "greaterThan" => ConditionalOperator::GreaterThan,
+            "between" => ConditionalOperator::Between,
+            "notBetween" => ConditionalOperator::NotBetween,
+            _ => return None,
+        })
+    }
+
     /// Get the XML attribute value for this operator.
     pub fn xml_value(&self) -> &'static str {
         match self {
@@ -81,7 +147,7 @@ impl ConditionalOperator {
 }
 
 /// Color for conditional formatting.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConditionalColor {
     /// RGB color value (e.g., "FF0000" for red).
     pub rgb: Option<String>,
@@ -214,7 +280,9 @@ impl ColorScale {
 pub struct DataBar {
     /// Bar fill color.
     pub fill_color: ConditionalColor,
-    /// Bar border color.
+    /// Bar border color. NOTE: borders, solid fill, and negative colors are
+    /// Excel-2010 x14 extensions; the strict OOXML dataBar element cannot
+    /// express them, so these fields are not serialized yet.
     pub border_color: Option<ConditionalColor>,
     /// Minimum value type.
     pub min_type: String,
@@ -309,6 +377,28 @@ pub enum IconSetStyle {
 }
 
 impl IconSetStyle {
+    /// Parse the iconSet attribute value back into a style.
+    pub fn from_xml(value: &str) -> Option<Self> {
+        Some(match value {
+            "3Arrows" => IconSetStyle::ThreeArrows,
+            "3ArrowsGray" => IconSetStyle::ThreeArrowsGray,
+            "3Flags" => IconSetStyle::ThreeFlags,
+            "3TrafficLights1" | "3TrafficLights2" => IconSetStyle::ThreeTrafficLights,
+            "3Signs" => IconSetStyle::ThreeSigns,
+            "3Symbols" => IconSetStyle::ThreeSymbols,
+            "3Symbols2" => IconSetStyle::ThreeSymbols2,
+            "4Arrows" => IconSetStyle::FourArrows,
+            "4ArrowsGray" => IconSetStyle::FourArrowsGray,
+            "4Rating" => IconSetStyle::FourRating,
+            "4TrafficLights" => IconSetStyle::FourTrafficLights,
+            "5Arrows" => IconSetStyle::FiveArrows,
+            "5ArrowsGray" => IconSetStyle::FiveArrowsGray,
+            "5Rating" => IconSetStyle::FiveRating,
+            "5Quarters" => IconSetStyle::FiveQuarters,
+            _ => return None,
+        })
+    }
+
     /// Get the XML type name.
     pub fn xml_type(&self) -> &'static str {
         match self {
@@ -369,7 +459,9 @@ impl IconSet {
 }
 
 /// Format to apply when condition is met.
-#[derive(Clone, Debug, Default)]
+/// Serialized as a `<dxf>` (differential format) entry in styles.xml and
+/// referenced from the rule via `dxfId`.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConditionalFormat {
     /// Font color.
     pub font_color: Option<ConditionalColor>,
@@ -455,14 +547,13 @@ pub struct ConditionalRule {
     pub time_period: Option<String>,
 }
 
-impl ConditionalRule {
-    /// Create a cell value rule.
-    pub fn cell_is(operator: ConditionalOperator, value: &str) -> Self {
+impl Default for ConditionalRule {
+    fn default() -> Self {
         ConditionalRule {
-            rule_type: ConditionalFormatType::CellIs,
+            rule_type: ConditionalFormatType::Expression,
             priority: 1,
-            operator: Some(operator),
-            formula1: Some(value.to_string()),
+            operator: None,
+            formula1: None,
             formula2: None,
             text: None,
             format: None,
@@ -477,6 +568,26 @@ impl ConditionalRule {
             equal_average: false,
             std_dev: None,
             time_period: None,
+        }
+    }
+}
+
+impl ConditionalRule {
+    /// Create a rule of the given type with default settings.
+    pub fn of_type(rule_type: ConditionalFormatType) -> Self {
+        ConditionalRule {
+            rule_type,
+            ..Default::default()
+        }
+    }
+
+    /// Create a cell value rule.
+    pub fn cell_is(operator: ConditionalOperator, value: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::CellIs,
+            operator: Some(operator),
+            formula1: Some(value.to_string()),
+            ..Default::default()
         }
     }
 
@@ -484,23 +595,8 @@ impl ConditionalRule {
     pub fn formula(formula: &str) -> Self {
         ConditionalRule {
             rule_type: ConditionalFormatType::Expression,
-            priority: 1,
-            operator: None,
             formula1: Some(formula.to_string()),
-            formula2: None,
-            text: None,
-            format: None,
-            color_scale: None,
-            data_bar: None,
-            icon_set: None,
-            stop_if_true: false,
-            bottom: false,
-            percent: false,
-            rank: None,
-            above_average: true,
-            equal_average: false,
-            std_dev: None,
-            time_period: None,
+            ..Default::default()
         }
     }
 
@@ -508,23 +604,8 @@ impl ConditionalRule {
     pub fn with_color_scale(scale: ColorScale) -> Self {
         ConditionalRule {
             rule_type: ConditionalFormatType::ColorScale,
-            priority: 1,
-            operator: None,
-            formula1: None,
-            formula2: None,
-            text: None,
-            format: None,
             color_scale: Some(scale),
-            data_bar: None,
-            icon_set: None,
-            stop_if_true: false,
-            bottom: false,
-            percent: false,
-            rank: None,
-            above_average: true,
-            equal_average: false,
-            std_dev: None,
-            time_period: None,
+            ..Default::default()
         }
     }
 
@@ -532,23 +613,8 @@ impl ConditionalRule {
     pub fn with_data_bar(bar: DataBar) -> Self {
         ConditionalRule {
             rule_type: ConditionalFormatType::DataBar,
-            priority: 1,
-            operator: None,
-            formula1: None,
-            formula2: None,
-            text: None,
-            format: None,
-            color_scale: None,
             data_bar: Some(bar),
-            icon_set: None,
-            stop_if_true: false,
-            bottom: false,
-            percent: false,
-            rank: None,
-            above_average: true,
-            equal_average: false,
-            std_dev: None,
-            time_period: None,
+            ..Default::default()
         }
     }
 
@@ -556,23 +622,8 @@ impl ConditionalRule {
     pub fn with_icon_set(icons: IconSet) -> Self {
         ConditionalRule {
             rule_type: ConditionalFormatType::IconSet,
-            priority: 1,
-            operator: None,
-            formula1: None,
-            formula2: None,
-            text: None,
-            format: None,
-            color_scale: None,
-            data_bar: None,
             icon_set: Some(icons),
-            stop_if_true: false,
-            bottom: false,
-            percent: false,
-            rank: None,
-            above_average: true,
-            equal_average: false,
-            std_dev: None,
-            time_period: None,
+            ..Default::default()
         }
     }
 
@@ -580,23 +631,89 @@ impl ConditionalRule {
     pub fn top(n: u32) -> Self {
         ConditionalRule {
             rule_type: ConditionalFormatType::Top10,
-            priority: 1,
-            operator: None,
-            formula1: None,
-            formula2: None,
-            text: None,
-            format: None,
-            color_scale: None,
-            data_bar: None,
-            icon_set: None,
-            stop_if_true: false,
-            bottom: false,
-            percent: false,
             rank: Some(n),
-            above_average: true,
-            equal_average: false,
-            std_dev: None,
-            time_period: None,
+            ..Default::default()
+        }
+    }
+
+    /// Create a "cell contains text" rule.
+    pub fn contains_text(text: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::ContainsText,
+            text: Some(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a "cell does not contain text" rule.
+    pub fn not_contains_text(text: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::NotContainsText,
+            text: Some(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a "text begins with" rule.
+    pub fn begins_with(text: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::BeginsWith,
+            text: Some(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a "text ends with" rule.
+    pub fn ends_with(text: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::EndsWith,
+            text: Some(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a time-period rule. `period` is one of the ST_TimePeriod
+    /// values: today, yesterday, tomorrow, last7Days, thisWeek, lastWeek,
+    /// nextWeek, thisMonth, lastMonth, nextMonth.
+    pub fn time_period(period: &str) -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::TimePeriod,
+            time_period: Some(period.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Create an above-average rule. Use `equal_average` to include values
+    /// equal to the mean, and `std_dev` for "N standard deviations above".
+    pub fn above_average() -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::AboveAverage,
+            ..Default::default()
+        }
+    }
+
+    /// Create a below-average rule.
+    pub fn below_average() -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::AboveAverage,
+            above_average: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a duplicate-values rule.
+    pub fn duplicate_values() -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::DuplicateValues,
+            ..Default::default()
+        }
+    }
+
+    /// Create a unique-values rule.
+    pub fn unique_values() -> Self {
+        ConditionalRule {
+            rule_type: ConditionalFormatType::UniqueValues,
+            ..Default::default()
         }
     }
 

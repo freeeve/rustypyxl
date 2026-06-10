@@ -137,3 +137,62 @@ class TestStructureApi:
         link = chk["S"]["A1"].hyperlink
         assert link is not None
         assert link.target == "https://example.org/"
+
+
+class TestConditionalFormattingRoundtrip:
+    """Conditional formatting + dxfs survive a rustypyxl load+save cycle."""
+
+    @pytest.fixture
+    def cf_resaved(self, tmp_path):
+        from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+        from openpyxl.styles import Font, PatternFill
+
+        src = tmp_path / "cf_src.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "CF"
+        for r in range(1, 11):
+            ws.cell(row=r, column=1, value=r * 10)
+        ws.conditional_formatting.add(
+            "A1:A10",
+            CellIsRule(
+                operator="greaterThan",
+                formula=["50"],
+                fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+                font=Font(color="9C0006", bold=True),
+            ),
+        )
+        ws.conditional_formatting.add(
+            "A1:A10",
+            ColorScaleRule(
+                start_type="min", start_color="F8696B", end_type="max", end_color="63BE7B"
+            ),
+        )
+        wb.save(src)
+
+        out = tmp_path / "cf_resaved.xlsx"
+        rustypyxl.load_workbook(str(src)).save(str(out))
+        return openpyxl.load_workbook(out)
+
+    def test_rules_survive(self, cf_resaved):
+        rules = [r for rng in cf_resaved["CF"].conditional_formatting for r in rng.rules]
+        types = sorted(r.type for r in rules)
+        assert types == ["cellIs", "colorScale"], f"rules lost: {types}"
+
+    def test_dxf_formatting_applies(self, cf_resaved):
+        rules = [r for rng in cf_resaved["CF"].conditional_formatting for r in rng.rules]
+        cell_is = next(r for r in rules if r.type == "cellIs")
+        assert cell_is.operator == "greaterThan"
+        assert cell_is.formula == ["50"]
+        dxf = cell_is.dxf
+        assert dxf is not None, "dxfId not written - rule applies no formatting"
+        assert dxf.fill.bgColor.rgb.endswith("FFC7CE")
+        assert dxf.font.color.rgb.endswith("9C0006")
+        assert dxf.font.b is True
+
+    def test_color_scale_survives(self, cf_resaved):
+        rules = [r for rng in cf_resaved["CF"].conditional_formatting for r in rng.rules]
+        scale = next(r for r in rules if r.type == "colorScale")
+        colors = [c.rgb for c in scale.colorScale.color]
+        assert colors[0].endswith("F8696B")
+        assert colors[-1].endswith("63BE7B")
