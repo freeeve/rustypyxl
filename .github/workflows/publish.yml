@@ -5,8 +5,33 @@ on:
     types: [published]
 
 jobs:
+  test:
+    name: Test before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run test suites
+        run: |
+          cargo test --workspace --release
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install maturin pytest openpyxl pyarrow
+          maturin develop --release
+          pytest tests/
+
   build-wheels:
     name: Build wheels (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
