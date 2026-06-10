@@ -27,8 +27,9 @@ pub struct PyCell {
     pub(crate) number_format_internal: Option<String>,
     /// Reference to parent workbook (for connected cells).
     pub(crate) workbook: Option<Py<PyWorkbook>>,
-    /// Sheet name (for connected cells).
-    pub(crate) sheet_name: Option<String>,
+    /// Stable uid of the owning sheet (for connected cells). Resolving by
+    /// uid keeps the handle correct across sheet renames and reorders.
+    pub(crate) sheet_uid: Option<u64>,
 }
 
 impl PyCell {
@@ -47,12 +48,12 @@ impl PyCell {
             comment_internal: None,
             number_format_internal: None,
             workbook: None,
-            sheet_name: None,
+            sheet_uid: None,
         }
     }
 
     /// Create a connected cell that persists changes to the workbook.
-    pub fn connected(row: u32, column: u32, workbook: Py<PyWorkbook>, sheet_name: String) -> Self {
+    pub fn connected(row: u32, column: u32, workbook: Py<PyWorkbook>, sheet_uid: u64) -> Self {
         PyCell {
             row,
             column,
@@ -66,13 +67,27 @@ impl PyCell {
             comment_internal: None,
             number_format_internal: None,
             workbook: Some(workbook),
-            sheet_name: Some(sheet_name),
+            sheet_uid: Some(sheet_uid),
         }
     }
 
     /// Check if this cell is connected to a workbook.
     pub fn is_connected(&self) -> bool {
-        self.workbook.is_some() && self.sheet_name.is_some()
+        self.workbook.is_some() && self.sheet_uid.is_some()
+    }
+
+    /// Resolve the current name of this cell's sheet (None when detached).
+    fn sheet_name(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        if let (Some(ref wb), Some(uid)) = (&self.workbook, self.sheet_uid) {
+            let this = wb.borrow(py);
+            let idx = this.inner.sheet_index_by_uid(uid).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "Worksheet no longer exists in this workbook",
+                )
+            })?;
+            return Ok(Some(this.inner.sheet_names[idx].clone()));
+        }
+        Ok(None)
     }
 }
 
@@ -87,10 +102,11 @@ impl PyCell {
     /// Get the cell value.
     #[getter]
     fn value(&self, py: Python<'_>) -> PyResult<PyObject> {
-        // If connected, get from workbook
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_value(sheet, self.row, self.column, py);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_value(&sheet, self.row, self.column, py);
+            }
         }
         Ok(match &self.value_internal {
             Some(val) => val.clone_ref(py),
@@ -100,16 +116,16 @@ impl PyCell {
 
     /// Set the cell value.
     #[setter]
-    fn set_value(&mut self, value: PyObject) {
-        // If connected, persist to workbook
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_value(&mut self, py: Python<'_>, value: PyObject) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
                 let bound_value = value.bind(py);
-                let _ = wb_ref.set_cell_value(sheet, self.row, self.column, bound_value);
-            });
+                return wb_ref.set_cell_value(&sheet, self.row, self.column, bound_value);
+            }
         }
         self.value_internal = Some(value);
+        Ok(())
     }
 
     /// Get the cell coordinate (e.g., "A1").
@@ -128,180 +144,210 @@ impl PyCell {
     #[getter]
     fn font(&self, py: Python<'_>) -> PyResult<Option<PyFont>> {
         // If connected, get from workbook
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_font(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_font(&sheet, self.row, self.column);
+            }
         }
         Ok(self.font_internal.clone())
     }
 
     /// Set the cell's font.
     #[setter]
-    fn set_font(&mut self, font: PyFont) {
+    fn set_font(&mut self, py: Python<'_>, font: PyFont) -> PyResult<()> {
         // If connected, persist to workbook
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_font(sheet, self.row, self.column, &font);
-            });
+                return wb_ref.set_cell_font(&sheet, self.row, self.column, &font);
+            }
         }
         self.font_internal = Some(font);
+        Ok(())
     }
 
     /// Get the cell's alignment.
     #[getter]
     fn alignment(&self, py: Python<'_>) -> PyResult<Option<PyAlignment>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_alignment(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_alignment(&sheet, self.row, self.column);
+            }
         }
         Ok(self.alignment_internal.clone())
     }
 
     /// Set the cell's alignment.
     #[setter]
-    fn set_alignment(&mut self, alignment: PyAlignment) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_alignment(&mut self, py: Python<'_>, alignment: PyAlignment) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_alignment(sheet, self.row, self.column, &alignment);
-            });
+                return wb_ref.set_cell_alignment(&sheet, self.row, self.column, &alignment);
+            }
         }
         self.alignment_internal = Some(alignment);
+        Ok(())
     }
 
     /// Get the cell's fill (background color).
     #[getter]
     fn fill(&self, py: Python<'_>) -> PyResult<Option<PyPatternFill>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_fill(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_fill(&sheet, self.row, self.column);
+            }
         }
         Ok(self.fill_internal.clone())
     }
 
     /// Set the cell's fill (background color).
     #[setter]
-    fn set_fill(&mut self, fill: PyPatternFill) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_fill(&mut self, py: Python<'_>, fill: PyPatternFill) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_fill(sheet, self.row, self.column, &fill);
-            });
+                return wb_ref.set_cell_fill(&sheet, self.row, self.column, &fill);
+            }
         }
         self.fill_internal = Some(fill);
+        Ok(())
     }
 
     /// Get the cell's border.
     #[getter]
     fn border(&self, py: Python<'_>) -> PyResult<Option<PyBorder>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_border(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_border(&sheet, self.row, self.column);
+            }
         }
         Ok(self.border_internal.clone())
     }
 
     /// Set the cell's border.
     #[setter]
-    fn set_border(&mut self, border: PyBorder) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_border(&mut self, py: Python<'_>, border: PyBorder) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_border(sheet, self.row, self.column, &border);
-            });
+                return wb_ref.set_cell_border(&sheet, self.row, self.column, &border);
+            }
         }
         self.border_internal = Some(border);
+        Ok(())
     }
 
     /// Get the cell's protection.
     #[getter]
     fn protection(&self, py: Python<'_>) -> PyResult<Option<PyProtection>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_protection(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_protection(&sheet, self.row, self.column);
+            }
         }
         Ok(self.protection_internal.clone())
     }
 
     /// Set the cell's protection.
     #[setter]
-    fn set_protection(&mut self, protection: PyProtection) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_protection(&mut self, py: Python<'_>, protection: PyProtection) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_protection(sheet, self.row, self.column, &protection);
-            });
+                return wb_ref.set_cell_protection(&sheet, self.row, self.column, &protection);
+            }
         }
         self.protection_internal = Some(protection);
+        Ok(())
     }
 
     /// Get the cell's hyperlink.
     #[getter]
     fn hyperlink(&self, py: Python<'_>) -> PyResult<Option<String>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_hyperlink(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_hyperlink(&sheet, self.row, self.column);
+            }
         }
         Ok(self.hyperlink_internal.clone())
     }
 
     /// Set the cell's hyperlink.
     #[setter]
-    fn set_hyperlink(&mut self, hyperlink: Option<String>) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_hyperlink(&mut self, py: Python<'_>, hyperlink: Option<String>) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_hyperlink(sheet, self.row, self.column, hyperlink.clone());
-            });
+                return wb_ref.set_cell_hyperlink(&sheet, self.row, self.column, hyperlink);
+            }
         }
         self.hyperlink_internal = hyperlink;
+        Ok(())
     }
 
     /// Get the cell's comment.
     #[getter]
     fn comment(&self, py: Python<'_>) -> PyResult<Option<String>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_comment(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_comment(&sheet, self.row, self.column);
+            }
         }
         Ok(self.comment_internal.clone())
     }
 
     /// Set the cell's comment.
     #[setter]
-    fn set_comment(&mut self, comment: Option<String>) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Python::with_gil(|py| {
+    fn set_comment(&mut self, py: Python<'_>, comment: Option<String>) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
                 let mut wb_ref = wb.borrow_mut(py);
-                let _ = wb_ref.set_cell_comment(sheet, self.row, self.column, comment.clone());
-            });
+                return wb_ref.set_cell_comment(&sheet, self.row, self.column, comment);
+            }
         }
         self.comment_internal = comment;
+        Ok(())
     }
 
     /// Get the cell's number format.
     #[getter]
     fn number_format(&self, py: Python<'_>) -> PyResult<Option<String>> {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            let wb_ref = wb.borrow(py);
-            return wb_ref.get_cell_number_format(sheet, self.row, self.column);
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_number_format(&sheet, self.row, self.column);
+            }
         }
         Ok(self.number_format_internal.clone())
     }
 
     /// Set the cell's number format.
     #[setter]
-    fn set_number_format(&mut self, format: Option<String>) {
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            if let Some(ref fmt) = format {
-                Python::with_gil(|py| {
-                    let mut wb_ref = wb.borrow_mut(py);
-                    let _ = wb_ref.set_cell_number_format(sheet, self.row, self.column, fmt);
-                });
+    fn set_number_format(&mut self, py: Python<'_>, format: Option<String>) -> PyResult<()> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let mut wb_ref = wb.borrow_mut(py);
+                match format {
+                    Some(ref fmt) => {
+                        return wb_ref.set_cell_number_format(&sheet, self.row, self.column, fmt);
+                    }
+                    None => {
+                        // Assigning None clears the workbook-side format
+                        return wb_ref.clear_cell_number_format(&sheet, self.row, self.column);
+                    }
+                }
             }
         }
         self.number_format_internal = format;
+        Ok(())
     }
 
     /// Get the data type of the cell: 'n' number, 's' string, 'b' bool, 'f' formula.
@@ -339,21 +385,21 @@ impl PyCell {
     fn offset(&self, row: i32, column: i32, py: Python<'_>) -> PyResult<PyCell> {
         let new_row = (self.row as i32 + row).max(1) as u32;
         let new_col = (self.column as i32 + column).max(1) as u32;
-        if let (Some(ref wb), Some(ref sheet)) = (&self.workbook, &self.sheet_name) {
-            Ok(PyCell::connected(new_row, new_col, wb.clone_ref(py), sheet.clone()))
+        if let (Some(ref wb), Some(uid)) = (&self.workbook, self.sheet_uid) {
+            Ok(PyCell::connected(new_row, new_col, wb.clone_ref(py), uid))
         } else {
             Ok(PyCell::new(new_row, new_col))
         }
     }
 
-    fn __str__(&self) -> String {
-        match &self.sheet_name {
-            Some(sheet) => format!("<Cell '{}'.{}>", sheet, self.coordinate()),
-            None => format!("<Cell {}>", self.coordinate()),
+    fn __str__(&self, py: Python<'_>) -> String {
+        match self.sheet_name(py) {
+            Ok(Some(sheet)) => format!("<Cell '{}'.{}>", sheet, self.coordinate()),
+            _ => format!("<Cell {}>", self.coordinate()),
         }
     }
 
-    fn __repr__(&self) -> String {
-        self.__str__()
+    fn __repr__(&self, py: Python<'_>) -> String {
+        self.__str__(py)
     }
 }

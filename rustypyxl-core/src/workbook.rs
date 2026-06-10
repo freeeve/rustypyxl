@@ -69,6 +69,9 @@ pub struct Workbook {
     pub styles: StyleRegistry,
     /// Index of the active (selected) sheet tab.
     pub active_sheet: usize,
+    /// Monotonic source for Worksheet::uid values; never reused so stale
+    /// handles can't silently resolve to a different sheet.
+    next_sheet_uid: u64,
 }
 
 /// (sheet name, sheet id, relationship id, visibility) parsed from workbook.xml.
@@ -128,6 +131,7 @@ impl Workbook {
             compression: CompressionLevel::default(),
             styles: StyleRegistry::new(),
             active_sheet: 0,
+            next_sheet_uid: 1,
         }
     }
 
@@ -228,11 +232,29 @@ impl Workbook {
             return Err(RustypyxlError::WorksheetAlreadyExists(sheet_title));
         }
 
-        let worksheet = Worksheet::new(sheet_title.clone());
+        let mut worksheet = Worksheet::new(sheet_title.clone());
+        worksheet.uid = self.allocate_sheet_uid();
         self.worksheets.push(worksheet);
         self.sheet_names.push(sheet_title);
 
         Ok(self.worksheets.last_mut().unwrap())
+    }
+
+    /// Hand out the next stable sheet uid. Callers adding worksheets to
+    /// `worksheets` directly (e.g. when cloning a sheet) must stamp the new
+    /// sheet with this so handle resolution stays unambiguous.
+    pub fn allocate_sheet_uid(&mut self) -> u64 {
+        let uid = self.next_sheet_uid;
+        self.next_sheet_uid += 1;
+        uid
+    }
+
+    /// Find the current position of the sheet with the given stable uid.
+    pub fn sheet_index_by_uid(&self, uid: u64) -> Option<usize> {
+        if uid == 0 {
+            return None;
+        }
+        self.worksheets.iter().position(|ws| ws.uid == uid)
     }
 
     /// Remove a worksheet by name.
@@ -731,9 +753,10 @@ impl Workbook {
             sheet_data.iter().map(parse_one).collect()
         };
 
-        // Collect results in order
+        // Collect results in order, stamping each sheet with a stable uid
         for result in worksheets {
-            let (sheet_name, worksheet) = result?;
+            let (sheet_name, mut worksheet) = result?;
+            worksheet.uid = self.allocate_sheet_uid();
             self.worksheets.push(worksheet);
             self.sheet_names.push(sheet_name);
         }

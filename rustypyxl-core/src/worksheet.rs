@@ -218,6 +218,10 @@ pub struct Worksheet {
     pub freeze_panes: Option<String>,
     /// Sheet visibility (visible / hidden / veryHidden).
     pub visibility: SheetVisibility,
+    /// Stable identity within the owning workbook. Assigned by the workbook
+    /// (never reused), so handles survive sheet removal, reordering, and
+    /// renames. 0 means the worksheet is not attached to a workbook.
+    pub uid: u64,
 }
 
 impl Worksheet {
@@ -239,6 +243,7 @@ impl Worksheet {
             page_setup: None,
             freeze_panes: None,
             visibility: SheetVisibility::default(),
+            uid: 0,
         }
     }
 

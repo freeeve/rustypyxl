@@ -83,7 +83,8 @@ impl PyWorkbook {
         let title = this.inner.sheet_names.get(idx)
             .cloned()
             .unwrap_or_else(|| "Sheet1".to_string());
-        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, title))
+        let uid = this.inner.worksheets[idx].uid;
+        Ok(PyWorksheet::connected(self_.clone_ref(py), uid, title))
     }
 
     /// Get all sheet names.
@@ -101,7 +102,8 @@ impl PyWorkbook {
                 let title = this.inner.sheet_names.get(i)
                     .cloned()
                     .unwrap_or_else(|| format!("Sheet{}", i + 1));
-                PyWorksheet::connected(self_.clone_ref(py), i, title)
+                let uid = this.inner.worksheets[i].uid;
+                PyWorksheet::connected(self_.clone_ref(py), uid, title)
             })
             .collect()
     }
@@ -111,7 +113,8 @@ impl PyWorkbook {
         let this = self_.borrow(py);
         for (idx, name) in this.inner.sheet_names.iter().enumerate() {
             if name == key {
-                return Ok(PyWorksheet::connected(self_.clone_ref(py), idx, name.clone()));
+                let uid = this.inner.worksheets[idx].uid;
+                return Ok(PyWorksheet::connected(self_.clone_ref(py), uid, name.clone()));
             }
         }
         // openpyxl raises KeyError for unknown sheet names
@@ -151,6 +154,7 @@ impl PyWorkbook {
     fn create_sheet(self_: Py<Self>, title: Option<String>, index: Option<usize>, py: Python<'_>) -> PyResult<PyWorksheet> {
         let final_idx;
         let sheet_title;
+        let sheet_uid;
         {
             let mut this = self_.borrow_mut(py);
             this.inner
@@ -170,8 +174,9 @@ impl PyWorkbook {
                 _ => last,
             };
             sheet_title = this.inner.sheet_names[final_idx].clone();
+            sheet_uid = this.inner.worksheets[final_idx].uid;
         }
-        Ok(PyWorksheet::connected(self_.clone_ref(py), final_idx, sheet_title))
+        Ok(PyWorksheet::connected(self_.clone_ref(py), sheet_uid, sheet_title))
     }
 
     /// Remove a worksheet.
@@ -179,7 +184,8 @@ impl PyWorkbook {
     /// Args:
     ///     worksheet: The worksheet to remove (by name or PyWorksheet)
     fn remove(&mut self, worksheet: &PyWorksheet) -> PyResult<()> {
-        let name = worksheet.title();
+        let idx = worksheet.resolve_index(self)?;
+        let name = self.inner.sheet_names[idx].clone();
         self.inner
             .remove_sheet(&name)
             .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -196,20 +202,21 @@ impl PyWorkbook {
         let new_name: String;
         let idx: usize;
 
+        let new_uid;
         {
             let mut this = self_.borrow_mut(py);
             // Get the source worksheet's data
-            let source_idx = source.index;
-            if source_idx >= this.inner.worksheets.len() {
-                return Err(PyValueError::new_err("Invalid worksheet index"));
-            }
+            let source_idx = source.resolve_index(&this)?;
 
-            // Clone the worksheet
+            // Clone the worksheet under a fresh stable uid (a cloned uid
+            // would make two handles resolve to the same identity)
             let src_ws = &this.inner.worksheets[source_idx];
             let mut new_ws = src_ws.clone();
+            let base_name = format!("{} Copy", src_ws.title);
+            new_uid = this.inner.allocate_sheet_uid();
+            new_ws.uid = new_uid;
 
             // Generate a new unique name
-            let base_name = format!("{} Copy", src_ws.title);
             let mut counter = 1;
             new_name = base_name.clone();
             let mut temp_name = new_name.clone();
@@ -231,15 +238,12 @@ impl PyWorkbook {
         let sheet_title = this.inner.sheet_names.get(idx)
             .cloned()
             .unwrap_or_else(|| format!("Sheet{}", idx + 1));
-        Ok(PyWorksheet::connected(self_.clone_ref(py), idx, sheet_title))
+        Ok(PyWorksheet::connected(self_.clone_ref(py), new_uid, sheet_title))
     }
 
     /// Move a worksheet within the workbook.
     fn move_sheet(&mut self, sheet: &PyWorksheet, offset: i32) -> PyResult<()> {
-        let current_idx = sheet.index;
-        if current_idx >= self.inner.worksheets.len() {
-            return Err(PyValueError::new_err("Invalid worksheet index"));
-        }
+        let current_idx = sheet.resolve_index(self)?;
 
         let new_idx = (current_idx as i32 + offset).max(0) as usize;
         let new_idx = new_idx.min(self.inner.worksheets.len() - 1);
@@ -255,13 +259,14 @@ impl PyWorkbook {
     }
 
     /// Get the index of a worksheet.
-    fn index(&self, worksheet: &PyWorksheet) -> usize {
-        worksheet.index
+    fn index(&self, worksheet: &PyWorksheet) -> PyResult<usize> {
+        worksheet.resolve_index(self)
     }
 
     /// Create a named range.
     fn create_named_range(&mut self, name: String, worksheet: &PyWorksheet, range: String) -> PyResult<()> {
-        let ws_title = worksheet.title();
+        let idx = worksheet.resolve_index(self)?;
+        let ws_title = self.inner.sheet_names[idx].clone();
         let full_range = format!("'{}'!{}", ws_title, range);
         self.inner
             .create_named_range(name, full_range)
@@ -509,6 +514,44 @@ impl PyWorkbook {
     ///     row: Row number (1-indexed)
     ///     column: Column number (1-indexed)
     ///     protection: Protection style to apply
+    /// Remove a cell's number format while keeping its other style
+    /// properties (the format lives on the style xf, so the style and its
+    /// index must be re-resolved, not just the per-cell field).
+    pub fn clear_cell_number_format(&mut self, sheet_name: &str, row: u32, column: u32) -> PyResult<()> {
+        let cleared_style = {
+            let ws = self.inner
+                .get_sheet_by_name(sheet_name)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            match ws.get_cell(row, column).and_then(|c| c.style.clone()) {
+                Some(existing) if existing.number_format.is_some() => {
+                    let mut cleared = (*existing).clone();
+                    cleared.number_format = None;
+                    Some(cleared)
+                }
+                _ => None,
+            }
+        };
+
+        if let Some(style) = cleared_style {
+            let style_index = self.inner.styles.get_or_add_cell_xf(&style);
+            let ws = self.inner
+                .get_sheet_by_name_mut(sheet_name)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let cell = ws.get_or_create_cell_mut(row, column);
+            cell.style = Some(Arc::new(style));
+            cell.style_index = Some(style_index as u32);
+            cell.number_format = None;
+        } else {
+            let ws = self.inner
+                .get_sheet_by_name_mut(sheet_name)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            if ws.get_cell(row, column).is_some() {
+                ws.get_or_create_cell_mut(row, column).number_format = None;
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_cell_protection(&mut self, sheet_name: &str, row: u32, column: u32, protection: &PyProtection) -> PyResult<()> {
         let rust_protection = pyprotection_to_protection(protection);
         let style = rustypyxl_core::CellStyle::new().with_protection(rust_protection);

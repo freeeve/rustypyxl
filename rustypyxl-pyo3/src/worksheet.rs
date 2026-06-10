@@ -14,72 +14,84 @@ use crate::workbook::{cell_value_to_python, python_to_cell_value, PyWorkbook};
 /// Worksheets are accessed from a Workbook, not created directly.
 #[pyclass(name = "Worksheet")]
 pub struct PyWorksheet {
-    /// Index of the worksheet in the workbook.
-    pub(crate) index: usize,
-    /// Cached title; kept in sync with the workbook on rename.
+    /// Stable sheet uid; the single source of truth for resolving this
+    /// handle. Survives sheet removal, reordering, and renames; a removed
+    /// sheet makes the handle error instead of silently targeting whatever
+    /// sheet now occupies its old position.
+    pub(crate) uid: u64,
+    /// Title at handle creation; only used for repr and error messages.
     cached_title: String,
     /// Reference to parent workbook (for connected operations).
     pub(crate) workbook: Option<Py<PyWorkbook>>,
 }
 
 impl PyWorksheet {
-    /// Create a PyWorksheet from a workbook reference.
-    pub fn from_ref(wb: &PyWorkbook, index: usize) -> Self {
-        let title = wb.inner.sheet_names.get(index)
-            .cloned()
-            .unwrap_or_else(|| format!("Sheet{}", index + 1));
-        PyWorksheet { index, cached_title: title, workbook: None }
-    }
-
     /// Create a connected PyWorksheet with a workbook reference.
-    pub fn connected(wb_ref: Py<PyWorkbook>, index: usize, title: String) -> Self {
+    pub fn connected(wb_ref: Py<PyWorkbook>, uid: u64, title: String) -> Self {
         PyWorksheet {
-            index,
+            uid,
             cached_title: title,
             workbook: Some(wb_ref),
         }
     }
 
+    /// Resolve this handle's current position in the workbook.
+    pub(crate) fn resolve_index(&self, this: &PyWorkbook) -> PyResult<usize> {
+        this.inner.sheet_index_by_uid(self.uid).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Worksheet '{}' no longer exists in this workbook",
+                self.cached_title
+            ))
+        })
+    }
+
+    /// Resolve this handle's current sheet name.
+    fn resolve_title(&self, py: Python<'_>) -> PyResult<String> {
+        if let Some(ref wb) = self.workbook {
+            let this = wb.borrow(py);
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.sheet_names[idx].clone());
+        }
+        Ok(self.cached_title.clone())
+    }
+
     /// Build a cell handle, connected to the parent workbook when one is present.
     fn make_cell(&self, row: u32, column: u32, py: Python<'_>) -> PyCell {
         if let Some(ref wb) = self.workbook {
-            PyCell::connected(row, column, wb.clone_ref(py), self.cached_title.clone())
+            PyCell::connected(row, column, wb.clone_ref(py), self.uid)
         } else {
             PyCell::new(row, column)
         }
     }
 
     /// Read this sheet's data extent as (min_row, min_col, max_row, max_col).
-    fn sheet_dims(&self, py: Python<'_>) -> (u32, u32, u32, u32) {
+    fn sheet_dims(&self, py: Python<'_>) -> PyResult<(u32, u32, u32, u32)> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            if let Some(ws) = this.inner.worksheets.get(self.index) {
-                return ws.dimensions();
-            }
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.worksheets[idx].dimensions());
         }
-        (1, 1, 1, 1)
+        Ok((1, 1, 1, 1))
     }
 
     /// Read a single cell value into a Python object (None if empty/missing).
-    fn read_value(&self, row: u32, column: u32, py: Python<'_>) -> PyObject {
+    fn read_value(&self, row: u32, column: u32, py: Python<'_>) -> PyResult<PyObject> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            if let Some(ws) = this.inner.worksheets.get(self.index) {
-                if let Some(cell) = ws.get_cell(row, column) {
-                    return cell_value_to_python(&cell.value, py);
-                }
+            let idx = self.resolve_index(&this)?;
+            if let Some(cell) = this.inner.worksheets[idx].get_cell(row, column) {
+                return Ok(cell_value_to_python(&cell.value, py));
             }
         }
-        py.None()
+        Ok(py.None())
     }
 
     /// Run a closure against the mutable core worksheet.
     fn with_sheet_mut<F: FnOnce(&mut Worksheet)>(&self, py: Python<'_>, f: F) -> PyResult<()> {
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
-            let ws = this.inner.worksheets.get_mut(self.index)
-                .ok_or_else(|| PyValueError::new_err("Worksheet index out of range"))?;
-            f(ws);
+            let idx = self.resolve_index(&this)?;
+            f(&mut this.inner.worksheets[idx]);
             Ok(())
         } else {
             Err(PyValueError::new_err("Worksheet is not attached to a workbook"))
@@ -111,22 +123,23 @@ impl PyWorksheet {
 
 #[pymethods]
 impl PyWorksheet {
-    /// Get the worksheet title.
+    /// Get the worksheet title (always the current name, even after the
+    /// sheet was renamed through another handle).
     #[getter]
-    pub fn title(&self) -> String {
-        self.cached_title.clone()
+    pub fn title(&self, py: Python<'_>) -> String {
+        self.resolve_title(py)
+            .unwrap_or_else(|_| self.cached_title.clone())
     }
 
     /// Sheet visibility: "visible", "hidden", or "veryHidden" (openpyxl-compatible).
     #[getter]
-    fn sheet_state(&self, py: Python<'_>) -> String {
+    fn sheet_state(&self, py: Python<'_>) -> PyResult<String> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            if let Some(ws) = this.inner.worksheets.get(self.index) {
-                return ws.visibility.as_str().to_string();
-            }
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.worksheets[idx].visibility.as_str().to_string());
         }
-        "visible".to_string()
+        Ok("visible".to_string())
     }
 
     /// Set sheet visibility: "visible", "hidden", or "veryHidden".
@@ -144,22 +157,18 @@ impl PyWorksheet {
     /// Rename the worksheet (e.g. ws.title = "Results").
     #[setter]
     fn set_title(&mut self, value: String) -> PyResult<()> {
-        let idx = self.index;
         if let Some(ref wb) = self.workbook {
             Python::with_gil(|py| -> PyResult<()> {
                 let mut this = wb.borrow_mut(py);
+                let idx = self.resolve_index(&this)?;
                 if this.inner.sheet_names.iter().enumerate().any(|(i, n)| i != idx && n == &value) {
                     return Err(PyValueError::new_err(format!(
                         "Worksheet '{}' already exists",
                         value
                     )));
                 }
-                if let Some(name) = this.inner.sheet_names.get_mut(idx) {
-                    *name = value.clone();
-                }
-                if let Some(ws) = this.inner.worksheets.get_mut(idx) {
-                    ws.set_title(value.clone());
-                }
+                this.inner.sheet_names[idx] = value.clone();
+                this.inner.worksheets[idx].set_title(value.clone());
                 Ok(())
             })?;
         }
@@ -207,7 +216,9 @@ impl PyWorksheet {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
-            this.set_cell_value(&self.cached_title, row, col, &value)
+            let idx = self.resolve_index(&this)?;
+            let name = this.inner.sheet_names[idx].clone();
+            this.set_cell_value(&name, row, col, &value)
         } else {
             Err(PyValueError::new_err("Worksheet is not attached to a workbook"))
         }
@@ -236,7 +247,7 @@ impl PyWorksheet {
         values_only: bool,
         py: Python<'_>,
     ) -> PyResult<Vec<Vec<PyObject>>> {
-        let (_, _, dmax_r, dmax_c) = self.sheet_dims(py);
+        let (_, _, dmax_r, dmax_c) = self.sheet_dims(py)?;
         let min_r = min_row.unwrap_or(1).max(1);
         let max_r = max_row.unwrap_or(dmax_r);
         let min_c = min_col.unwrap_or(1).max(1);
@@ -247,7 +258,7 @@ impl PyWorksheet {
             let mut row = Vec::new();
             for c in min_c..=max_c {
                 if values_only {
-                    row.push(self.read_value(r, c, py));
+                    row.push(self.read_value(r, c, py)?);
                 } else {
                     row.push(Py::new(py, self.make_cell(r, c, py))?.into_any());
                 }
@@ -268,7 +279,7 @@ impl PyWorksheet {
         values_only: bool,
         py: Python<'_>,
     ) -> PyResult<Vec<Vec<PyObject>>> {
-        let (_, _, dmax_r, dmax_c) = self.sheet_dims(py);
+        let (_, _, dmax_r, dmax_c) = self.sheet_dims(py)?;
         let min_c = min_col.unwrap_or(1).max(1);
         let max_c = max_col.unwrap_or(dmax_c);
         let min_r = min_row.unwrap_or(1).max(1);
@@ -279,7 +290,7 @@ impl PyWorksheet {
             let mut col = Vec::new();
             for r in min_r..=max_r {
                 if values_only {
-                    col.push(self.read_value(r, c, py));
+                    col.push(self.read_value(r, c, py)?);
                 } else {
                     col.push(Py::new(py, self.make_cell(r, c, py))?.into_any());
                 }
@@ -291,39 +302,39 @@ impl PyWorksheet {
 
     /// Get the maximum row containing data.
     #[getter]
-    fn max_row(&self, py: Python<'_>) -> u32 {
-        self.sheet_dims(py).2
+    fn max_row(&self, py: Python<'_>) -> PyResult<u32> {
+        Ok(self.sheet_dims(py)?.2)
     }
 
     /// Get the maximum column containing data.
     #[getter]
-    fn max_column(&self, py: Python<'_>) -> u32 {
-        self.sheet_dims(py).3
+    fn max_column(&self, py: Python<'_>) -> PyResult<u32> {
+        Ok(self.sheet_dims(py)?.3)
     }
 
     /// Get the minimum row containing data.
     #[getter]
-    fn min_row(&self, py: Python<'_>) -> u32 {
-        self.sheet_dims(py).0
+    fn min_row(&self, py: Python<'_>) -> PyResult<u32> {
+        Ok(self.sheet_dims(py)?.0)
     }
 
     /// Get the minimum column containing data.
     #[getter]
-    fn min_column(&self, py: Python<'_>) -> u32 {
-        self.sheet_dims(py).1
+    fn min_column(&self, py: Python<'_>) -> PyResult<u32> {
+        Ok(self.sheet_dims(py)?.1)
     }
 
     /// Get the used dimensions as a string (e.g., "A1:D10").
     #[getter]
-    fn dimensions(&self, py: Python<'_>) -> String {
-        let (min_r, min_c, max_r, max_c) = self.sheet_dims(py);
-        format!(
+    fn dimensions(&self, py: Python<'_>) -> PyResult<String> {
+        let (min_r, min_c, max_r, max_c) = self.sheet_dims(py)?;
+        Ok(format!(
             "{}{}:{}{}",
             column_to_letter(min_c),
             min_r,
             column_to_letter(max_c),
             max_r
-        )
+        ))
     }
 
     /// Merge cells in a range (e.g. "A1:B2") or by explicit coordinates.
@@ -358,26 +369,25 @@ impl PyWorksheet {
 
     /// Get merged cell ranges as "A1:B2" strings.
     #[getter]
-    fn merged_cells(&self, py: Python<'_>) -> Vec<String> {
+    fn merged_cells(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            if let Some(ws) = this.inner.worksheets.get(self.index) {
-                return ws
-                    .merged_cells
-                    .iter()
-                    .map(|(s, e)| format!("{}:{}", s, e))
-                    .collect();
-            }
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.worksheets[idx]
+                .merged_cells
+                .iter()
+                .map(|(s, e)| format!("{}:{}", s, e))
+                .collect());
         }
-        Vec::new()
+        Ok(Vec::new())
     }
 
     /// Append a row of values after the last row containing data.
     fn append(&self, iterable: Vec<Bound<'_, PyAny>>, py: Python<'_>) -> PyResult<()> {
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
-            let ws = this.inner.worksheets.get_mut(self.index)
-                .ok_or_else(|| PyValueError::new_err("Worksheet index out of range"))?;
+            let idx = self.resolve_index(&this)?;
+            let ws = &mut this.inner.worksheets[idx];
             let target_row = if ws.cells.is_empty() { 1 } else { ws.dimensions().2 + 1 };
             for (i, value) in iterable.iter().enumerate() {
                 let cv = python_to_cell_value(value)?;
@@ -419,14 +429,13 @@ impl PyWorksheet {
 
     /// Get the freeze-panes anchor cell, if any.
     #[getter]
-    fn freeze_panes(&self, py: Python<'_>) -> Option<String> {
+    fn freeze_panes(&self, py: Python<'_>) -> PyResult<Option<String>> {
         if let Some(ref wb) = self.workbook {
             let this = wb.borrow(py);
-            if let Some(ws) = this.inner.worksheets.get(self.index) {
-                return ws.freeze_panes.clone();
-            }
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.worksheets[idx].freeze_panes.clone());
         }
-        None
+        Ok(None)
     }
 
     /// Freeze panes at a cell (e.g. "B2"); pass None to unfreeze.
@@ -435,11 +444,11 @@ impl PyWorksheet {
         Python::with_gil(|py| self.with_sheet_mut(py, move |ws| ws.set_freeze_panes(cell)))
     }
 
-    fn __str__(&self) -> String {
-        format!("<Worksheet \"{}\">", self.cached_title)
+    fn __str__(&self, py: Python<'_>) -> String {
+        format!("<Worksheet \"{}\">", self.title(py))
     }
 
-    fn __repr__(&self) -> String {
-        self.__str__()
+    fn __repr__(&self, py: Python<'_>) -> String {
+        self.__str__(py)
     }
 }
