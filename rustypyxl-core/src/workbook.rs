@@ -44,11 +44,11 @@ pub struct NamedRange {
 #[derive(Default)]
 pub enum CompressionLevel {
     /// No compression - fastest saves, largest files
-    #[default]
     None,
     /// Fast compression (deflate level 1) - good balance
     Fast,
     /// Default compression (deflate level 6) - smaller files, slower
+    #[default]
     Default,
     /// Best compression (deflate level 9) - smallest files, slowest
     Best,
@@ -152,7 +152,6 @@ impl Workbook {
         let mut archive = ZipArchive::new(BufReader::new(file))?;
 
         let mut workbook = Workbook::new();
-        workbook.compression = CompressionLevel::None; // Default to fast for loaded files
         workbook.parse_workbook(&mut archive)?;
 
         Ok(workbook)
@@ -164,7 +163,6 @@ impl Workbook {
         let mut archive = ZipArchive::new(cursor)?;
 
         let mut workbook = Workbook::new();
-        workbook.compression = CompressionLevel::None;
         workbook.parse_workbook(&mut archive)?;
 
         Ok(workbook)

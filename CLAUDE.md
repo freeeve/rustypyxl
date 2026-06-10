@@ -140,8 +140,9 @@ cd rustypyxl-core/fuzz && cargo +nightly fuzz run fuzz_load
 cargo bench -p rustypyxl-core
 
 # Python benchmarks
-python benchmarks/benchmark_read.py
-python benchmarks/benchmark_write.py
+python benchmarks/compare_openpyxl.py
+python benchmarks/compare_calamine.py
+python benchmarks/memory_benchmark.py
 ```
 
 ## Key Implementation Details
