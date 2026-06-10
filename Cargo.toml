@@ -7,7 +7,7 @@ version = "0.4.0"
 edition = "2021"
 authors = ["Eve Freeman"]
 license = "MIT"
-repository = "https://github.com/efreeman/rustypyxl"
+repository = "https://github.com/freeeve/rustypyxl"
 
 [workspace.dependencies]
 zip = "2.2"
