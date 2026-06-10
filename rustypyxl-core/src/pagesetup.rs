@@ -189,6 +189,50 @@ pub struct HeaderFooterSection {
 }
 
 impl HeaderFooterSection {
+    /// Parse a header/footer string with &L/&C/&R section codes back into
+    /// sections. Text before any code belongs to the center section, per
+    /// Excel's convention.
+    pub fn parse_encoded(encoded: &str) -> Self {
+        let mut section = HeaderFooterSection::default();
+        let mut target: u8 = b'C';
+        let mut current = String::new();
+        let mut chars = encoded.chars().peekable();
+
+        let flush = |target: u8, text: &mut String, section: &mut HeaderFooterSection| {
+            if !text.is_empty() {
+                let value = Some(std::mem::take(text));
+                match target {
+                    b'L' => section.left = value,
+                    b'R' => section.right = value,
+                    _ => section.center = value,
+                }
+            }
+        };
+
+        while let Some(c) = chars.next() {
+            if c == '&' {
+                match chars.peek() {
+                    Some('L') | Some('C') | Some('R') => {
+                        flush(target, &mut current, &mut section);
+                        target = *chars.peek().unwrap() as u8;
+                        chars.next();
+                        continue;
+                    }
+                    Some('&') => {
+                        // && is an escaped literal ampersand
+                        current.push('&');
+                        chars.next();
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            current.push(c);
+        }
+        flush(target, &mut current, &mut section);
+        section
+    }
+
     /// Create a new section.
     pub fn new() -> Self {
         Self::default()

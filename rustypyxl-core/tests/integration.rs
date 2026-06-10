@@ -787,3 +787,112 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
     fs::remove_file(&path).ok();
     fs::remove_file(&path2).ok();
 }
+
+/// Defined-name scope, cached formula values, header/footer sections, and
+/// the comments VML part must survive save (+ load where applicable).
+#[test]
+fn test_roundtrip_names_formulas_headers_comments() {
+    use rustypyxl_core::pagesetup::HeaderFooterSection;
+    use std::io::Read;
+
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("S1".to_string())).unwrap();
+    wb.create_sheet(Some("S2".to_string())).unwrap();
+
+    // Sheet-scoped + hidden defined names
+    wb.create_named_range("GlobalName".to_string(), "S1!$A$1:$B$2".to_string()).unwrap();
+    wb.named_ranges.push(rustypyxl_core::NamedRange {
+        name: "LocalName".to_string(),
+        range: "S2!$C$1".to_string(),
+        local_sheet_id: Some(1),
+        hidden: true,
+    });
+
+    {
+        let ws = wb.get_sheet_by_name_mut("S1").unwrap();
+        ws.set_cell_value(1, 1, CellValue::Number(2.0));
+        ws.set_cell_value(1, 2, CellValue::Number(3.0));
+        // Formula with a cached numeric result
+        let cell = ws.get_or_create_cell_mut(1, 3);
+        cell.value = CellValue::Formula("A1+B1".to_string());
+        cell.cached_formula_value = Some("5".to_string());
+        // Formula with a cached string result
+        let cell = ws.get_or_create_cell_mut(2, 3);
+        cell.value = CellValue::Formula("CONCATENATE(\"a\",\"b\")".to_string());
+        cell.cached_formula_value = Some("ab".to_string());
+        cell.data_type = Some("str".to_string());
+
+        ws.set_cell_comment(3, 1, "a comment".to_string());
+
+        let mut ps = PageSetup::new();
+        ps.header_footer.odd_header = Some(
+            HeaderFooterSection::new().with_left("Lft").with_center("Ctr & Co").with_right("Rgt"),
+        );
+        ps.header_footer.odd_footer = Some(HeaderFooterSection::new().with_center("Page"));
+        ws.set_page_setup(ps);
+    }
+
+    let path = temp_file("test_names_formulas.xlsx");
+    wb.save(&path).unwrap();
+
+    // Package-level checks: cached <v>, VML part, legacyDrawing wiring
+    {
+        let file = fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut sheet_xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet_xml).unwrap();
+        assert!(
+            sheet_xml.contains("<f>A1+B1</f><v>5</v>"),
+            "cached formula value not written: {}", sheet_xml
+        );
+        assert!(sheet_xml.contains("t=\"str\""), "cached string type missing");
+        assert!(sheet_xml.contains("<legacyDrawing r:id=\"rIdVml\"/>"), "legacyDrawing missing");
+
+        let mut vml = String::new();
+        zip.by_name("xl/drawings/vmlDrawing1.vml").unwrap().read_to_string(&mut vml).unwrap();
+        assert!(vml.contains("ObjectType=\"Note\""));
+        assert!(vml.contains("<x:Row>2</x:Row>"), "comment anchor row wrong: {}", vml);
+
+        let mut ct = String::new();
+        zip.by_name("[Content_Types].xml").unwrap().read_to_string(&mut ct).unwrap();
+        assert!(ct.contains("Extension=\"vml\""));
+        assert!(ct.contains("comments+xml"));
+
+        let mut wbxml = String::new();
+        zip.by_name("xl/workbook.xml").unwrap().read_to_string(&mut wbxml).unwrap();
+        assert!(wbxml.contains("localSheetId=\"1\""), "sheet scope lost: {}", wbxml);
+        assert!(wbxml.contains("hidden=\"1\""), "hidden flag lost");
+    }
+
+    // Model round-trip
+    let wb2 = Workbook::load(&path).unwrap();
+    let local = wb2.named_ranges.iter().find(|nr| nr.name == "LocalName").expect("scoped name lost");
+    assert_eq!(local.local_sheet_id, Some(1));
+    assert!(local.hidden);
+    let global = wb2.named_ranges.iter().find(|nr| nr.name == "GlobalName").unwrap();
+    assert_eq!(global.local_sheet_id, None);
+
+    let ws2 = wb2.get_sheet_by_name("S1").unwrap();
+    let c = ws2.get_cell(1, 3).expect("formula cell lost");
+    assert!(matches!(&c.value, CellValue::Formula(f) if f == "A1+B1"));
+    let cached = c.cached_formula_value.as_deref();
+    assert!(
+        cached == Some("5") || cached == Some("5.0"),
+        "cached numeric formula value lost: {:?}",
+        cached
+    );
+    let cs = ws2.get_cell(2, 3).expect("string formula cell lost");
+    assert_eq!(cs.cached_formula_value.as_deref(), Some("ab"));
+
+    let ps2 = ws2.page_setup.as_ref().expect("page setup lost");
+    let hdr = ps2.header_footer.odd_header.as_ref().expect("header lost");
+    assert_eq!(hdr.left.as_deref(), Some("Lft"));
+    assert_eq!(hdr.center.as_deref(), Some("Ctr & Co"));
+    assert_eq!(hdr.right.as_deref(), Some("Rgt"));
+    let ftr = ps2.header_footer.odd_footer.as_ref().expect("footer lost");
+    assert_eq!(ftr.center.as_deref(), Some("Page"));
+
+    assert_eq!(ws2.get_cell(3, 1).and_then(|c| c.comment.clone()).as_deref(), Some("a comment"));
+
+    fs::remove_file(&path).ok();
+}

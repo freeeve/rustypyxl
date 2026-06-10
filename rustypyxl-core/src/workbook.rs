@@ -33,6 +33,10 @@ pub struct NamedRange {
     pub name: String,
     /// Range reference (e.g., "'Sheet1'!A1:B2").
     pub range: String,
+    /// Sheet index this name is scoped to (None = workbook-global).
+    pub local_sheet_id: Option<u32>,
+    /// Hidden from the Excel name manager UI.
+    pub hidden: bool,
 }
 
 /// Compression level for saving workbooks.
@@ -366,7 +370,12 @@ impl Workbook {
         if self.named_ranges.iter().any(|nr| nr.name == name) {
             return Err(RustypyxlError::NamedRangeAlreadyExists(name));
         }
-        self.named_ranges.push(NamedRange { name, range });
+        self.named_ranges.push(NamedRange {
+            name,
+            range,
+            local_sheet_id: None,
+            hidden: false,
+        });
         Ok(())
     }
 
@@ -493,18 +502,13 @@ impl Workbook {
         writer::write_doc_props(zip, &options)?;
 
         // Write xl/workbook.xml
-        let named_ranges: Vec<(String, String)> = self
-            .named_ranges
-            .iter()
-            .map(|nr| (nr.name.clone(), nr.range.clone()))
-            .collect();
         let sheet_meta: Vec<(String, crate::worksheet::SheetVisibility)> = self
             .sheet_names
             .iter()
             .zip(&self.worksheets)
             .map(|(name, ws)| (name.clone(), ws.visibility))
             .collect();
-        writer::write_workbook_xml(zip, &options, &sheet_meta, &named_ranges, self.active_sheet)?;
+        writer::write_workbook_xml(zip, &options, &sheet_meta, &self.named_ranges, self.active_sheet)?;
 
         // Write xl/_rels/workbook.xml.rels
         writer::write_workbook_rels(zip, &options, self.worksheets.len(), has_shared_strings)?;
@@ -535,6 +539,7 @@ impl Workbook {
                 &shared_strings_map,
                 &table_rel_ids,
                 &dxfs,
+                has_comments,
             )?;
 
             for (table, table_id) in worksheet.tables.iter().zip(table_ids) {
@@ -543,6 +548,7 @@ impl Workbook {
 
             if has_comments {
                 writer::write_comments_xml(zip, &options, worksheet, sheet_id)?;
+                writer::write_vml_drawing(zip, &options, worksheet, sheet_id)?;
             }
 
             // The sheet .rels part ties comments, external hyperlinks, and
@@ -560,6 +566,10 @@ impl Workbook {
                 if has_comments {
                     rels_content.push_str(&format!(
                         "<Relationship Id=\"rIdComments\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments/comment{}.xml\"/>\n",
+                        sheet_id
+                    ));
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"rIdVml\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing{}.vml\"/>\n",
                         sheet_id
                     ));
                 }
@@ -779,6 +789,8 @@ impl Workbook {
         let mut in_defined_names = false;
         let mut current_name: Option<String> = None;
         let mut current_range: Option<String> = None;
+        let mut current_local_sheet_id: Option<u32> = None;
+        let mut current_hidden = false;
         let mut in_defined_name = false;
 
         loop {
@@ -853,6 +865,12 @@ impl Workbook {
                             if attr_key == b"name" || attr_local == b"name" {
                                 current_name =
                                     Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else if attr_key == b"localSheetId" || attr_local == b"localSheetId" {
+                                current_local_sheet_id =
+                                    String::from_utf8_lossy(&attr.value).parse().ok();
+                            } else if attr_key == b"hidden" || attr_local == b"hidden" {
+                                let v = String::from_utf8_lossy(&attr.value);
+                                current_hidden = v == "1" || v == "true";
                             }
                         }
                     } else if is_sheet {
@@ -898,8 +916,15 @@ impl Workbook {
                     if is_defined_name && in_defined_name {
                         if let (Some(name), Some(range)) = (current_name.take(), current_range.take())
                         {
-                            named_ranges.push(NamedRange { name, range });
+                            named_ranges.push(NamedRange {
+                                name,
+                                range,
+                                local_sheet_id: current_local_sheet_id.take(),
+                                hidden: current_hidden,
+                            });
                         }
+                        current_local_sheet_id = None;
+                        current_hidden = false;
                         in_defined_name = false;
                     } else if is_defined_names {
                         in_defined_names = false;
@@ -2223,6 +2248,8 @@ impl Workbook {
         let mut cf_colors: Vec<ConditionalColor> = Vec::new();
         let mut cf_show_value = true;
         let mut cf_icon: Option<IconSet> = None;
+        let mut in_odd_header = false;
+        let mut in_odd_footer = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -2446,8 +2473,7 @@ impl Workbook {
                                 style_index: style_id,
                                 number_format: num_format,
                                 data_type: data_type_str,
-                                hyperlink: None,
-                                comment: None,
+                                ..Default::default()
                             };
 
                             worksheet.set_cell_data(row, col, cell_data);
@@ -2579,6 +2605,21 @@ impl Workbook {
                         current_cf_rule = Some(rule);
                     } else if name == b"formula" && current_cf_rule.is_some() {
                         in_cf_formula = true;
+                    } else if name == b"headerFooter" {
+                        let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
+                        for attr in e.attributes().flatten() {
+                            let val = String::from_utf8_lossy(&attr.value);
+                            let on = val == "1" || val == "true";
+                            match attr.key.as_ref() {
+                                b"differentOddEven" => ps.header_footer.different_odd_even = on,
+                                b"differentFirst" => ps.header_footer.different_first = on,
+                                _ => {}
+                            }
+                        }
+                    } else if name == b"oddHeader" {
+                        in_odd_header = true;
+                    } else if name == b"oddFooter" {
+                        in_odd_footer = true;
                     } else if name == b"colorScale" && current_cf_rule.is_some() {
                         cf_container = 1;
                         cf_cfvos.clear();
@@ -2707,6 +2748,15 @@ impl Workbook {
                                 rule.formula2 = Some(text.to_string());
                             }
                         }
+                    } else if in_odd_header || in_odd_footer {
+                        let section =
+                            crate::pagesetup::HeaderFooterSection::parse_encoded(&text);
+                        let ps = worksheet.page_setup.get_or_insert_with(PageSetup::new);
+                        if in_odd_header {
+                            ps.header_footer.odd_header = Some(section);
+                        } else {
+                            ps.header_footer.odd_footer = Some(section);
+                        }
                     }
                 }
                 Ok(Event::End(e)) => {
@@ -2780,6 +2830,10 @@ impl Workbook {
                                 worksheet.add_conditional_formatting(cf);
                             }
                         }
+                    } else if name == b"oddHeader" {
+                        in_odd_header = false;
+                    } else if name == b"oddFooter" {
+                        in_odd_footer = false;
                     } else if name == b"formula1" {
                         in_formula1 = false;
                     } else if name == b"formula2" {
@@ -2800,19 +2854,34 @@ impl Workbook {
                             } else {
                                 let cell_data = CellData {
                                     value: CellValue::Empty,
-                                    style: None,
-                                    style_index: None,
-                                    number_format: None,
-                                    data_type: None,
                                     hyperlink: Some(url.clone()),
-                                    comment: None,
+                                    ..Default::default()
                                 };
                                 worksheet.set_cell_data(*row, *col, cell_data);
                             }
                         }
                     } else if name == b"c" {
                         if let (Some(row), Some(col)) = (current_row, current_col) {
+                            let mut cached_formula_value: Option<String> = None;
                             let cell_value = if let Some(formula) = current_formula.take() {
+                                // Preserve the cached <v> so a save doesn't
+                                // blank the cell in viewers that don't recalc
+                                cached_formula_value =
+                                    current_value.take().map(|v| match v {
+                                        TempValue::SharedIdx(idx) => shared_strings
+                                            .get(idx)
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_default(),
+                                        TempValue::Bool(b) => {
+                                            (if b { "1" } else { "0" }).to_string()
+                                        }
+                                        TempValue::Number(n) => {
+                                            let mut buf = ryu::Buffer::new();
+                                            buf.format(n).to_string()
+                                        }
+                                        TempValue::Date(d) => d,
+                                        TempValue::String(s) => s,
+                                    });
                                 CellValue::Formula(formula)
                             } else if let Some(value) = current_value.take() {
                                 match value {
@@ -2865,8 +2934,8 @@ impl Workbook {
                                 style_index: current_style_id,
                                 number_format: num_format,
                                 data_type: data_type_str,
-                                hyperlink: None,
-                                comment: None,
+                                cached_formula_value,
+                                ..Default::default()
                             };
 
                             worksheet.set_cell_data(row, col, cell_data);

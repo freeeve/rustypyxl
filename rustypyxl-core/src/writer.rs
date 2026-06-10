@@ -208,9 +208,25 @@ fn write_cell_direct(
             buf.push_str(coord);
             buf.push('"');
             buf.push_str(style_str);
+            // The cached result's type rides on the t attribute (numeric when absent)
+            if cell_data.cached_formula_value.is_some() {
+                if let Some(t) = cell_data.data_type.as_deref() {
+                    if matches!(t, "str" | "b" | "e") {
+                        buf.push_str(" t=\"");
+                        buf.push_str(t);
+                        buf.push('"');
+                    }
+                }
+            }
             buf.push_str("><f>");
             buf.push_str(&escaped);
-            buf.push_str("</f></c>");
+            buf.push_str("</f>");
+            if let Some(ref cached) = cell_data.cached_formula_value {
+                buf.push_str("<v>");
+                buf.push_str(&escape_xml(cached));
+                buf.push_str("</v>");
+            }
+            buf.push_str("</c>");
         }
         CellValue::Date(d) => {
             let escaped = escape_xml(d);
@@ -261,6 +277,14 @@ pub fn write_content_types<W: Write + Seek>(
     default2.push_attribute(("Extension", "xml"));
     default2.push_attribute(("ContentType", "application/xml"));
     writer.write_event(quick_xml::events::Event::Empty(default2))?;
+
+    if !comment_sheet_ids.is_empty() {
+        // Comment boxes are anchored by legacy VML drawings
+        let mut default3 = BytesStart::new("Default");
+        default3.push_attribute(("Extension", "vml"));
+        default3.push_attribute(("ContentType", "application/vnd.openxmlformats-officedocument.vmlDrawing"));
+        writer.write_event(quick_xml::events::Event::Empty(default3))?;
+    }
 
     // Overrides
     let mut override1 = BytesStart::new("Override");
@@ -355,7 +379,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
     sheets: &[(String, SheetVisibility)],
-    named_ranges: &[(String, String)],
+    named_ranges: &[crate::workbook::NamedRange],
     active_tab: usize,
 ) -> Result<()> {
     zip.start_file("xl/workbook.xml", options.clone())?;
@@ -398,14 +422,20 @@ pub fn write_workbook_xml<W: Write + Seek>(
     }
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("sheets")))?;
     
-    // definedNames (named ranges)
+    // definedNames (named ranges), preserving sheet scope and visibility
     if !named_ranges.is_empty() {
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("definedNames")))?;
-        for (name, range) in named_ranges {
+        for nr in named_ranges {
             let mut defined_name = BytesStart::new("definedName");
-            defined_name.push_attribute(("name", name.as_str()));
+            defined_name.push_attribute(("name", nr.name.as_str()));
+            if let Some(sheet_id) = nr.local_sheet_id {
+                defined_name.push_attribute(("localSheetId", sheet_id.to_string().as_str()));
+            }
+            if nr.hidden {
+                defined_name.push_attribute(("hidden", "1"));
+            }
             writer.write_event(quick_xml::events::Event::Start(defined_name))?;
-            writer.write_event(quick_xml::events::Event::Text(BytesText::new(range)))?;
+            writer.write_event(quick_xml::events::Event::Text(BytesText::new(&nr.range)))?;
             writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedName")))?;
         }
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedNames")))?;
@@ -874,6 +904,7 @@ pub fn collect_external_hyperlinks(worksheet: &Worksheet) -> Vec<((u32, u32), St
     links
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_worksheet_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
@@ -882,6 +913,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     shared_string_map: &HashMap<InternedString, usize>,
     table_rel_ids: &[String],
     dxfs: &[ConditionalFormat],
+    has_comments: bool,
 ) -> Result<()> {
     let path = format!("xl/worksheets/sheet{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
@@ -1239,6 +1271,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     // pageSetup
     if let Some(ref ps) = worksheet.page_setup {
         write_page_setup(&mut writer, ps)?;
+    }
+
+    // legacyDrawing anchors the VML part Excel needs to display comments
+    if has_comments {
+        let mut legacy = BytesStart::new("legacyDrawing");
+        legacy.push_attribute(("r:id", "rIdVml"));
+        writer.write_event(quick_xml::events::Event::Empty(legacy))?;
     }
 
     // tableParts (near the end of CT_Worksheet)
@@ -1855,6 +1894,62 @@ fn write_print_options<W: std::io::Write>(
         writer.write_event(Event::Empty(print_options))?;
     }
 
+    Ok(())
+}
+
+/// Write the legacy VML drawing part that anchors comment boxes.
+/// Excel ignores comments entirely without one Note shape per comment.
+pub fn write_vml_drawing<W: Write + Seek>(
+    zip: &mut ZipWriter<W>,
+    options: &FileOptions<'static, ExtendedFileOptions>,
+    worksheet: &Worksheet,
+    sheet_id: u32,
+) -> Result<()> {
+    let path = format!("xl/drawings/vmlDrawing{}.vml", sheet_id);
+    zip.start_file(&path, options.clone())?;
+
+    let mut comment_cells: Vec<(u32, u32)> = worksheet
+        .cells
+        .iter()
+        .filter(|(_, cd)| cd.comment.is_some())
+        .map(|(key, _)| decode_cell_key(*key))
+        .collect();
+    comment_cells.sort_unstable();
+
+    let mut xml = String::with_capacity(1024 + comment_cells.len() * 768);
+    xml.push_str(
+        r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>
+<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe">
+<v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>"#,
+    );
+
+    for (i, (row, col)) in comment_cells.iter().enumerate() {
+        // VML anchors are 0-based; place the box one column to the right
+        let r0 = row.saturating_sub(1);
+        let c0 = col.saturating_sub(1);
+        xml.push_str(&format!(
+            r##"
+<v:shape id="_x0000_s{id}" type="#_x0000_t202" style="position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:108pt;height:59.25pt;z-index:{z};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">
+<v:fill color2="#ffffe1"/><v:shadow color="black" obscured="t"/><v:path o:connecttype="none"/>
+<v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>
+<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>
+<x:Anchor>{a1}, 15, {a2}, 2, {a3}, 31, {a4}, 9</x:Anchor>
+<x:AutoFill>False</x:AutoFill><x:Row>{r}</x:Row><x:Column>{c}</x:Column></x:ClientData>
+</v:shape>"##,
+            id = 1025 + i,
+            z = i + 1,
+            a1 = c0 + 1,
+            a2 = r0,
+            a3 = c0 + 3,
+            a4 = r0 + 4,
+            r = r0,
+            c = c0,
+        ));
+    }
+
+    xml.push_str("\n</xml>");
+    zip.write_all(xml.as_bytes())?;
     Ok(())
 }
 

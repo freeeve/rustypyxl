@@ -196,3 +196,74 @@ class TestConditionalFormattingRoundtrip:
         colors = [c.rgb for c in scale.colorScale.color]
         assert colors[0].endswith("F8696B")
         assert colors[-1].endswith("63BE7B")
+
+
+class TestNamesFormulasHeadersComments:
+    """Defined-name scope, cached formula values, headers/footers, and
+    comments survive a rustypyxl load+save cycle."""
+
+    @pytest.fixture
+    def full_resaved(self, tmp_path):
+        import zipfile
+
+        from openpyxl.comments import Comment
+        from openpyxl.workbook.defined_name import DefinedName
+
+        src = tmp_path / "src.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Main"
+        ws["A1"] = 2
+        ws["B1"] = 3
+        ws["C1"] = "=A1+B1"
+        ws["A3"].comment = Comment("note text", "author")
+        ws.oddHeader.left.text = "Confidential"
+        ws.oddFooter.center.text = "Page footer"
+        wb.defined_names["GlobalN"] = DefinedName("GlobalN", attr_text="Main!$A$1")
+        ws.defined_names["LocalN"] = DefinedName("LocalN", attr_text="Main!$B$1")
+        wb.save(src)
+
+        # openpyxl never calculates, so inject the cached formula result the
+        # way Excel would have written it
+        patched = tmp_path / "patched.xlsx"
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(patched, "w") as zout:
+            for item in zin.namelist():
+                data = zin.read(item)
+                if item == "xl/worksheets/sheet1.xml":
+                    data = data.replace(b"<f>A1+B1</f>", b"<f>A1+B1</f><v>5</v>")
+                zout.writestr(item, data)
+
+        out = tmp_path / "resaved.xlsx"
+        rustypyxl.load_workbook(str(patched)).save(str(out))
+        return out
+
+    def test_comment_survives_and_is_displayable(self, full_resaved):
+        import zipfile
+
+        chk = openpyxl.load_workbook(full_resaved)
+        comment = chk["Main"]["A3"].comment
+        assert comment is not None, "comment stripped on round-trip"
+        assert comment.text == "note text"
+        # The VML part + legacyDrawing are what make Excel display the box
+        with zipfile.ZipFile(full_resaved) as z:
+            assert "xl/drawings/vmlDrawing1.vml" in z.namelist(), "VML part missing"
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+            assert "<legacyDrawing" in sheet
+
+    def test_header_footer(self, full_resaved):
+        m = openpyxl.load_workbook(full_resaved)["Main"]
+        assert m.oddHeader.left.text == "Confidential"
+        assert m.oddFooter.center.text == "Page footer"
+
+    def test_defined_names_keep_scope(self, full_resaved):
+        chk = openpyxl.load_workbook(full_resaved)
+        assert "GlobalN" in chk.defined_names, "global defined name lost"
+        assert "LocalN" in chk["Main"].defined_names, (
+            "sheet-scoped name lost or became global"
+        )
+        assert "LocalN" not in chk.defined_names
+
+    def test_cached_formula_value(self, full_resaved):
+        assert openpyxl.load_workbook(full_resaved)["Main"]["C1"].value == "=A1+B1"
+        cached = openpyxl.load_workbook(full_resaved, data_only=True)["Main"]["C1"].value
+        assert cached == 5, f"cached formula value lost: {cached!r}"

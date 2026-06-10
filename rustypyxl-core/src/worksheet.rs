@@ -44,6 +44,10 @@ pub struct CellData {
     pub hyperlink: Option<String>,
     /// Cell comment text.
     pub comment: Option<String>,
+    /// Last calculated result of a formula cell, as the raw `<v>` text.
+    /// Written back on save so viewers that don't recalculate show a value;
+    /// `data_type` carries the matching `t` attribute (str/b/e or numeric).
+    pub cached_formula_value: Option<String>,
 }
 
 impl CellData {
