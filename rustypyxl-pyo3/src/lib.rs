@@ -72,6 +72,12 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     styles.add_class::<PyGradientFill>()?;
     styles.add_class::<PyGradientStop>()?;
     m.add_submodule(&styles)?;
+    // add_submodule alone doesn't register the module with the import system,
+    // so `from rustypyxl.styles import Font` would fail without this.
+    m.py()
+        .import("sys")?
+        .getattr("modules")?
+        .set_item("rustypyxl.styles", &styles)?;
 
     Ok(())
 }

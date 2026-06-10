@@ -48,8 +48,8 @@ class TestWorksheetManagement:
         assert ws.title == "Test"
 
     def test_get_nonexistent_sheet_raises(self, workbook_with_sheet):
-        """Getting a nonexistent sheet raises ValueError."""
-        with pytest.raises(ValueError):
+        """Getting a nonexistent sheet raises KeyError, like openpyxl."""
+        with pytest.raises(KeyError):
             _ = workbook_with_sheet["NonExistent"]
 
     def test_sheet_in_workbook(self, workbook_with_sheet):

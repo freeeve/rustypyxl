@@ -30,23 +30,28 @@ impl PyWorkbook {
     /// Load a workbook from a file path, bytes, or file-like object.
     ///
     /// Args:
-    ///     source: File path (str), bytes, or file-like object with .read() method
+    ///     source: File path (str or os.PathLike), bytes, or file-like object
+    ///             with .read() method
     ///
     /// Returns:
     ///     Workbook: The loaded workbook
     #[staticmethod]
     #[pyo3(signature = (source))]
     pub fn load(source: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // Check if source is a string (file path)
-        if let Ok(path) = source.extract::<&str>() {
-            let inner = Workbook::load(path)
+        let py = source.py();
+
+        // Check if source is bytes (before PathBuf, which str also satisfies)
+        if let Ok(bytes) = source.extract::<Vec<u8>>() {
+            let inner = py
+                .allow_threads(|| Workbook::load_from_bytes(&bytes))
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             return Ok(PyWorkbook { inner });
         }
 
-        // Check if source is bytes
-        if let Ok(bytes) = source.extract::<&[u8]>() {
-            let inner = Workbook::load_from_bytes(bytes)
+        // Check if source is a file path (str or os.PathLike, e.g. pathlib.Path)
+        if let Ok(path) = source.extract::<std::path::PathBuf>() {
+            let inner = py
+                .allow_threads(|| Workbook::load(&path.to_string_lossy()))
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             return Ok(PyWorkbook { inner });
         }
@@ -54,14 +59,15 @@ impl PyWorkbook {
         // Check if source has .read() method (file-like object)
         if source.hasattr("read")? {
             let bytes_obj = source.call_method0("read")?;
-            let bytes = bytes_obj.extract::<&[u8]>()?;
-            let inner = Workbook::load_from_bytes(bytes)
+            let bytes = bytes_obj.extract::<Vec<u8>>()?;
+            let inner = py
+                .allow_threads(|| Workbook::load_from_bytes(&bytes))
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             return Ok(PyWorkbook { inner });
         }
 
         Err(PyTypeError::new_err(
-            "Expected file path (str), bytes, or file-like object with .read() method"
+            "Expected file path (str or os.PathLike), bytes, or file-like object with .read() method"
         ))
     }
 
@@ -106,7 +112,8 @@ impl PyWorkbook {
                 return Ok(PyWorksheet::connected(self_.clone_ref(py), idx, name.clone()));
             }
         }
-        Err(PyValueError::new_err(format!(
+        // openpyxl raises KeyError for unknown sheet names
+        Err(pyo3::exceptions::PyKeyError::new_err(format!(
             "Worksheet '{}' does not exist",
             key
         )))
@@ -272,10 +279,9 @@ impl PyWorkbook {
     /// Save the workbook to a file.
     ///
     /// Args:
-    ///     filename: Path to save the Excel file
-    fn save(&self, filename: &str) -> PyResult<()> {
-        self.inner
-            .save(filename)
+    ///     filename: Path to save the Excel file (str or os.PathLike)
+    fn save(&self, filename: std::path::PathBuf, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.save(&filename.to_string_lossy()))
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -284,8 +290,8 @@ impl PyWorkbook {
     /// Returns:
     ///     bytes: The workbook as an xlsx file in memory
     fn save_to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = self.inner
-            .save_to_bytes()
+        let bytes = py
+            .allow_threads(|| self.inner.save_to_bytes())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
@@ -744,8 +750,11 @@ impl PyWorkbook {
             opts.columns = cols;
         }
 
-        let result = self.inner
-            .insert_from_parquet(sheet_name, path, start_row, start_col, Some(opts))
+        let inner = &mut self.inner;
+        let result = py
+            .allow_threads(|| {
+                inner.insert_from_parquet(sheet_name, path, start_row, start_col, Some(opts))
+            })
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         // Build result dict
@@ -832,8 +841,8 @@ impl PyWorkbook {
             }
         }
 
-        let result = self.inner
-            .export_to_parquet(sheet_name, path, Some(opts))
+        let result = py
+            .allow_threads(|| self.inner.export_to_parquet(sheet_name, path, Some(opts)))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         // Build result dict
@@ -893,8 +902,12 @@ impl PyWorkbook {
             .with_headers(has_headers)
             .with_compression(compression);
 
-        let result = self.inner
-            .export_range_to_parquet(sheet_name, path, min_row, min_col, max_row, max_col, Some(opts))
+        let result = py
+            .allow_threads(|| {
+                self.inner.export_range_to_parquet(
+                    sheet_name, path, min_row, min_col, max_row, max_col, Some(opts),
+                )
+            })
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let dict = PyDict::new(py);
@@ -924,6 +937,7 @@ impl PyWorkbook {
         key: &str,
         region: Option<&str>,
         endpoint_url: Option<&str>,
+        py: Python<'_>,
     ) -> PyResult<Self> {
         use rustypyxl_core::S3Config;
 
@@ -935,7 +949,8 @@ impl PyWorkbook {
             config = config.with_endpoint_url(url);
         }
 
-        let inner = Workbook::load_from_s3(bucket, key, Some(config))
+        let inner = py
+            .allow_threads(|| Workbook::load_from_s3(bucket, key, Some(config)))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyWorkbook { inner })
     }
@@ -955,6 +970,7 @@ impl PyWorkbook {
         key: &str,
         region: Option<&str>,
         endpoint_url: Option<&str>,
+        py: Python<'_>,
     ) -> PyResult<()> {
         use rustypyxl_core::S3Config;
 
@@ -966,8 +982,7 @@ impl PyWorkbook {
             config = config.with_endpoint_url(url);
         }
 
-        self.inner
-            .save_to_s3(bucket, key, Some(config))
+        py.allow_threads(|| self.inner.save_to_s3(bucket, key, Some(config)))
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -1057,25 +1072,58 @@ impl PySheetNameIterator {
 
 /// Convert a Python value to a CellValue.
 pub(crate) fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellValue> {
+    use pyo3::types::{PyDate, PyDateTime, PyTime};
+
     if value.is_none() {
-        Ok(CellValue::Empty)
-    } else if let Ok(s) = value.extract::<String>() {
-        if s.starts_with('=') {
-            // Store formula WITHOUT the leading '=' (it will be added back when written)
-            Ok(CellValue::Formula(s[1..].to_string()))
-        } else {
-            Ok(CellValue::from(s))
-        }
-    } else if let Ok(b) = value.extract::<bool>() {
-        Ok(CellValue::Boolean(b))
-    } else if let Ok(n) = value.extract::<f64>() {
-        Ok(CellValue::Number(n))
-    } else if let Ok(n) = value.extract::<i64>() {
-        Ok(CellValue::Number(n as f64))
-    } else {
-        // Try to convert to string as fallback
-        Ok(CellValue::from(value.str()?.to_string()))
+        return Ok(CellValue::Empty);
     }
+    if let Ok(s) = value.extract::<String>() {
+        // Store formula WITHOUT the leading '=' (it will be added back when written)
+        return Ok(match s.strip_prefix('=') {
+            Some(formula) => CellValue::Formula(formula.to_string()),
+            None => CellValue::from(s),
+        });
+    }
+    // bool before the numeric branches: bool is a subclass of int in Python
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(CellValue::Boolean(b));
+    }
+    if let Ok(n) = value.extract::<i64>() {
+        return Ok(CellValue::Number(n as f64));
+    }
+    if let Ok(n) = value.extract::<f64>() {
+        return Ok(CellValue::Number(n));
+    }
+    // datetime/date/time become ISO-8601 date cells (t="d"); PyDateTime must be
+    // checked before PyDate since datetime subclasses date
+    if value.is_instance_of::<PyDateTime>()
+        || value.is_instance_of::<PyDate>()
+        || value.is_instance_of::<PyTime>()
+    {
+        let iso = value.call_method0("isoformat")?.extract::<String>()?;
+        return Ok(CellValue::Date(iso));
+    }
+    // Try to convert to string as fallback
+    Ok(CellValue::from(value.str()?.to_string()))
+}
+
+/// Parse an ISO-8601 date/time string into the matching Python datetime,
+/// date, or time object. Returns None if the string is not parseable.
+fn iso_string_to_python(py: Python<'_>, s: &str) -> Option<PyObject> {
+    let module = py.import("datetime").ok()?;
+    let class = if s.contains('T') {
+        "datetime"
+    } else if s.contains(':') {
+        "time"
+    } else {
+        "date"
+    };
+    module
+        .getattr(class)
+        .ok()?
+        .call_method1("fromisoformat", (s,))
+        .ok()
+        .map(|obj| obj.unbind())
 }
 
 /// Convert a CellValue to a Python object.
@@ -1086,7 +1134,9 @@ pub(crate) fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObjec
         CellValue::Number(n) => n.to_object(py),
         CellValue::Boolean(b) => b.to_object(py),
         CellValue::Formula(f) => format!("={}", f).to_object(py),
-        CellValue::Date(d) => d.to_object(py),
+        CellValue::Date(d) => {
+            iso_string_to_python(py, d).unwrap_or_else(|| d.to_object(py))
+        }
     }
 }
 

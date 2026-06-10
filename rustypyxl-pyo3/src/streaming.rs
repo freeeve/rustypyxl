@@ -4,7 +4,6 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use rustypyxl_core::streaming::{StreamingWorkbook, StreamingSheet};
 use rustypyxl_core::CellValue;
-use std::sync::Arc;
 
 /// A write-only workbook that streams data directly to disk.
 ///
@@ -72,8 +71,8 @@ impl PyStreamingWorkbook {
 
         let cell_values: Vec<CellValue> = values
             .into_iter()
-            .map(|v| python_to_cell_value(v, py))
-            .collect();
+            .map(|v| crate::workbook::python_to_cell_value(v.bind(py)))
+            .collect::<PyResult<Vec<_>>>()?;
 
         wb.append_row(sheet, cell_values)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -85,6 +84,16 @@ impl PyStreamingWorkbook {
     ///
     /// This must be called to properly save the file.
     fn close(&mut self) -> PyResult<()> {
+        // Validate both halves before take() so a failed close leaves the
+        // workbook usable instead of consuming it.
+        if self.inner.is_none() {
+            return Err(PyValueError::new_err("Workbook already closed"));
+        }
+        if self.current_sheet.is_none() {
+            return Err(PyValueError::new_err(
+                "No sheet created. Call create_sheet() first.",
+            ));
+        }
         let wb = self.inner.take()
             .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
 
@@ -98,35 +107,3 @@ impl PyStreamingWorkbook {
     }
 }
 
-fn python_to_cell_value(obj: PyObject, py: Python<'_>) -> CellValue {
-    if obj.is_none(py) {
-        return CellValue::Empty;
-    }
-
-    // Try bool first (before int, since bool is a subclass of int in Python)
-    if let Ok(b) = obj.extract::<bool>(py) {
-        return CellValue::Boolean(b);
-    }
-
-    // Try int
-    if let Ok(i) = obj.extract::<i64>(py) {
-        return CellValue::Number(i as f64);
-    }
-
-    // Try float
-    if let Ok(f) = obj.extract::<f64>(py) {
-        return CellValue::Number(f);
-    }
-
-    // Try string. Formulas are stored without the leading '=' (added back on write),
-    // matching the non-streaming write path.
-    if let Ok(s) = obj.extract::<String>(py) {
-        if let Some(formula) = s.strip_prefix('=') {
-            return CellValue::Formula(formula.to_string());
-        }
-        return CellValue::String(Arc::from(s.as_str()));
-    }
-
-    // Default to empty
-    CellValue::Empty
-}
