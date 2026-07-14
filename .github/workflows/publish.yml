@@ -168,3 +168,37 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Files Published" >> $GITHUB_STEP_SUMMARY
           ls -lh dist/ >> $GITHUB_STEP_SUMMARY
+
+  # Publishes the Rust library to crates.io on release, via crates.io Trusted
+  # Publishing (OIDC) -- no stored token, mirroring the PyPI job above.
+  #
+  # Prerequisite (one-time): the crate must already exist and have a Trusted
+  # Publisher configured on crates.io. crates.io does not support publishing a
+  # brand-new crate via OIDC (no "pending publisher"), so the FIRST publish is
+  # done manually with a token; this job takes over for every release after.
+  publish-crate:
+    name: Publish to crates.io
+    needs: [test]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for the OIDC token exchange
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # Fails loudly if the workspace version was not bumped (crates.io rejects
+      # republishing an existing version). A release should carry a new version,
+      # so that is the correct failure rather than something to swallow.
+      - name: Publish rustypyxl
+        run: cargo publish -p rustypyxl
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
