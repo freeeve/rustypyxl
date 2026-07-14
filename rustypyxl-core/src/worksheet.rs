@@ -104,10 +104,16 @@ impl SheetVisibility {
 pub struct DataValidation {
     /// Type: whole, decimal, list, date, time, textLength, custom.
     pub validation_type: String,
+    /// Comparison operator: between, notBetween, equal, notEqual, greaterThan,
+    /// lessThan, greaterThanOrEqual, lessThanOrEqual. None means Excel's
+    /// default, "between".
+    pub operator: Option<String>,
     /// First formula/value constraint.
     pub formula1: Option<String>,
     /// Second formula/value constraint (for between/notBetween).
     pub formula2: Option<String>,
+    /// Severity of the error dialog: stop, warning, or information.
+    pub error_style: Option<String>,
     /// Allow blank values.
     pub allow_blank: bool,
     /// Show error message on invalid input.
@@ -131,8 +137,10 @@ impl Default for DataValidation {
     fn default() -> Self {
         DataValidation {
             validation_type: "whole".to_string(),
+            operator: None,
             formula1: None,
             formula2: None,
+            error_style: None,
             allow_blank: true,
             show_error: true,
             error_title: None,

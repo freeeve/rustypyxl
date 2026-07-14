@@ -1370,7 +1370,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         for ((row, col), validation) in &worksheet.data_validations {
             let coord = format!("{}{}", column_to_letter(*col), row);
             let mut dv = BytesStart::new("dataValidation");
-            dv.push_attribute(("type", validation.validation_type.as_str()));
+            dv.push_attribute((
+                "type",
+                strip_illegal_xml_chars(&validation.validation_type).as_ref(),
+            ));
+            if let Some(ref operator) = validation.operator {
+                dv.push_attribute(("operator", strip_illegal_xml_chars(operator).as_ref()));
+            }
             dv.push_attribute(("allowBlank", if validation.allow_blank { "1" } else { "0" }));
             dv.push_attribute((
                 "showErrorMessage",
@@ -1380,10 +1386,28 @@ pub fn write_worksheet_xml<W: Write + Seek>(
                 "showInputMessage",
                 if validation.show_input { "1" } else { "0" },
             ));
+            // The dialog text: without these, showErrorMessage="1" only gets
+            // Excel's generic message, and the rule's own wording is lost.
+            if let Some(ref style) = validation.error_style {
+                dv.push_attribute(("errorStyle", strip_illegal_xml_chars(style).as_ref()));
+            }
+            if let Some(ref title) = validation.error_title {
+                dv.push_attribute(("errorTitle", strip_illegal_xml_chars(title).as_ref()));
+            }
+            if let Some(ref message) = validation.error_message {
+                dv.push_attribute(("error", strip_illegal_xml_chars(message).as_ref()));
+            }
+            if let Some(ref title) = validation.prompt_title {
+                dv.push_attribute(("promptTitle", strip_illegal_xml_chars(title).as_ref()));
+            }
+            if let Some(ref message) = validation.prompt_message {
+                dv.push_attribute(("prompt", strip_illegal_xml_chars(message).as_ref()));
+            }
             // A loaded rule may span multiple cells; fall back to the key cell
             dv.push_attribute((
                 "sqref",
-                validation.sqref.as_deref().unwrap_or(coord.as_str()),
+                strip_illegal_xml_chars(validation.sqref.as_deref().unwrap_or(coord.as_str()))
+                    .as_ref(),
             ));
             writer.write_event(quick_xml::events::Event::Start(dv))?;
             if let Some(ref f1) = validation.formula1 {

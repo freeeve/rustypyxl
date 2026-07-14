@@ -7,10 +7,89 @@ use rustypyxl_core::autofilter::{
     Top10Filter,
 };
 use rustypyxl_core::table::{Table, TableColumn};
+use rustypyxl_core::worksheet::DataValidation;
 use rustypyxl_core::{CellValue, Workbook};
 
 fn roundtrip(wb: &Workbook) -> Workbook {
     Workbook::load_from_bytes(&wb.save_to_bytes().unwrap()).unwrap()
+}
+
+/// The writer emitted only type/allowBlank/show*/sqref, so a validation with a
+/// custom error dialog saved without one: Excel showed its generic message
+/// instead of the rule's own wording.
+#[test]
+fn data_validation_messages_survive_roundtrip() {
+    let mut wb = Workbook::new();
+    let ws = wb.create_sheet(Some("Sheet1".to_string())).unwrap();
+
+    let validation = DataValidation {
+        validation_type: "whole".to_string(),
+        operator: Some("greaterThan".to_string()),
+        formula1: Some("10".to_string()),
+        formula2: None,
+        error_style: Some("warning".to_string()),
+        error_title: Some("Too small".to_string()),
+        error_message: Some("Enter a number above 10.".to_string()),
+        prompt_title: Some("Quantity".to_string()),
+        prompt_message: Some("How many units?".to_string()),
+        allow_blank: false,
+        show_error: true,
+        show_input: true,
+        sqref: None,
+    };
+    ws.add_data_validation(1, 1, validation);
+
+    let reloaded = roundtrip(&wb);
+    let ws = reloaded.get_sheet_by_name("Sheet1").unwrap();
+    let (_, dv) = ws
+        .data_validations
+        .iter()
+        .next()
+        .expect("validation preserved");
+
+    assert_eq!(dv.validation_type, "whole");
+    assert_eq!(dv.operator.as_deref(), Some("greaterThan"));
+    assert_eq!(dv.formula1.as_deref(), Some("10"));
+    assert_eq!(dv.error_style.as_deref(), Some("warning"));
+    assert_eq!(dv.error_title.as_deref(), Some("Too small"));
+    assert_eq!(
+        dv.error_message.as_deref(),
+        Some("Enter a number above 10.")
+    );
+    assert_eq!(dv.prompt_title.as_deref(), Some("Quantity"));
+    assert_eq!(dv.prompt_message.as_deref(), Some("How many units?"));
+    assert!(!dv.allow_blank);
+}
+
+/// A validation with no dialog text must not grow empty attributes.
+#[test]
+fn data_validation_without_messages_omits_the_attributes() {
+    let mut wb = Workbook::new();
+    let ws = wb.create_sheet(Some("Sheet1".to_string())).unwrap();
+    ws.add_data_validation(
+        1,
+        1,
+        DataValidation {
+            validation_type: "list".to_string(),
+            formula1: Some("\"Yes,No\"".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let reloaded = roundtrip(&wb);
+    let (_, dv) = reloaded
+        .get_sheet_by_name("Sheet1")
+        .unwrap()
+        .data_validations
+        .iter()
+        .next()
+        .unwrap();
+
+    assert_eq!(dv.validation_type, "list");
+    assert_eq!(dv.formula1.as_deref(), Some("\"Yes,No\""));
+    assert_eq!(dv.operator, None);
+    assert_eq!(dv.error_title, None);
+    assert_eq!(dv.error_style, None);
 }
 
 /// The writer emits calculatedColumnFormula as a child element (correct

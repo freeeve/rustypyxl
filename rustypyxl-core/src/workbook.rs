@@ -2219,6 +2219,8 @@ impl Workbook {
             let on = val == "1" || val == "true";
             match attr.key.as_ref() {
                 b"type" => dv.validation_type = val,
+                b"operator" => dv.operator = Some(val),
+                b"errorStyle" => dv.error_style = Some(val),
                 b"allowBlank" => dv.allow_blank = on,
                 b"showErrorMessage" => dv.show_error = on,
                 b"showInputMessage" => dv.show_input = on,
