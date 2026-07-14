@@ -4,7 +4,7 @@
 
 use std::io::{Cursor, Write};
 
-use rustypyxl_core::{CellValue, Workbook};
+use rustypyxl::{CellValue, Workbook};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const DEFAULT_WORKBOOK_PR: &str = "<workbookPr/>";

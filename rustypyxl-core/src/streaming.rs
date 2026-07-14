@@ -30,8 +30,8 @@ pub struct StreamingSheet {
 ///
 /// # Example
 /// ```no_run
-/// use rustypyxl_core::streaming::StreamingWorkbook;
-/// use rustypyxl_core::CellValue;
+/// use rustypyxl::streaming::StreamingWorkbook;
+/// use rustypyxl::CellValue;
 /// use std::sync::Arc;
 ///
 /// let mut wb = StreamingWorkbook::new("output.xlsx").unwrap();

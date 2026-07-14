@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use arbitrary::{Arbitrary, Unstructured};
-use rustypyxl_core::{Workbook, CellValue, CellStyle, Font, Fill, Alignment};
+use rustypyxl::{Workbook, CellValue, CellStyle, Font, Fill, Alignment};
 use std::sync::Arc;
 
 /// Maximum dimensions to prevent OOM
@@ -174,7 +174,7 @@ fn build_style(cell: &FuzzCell) -> Option<CellStyle> {
 
     let fill = cell.bg_color.map(|rgb| Fill {
         pattern_type: Some("solid".to_string()),
-        fg_color: Some(rustypyxl_core::Color::rgb(format!(
+        fg_color: Some(rustypyxl::Color::rgb(format!(
             "{:02X}{:02X}{:02X}",
             rgb[0], rgb[1], rgb[2]
         ))),

@@ -1,15 +1,15 @@
 //! Integration tests for rustypyxl-core.
 
-use rustypyxl_core::autofilter::{AutoFilter, CustomFilter, FilterColumn, FilterOperator};
-use rustypyxl_core::conditional::{
+use rustypyxl::autofilter::{AutoFilter, CustomFilter, FilterColumn, FilterOperator};
+use rustypyxl::conditional::{
     ColorScale, ConditionalColor, ConditionalFormatType, ConditionalFormatting,
     ConditionalOperator, ConditionalRule, DataBar,
 };
-use rustypyxl_core::pagesetup::{
+use rustypyxl::pagesetup::{
     HeaderFooterSection, Orientation, PageMargins, PageSetup, PaperSize,
 };
-use rustypyxl_core::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
-use rustypyxl_core::{CellValue, Workbook};
+use rustypyxl::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
+use rustypyxl::{CellValue, Workbook};
 use std::fs;
 
 fn temp_file(name: &str) -> String {
@@ -167,7 +167,7 @@ fn test_conditional_formatting_data_bar() {
 #[test]
 fn test_conditional_formatting_rule() {
     let rule = ConditionalRule::cell_is(
-        rustypyxl_core::conditional::ConditionalOperator::GreaterThan,
+        rustypyxl::conditional::ConditionalOperator::GreaterThan,
         "100",
     );
 
@@ -183,7 +183,7 @@ fn test_conditional_formatting_creation() {
     assert!(cf.rules.is_empty());
 
     let rule = ConditionalRule::cell_is(
-        rustypyxl_core::conditional::ConditionalOperator::GreaterThan,
+        rustypyxl::conditional::ConditionalOperator::GreaterThan,
         "50",
     );
     cf.add_rule(rule);
@@ -345,7 +345,7 @@ fn test_worksheet_conditional_formatting() {
 
     let mut cf = ConditionalFormatting::new("A1:A100");
     cf.add_rule(ConditionalRule::cell_is(
-        rustypyxl_core::conditional::ConditionalOperator::GreaterThan,
+        rustypyxl::conditional::ConditionalOperator::GreaterThan,
         "50",
     ));
     ws.add_conditional_formatting(cf);
@@ -471,7 +471,7 @@ fn test_row_dimensions() {
 /// Excel prompts to "repair" the file and strips the offending elements.
 #[test]
 fn test_worksheet_element_order_follows_schema() {
-    use rustypyxl_core::DataValidation;
+    use rustypyxl::DataValidation;
     use std::io::Read;
 
     let mut wb = Workbook::new();
@@ -607,8 +607,8 @@ fn test_t_str_cells_are_literal_text_not_shared_index() {
 /// all of these from any loaded file.
 #[test]
 fn test_roundtrip_preserves_structure() {
-    use rustypyxl_core::pagesetup::PageMargins;
-    use rustypyxl_core::{DataValidation, SheetVisibility};
+    use rustypyxl::pagesetup::PageMargins;
+    use rustypyxl::{DataValidation, SheetVisibility};
 
     let mut wb = Workbook::new();
     wb.create_sheet(Some("Main".to_string())).unwrap();
@@ -750,7 +750,7 @@ fn test_roundtrip_preserves_structure() {
 /// no formatting, and nothing was parsed back on load.
 #[test]
 fn test_conditional_formatting_roundtrip_with_dxfs() {
-    use rustypyxl_core::conditional::{ConditionalFormat, IconSet, IconSetStyle};
+    use rustypyxl::conditional::{ConditionalFormat, IconSet, IconSetStyle};
     use std::io::Read;
 
     let mut wb = Workbook::new();
@@ -900,7 +900,7 @@ fn test_conditional_formatting_roundtrip_with_dxfs() {
 /// the comments VML part must survive save (+ load where applicable).
 #[test]
 fn test_roundtrip_names_formulas_headers_comments() {
-    use rustypyxl_core::pagesetup::HeaderFooterSection;
+    use rustypyxl::pagesetup::HeaderFooterSection;
     use std::io::Read;
 
     let mut wb = Workbook::new();
@@ -910,7 +910,7 @@ fn test_roundtrip_names_formulas_headers_comments() {
     // Sheet-scoped + hidden defined names
     wb.create_named_range("GlobalName".to_string(), "S1!$A$1:$B$2".to_string())
         .unwrap();
-    wb.named_ranges.push(rustypyxl_core::NamedRange {
+    wb.named_ranges.push(rustypyxl::NamedRange {
         name: "LocalName".to_string(),
         range: "S2!$C$1".to_string(),
         local_sheet_id: Some(1),
@@ -1054,7 +1054,7 @@ fn test_roundtrip_names_formulas_headers_comments() {
 /// core populated, so every core styling call produced unstyled output.
 #[test]
 fn test_core_styling_api_reaches_saved_file() {
-    use rustypyxl_core::{Alignment, CellStyle, Fill, Font};
+    use rustypyxl::{Alignment, CellStyle, Fill, Font};
     use std::io::Read;
 
     let mut wb = Workbook::new();

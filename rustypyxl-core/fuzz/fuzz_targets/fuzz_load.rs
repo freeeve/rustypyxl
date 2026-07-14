@@ -44,7 +44,7 @@ fn fuzz_as_workbook_xml(data: &[u8]) {
         let _ = zip.finish();
     }
     if !zip_buffer.is_empty() {
-        let _ = rustypyxl_core::Workbook::load_from_bytes(&zip_buffer);
+        let _ = rustypyxl::Workbook::load_from_bytes(&zip_buffer);
     }
 }
 
@@ -80,7 +80,7 @@ fn fuzz_as_sheet_xml(data: &[u8]) {
         let _ = zip.finish();
     }
     if !zip_buffer.is_empty() {
-        let _ = rustypyxl_core::Workbook::load_from_bytes(&zip_buffer);
+        let _ = rustypyxl::Workbook::load_from_bytes(&zip_buffer);
     }
 }
 
@@ -91,7 +91,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Raw bytes through the real loader (covers ZIP container handling)
-    let _ = rustypyxl_core::Workbook::load_from_bytes(data);
+    let _ = rustypyxl::Workbook::load_from_bytes(data);
 
     // Structured variants that reach the XML layers
     fuzz_as_workbook_xml(data);

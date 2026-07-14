@@ -10,7 +10,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use arbitrary::Arbitrary;
-use rustypyxl_core::{
+use rustypyxl::{
     parse_coordinate,
     parse_coordinate_bytes,
     parse_u32_bytes,

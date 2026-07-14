@@ -2,13 +2,13 @@
 //! model for tables and autofilters; the parser has to read all of it back, or
 //! loading and re-saving an Excel file silently drops what it did not model.
 
-use rustypyxl_core::autofilter::{
+use rustypyxl::autofilter::{
     AutoFilter, CustomFilter, DynamicFilterType, FilterColumn, FilterOperator, FilterType,
     Top10Filter,
 };
-use rustypyxl_core::table::{Table, TableColumn};
-use rustypyxl_core::worksheet::DataValidation;
-use rustypyxl_core::{CellValue, Workbook};
+use rustypyxl::table::{Table, TableColumn};
+use rustypyxl::worksheet::DataValidation;
+use rustypyxl::{CellValue, Workbook};
 
 fn roundtrip(wb: &Workbook) -> Workbook {
     Workbook::load_from_bytes(&wb.save_to_bytes().unwrap()).unwrap()

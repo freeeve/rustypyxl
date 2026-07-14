@@ -5,14 +5,14 @@
 
 use std::io::Read;
 
-use rustypyxl_core::conditional::{
+use rustypyxl::conditional::{
     ConditionalColor, ConditionalFormat, ConditionalFormatting, ConditionalOperator,
     ConditionalRule,
 };
-use rustypyxl_core::pagesetup::{HeaderFooterSection, PageSetup};
-use rustypyxl_core::table::{Table, TableColumn};
-use rustypyxl_core::worksheet::DataValidation;
-use rustypyxl_core::{CellValue, NamedRange, Workbook};
+use rustypyxl::pagesetup::{HeaderFooterSection, PageSetup};
+use rustypyxl::table::{Table, TableColumn};
+use rustypyxl::worksheet::DataValidation;
+use rustypyxl::{CellValue, NamedRange, Workbook};
 use zip::ZipArchive;
 
 /// A C0 control char that is illegal in XML 1.0 even when escaped.

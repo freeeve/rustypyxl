@@ -1,21 +1,21 @@
-# rustypyxl-core
+# rustypyxl
 
 Fast, dependency-light Rust library for reading and writing Excel (XLSX) files.
 
-This is the pure-Rust core of [rustypyxl](https://github.com/freeeve/rustypyxl).
-It has no Python dependency and can be used directly from Rust. The
-[`rustypyxl`](https://pypi.org/project/rustypyxl/) Python package is a thin PyO3
-binding over this crate, exposing an openpyxl-compatible API.
+Pure Rust, no Python dependency -- use it directly as a crate. The
+[`rustypyxl`](https://pypi.org/project/rustypyxl/) **Python package** on PyPI is a
+thin PyO3 binding over this same library, exposing an openpyxl-compatible API;
+this crate is the Rust library it is built on (and that you can use on its own).
 
 ## Usage
 
 ```toml
 [dependencies]
-rustypyxl-core = "0.5"
+rustypyxl = "0.5"
 ```
 
 ```rust
-use rustypyxl_core::{Workbook, CellValue};
+use rustypyxl::{Workbook, CellValue};
 
 // Write
 let mut wb = Workbook::new();

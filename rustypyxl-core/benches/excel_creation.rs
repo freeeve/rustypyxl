@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rustypyxl_core::cell::CellValue;
-use rustypyxl_core::workbook::Workbook;
-use rustypyxl_core::worksheet::Worksheet;
+use rustypyxl::cell::CellValue;
+use rustypyxl::workbook::Workbook;
+use rustypyxl::worksheet::Worksheet;
 
 fn create_large_workbook(rows: u32, cols: u32) -> Workbook {
     let mut workbook = Workbook::new();

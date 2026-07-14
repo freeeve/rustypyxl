@@ -1,5 +1,5 @@
 [package]
-name = "rustypyxl-core"
+name = "rustypyxl"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

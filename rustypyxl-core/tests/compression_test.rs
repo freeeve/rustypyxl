@@ -5,7 +5,7 @@ use zip::ZipArchive;
 /// Stored default ("for benchmarking") shipped needlessly large files.
 #[test]
 fn test_default_compression_is_deflate() {
-    use rustypyxl_core::{CellValue, Workbook};
+    use rustypyxl::{CellValue, Workbook};
 
     let dir = std::env::temp_dir().join("rustypyxl_tests");
     std::fs::create_dir_all(&dir).unwrap();
@@ -40,7 +40,7 @@ fn test_default_compression_is_deflate() {
 /// CompressionLevel::None still produces Stored entries when asked for.
 #[test]
 fn test_no_compression_opt_in() {
-    use rustypyxl_core::{CellValue, CompressionLevel, Workbook};
+    use rustypyxl::{CellValue, CompressionLevel, Workbook};
 
     let dir = std::env::temp_dir().join("rustypyxl_tests");
     std::fs::create_dir_all(&dir).unwrap();

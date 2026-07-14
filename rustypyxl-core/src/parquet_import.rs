@@ -825,7 +825,7 @@ impl Workbook {
     ///
     /// # Example
     /// ```no_run
-    /// use rustypyxl_core::{Workbook, parquet_import::{ParquetExportOptions, ParquetCompression}};
+    /// use rustypyxl::{Workbook, parquet_import::{ParquetExportOptions, ParquetCompression}};
     ///
     /// let wb = Workbook::load("data.xlsx").unwrap();
     /// let result = wb.export_to_parquet(

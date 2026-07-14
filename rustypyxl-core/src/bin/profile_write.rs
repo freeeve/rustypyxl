@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use rustypyxl_core::{CellValue, Workbook};
+use rustypyxl::{CellValue, Workbook};
 
 fn main() {
     let args: Vec<String> = env::args().collect();

@@ -94,7 +94,7 @@ fuzz_target!(|data: &[u8]| {
         if let Some(package) = package_with(part, data) {
             // A parse error is fine; a panic is not. Anything that does load
             // must also survive being written back out.
-            if let Ok(workbook) = rustypyxl_core::Workbook::load_from_bytes(&package) {
+            if let Ok(workbook) = rustypyxl::Workbook::load_from_bytes(&package) {
                 let _ = workbook.save_to_bytes();
             }
         }

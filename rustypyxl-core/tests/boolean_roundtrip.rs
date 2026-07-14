@@ -1,4 +1,4 @@
-use rustypyxl_core::{CellValue, Workbook};
+use rustypyxl::{CellValue, Workbook};
 use tempfile::NamedTempFile;
 
 #[test]

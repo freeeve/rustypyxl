@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use rustypyxl_core::{Workbook, CellValue};
+//! use rustypyxl::{Workbook, CellValue};
 //!
 //! // Create a new workbook
 //! let mut wb = Workbook::new();
