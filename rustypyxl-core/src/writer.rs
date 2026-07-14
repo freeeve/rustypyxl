@@ -622,21 +622,30 @@ pub fn write_shared_strings<W: Write + Seek>(
 
 /// Write a color element to the XML string, handling theme and RGB colors.
 ///
-/// Colors are stored internally as:
-/// - `"theme:N"` for theme colors
-/// - `"#AARRGGBB"` or `"AARRGGBB"` (8-char aRGB from XML roundtrip)
-/// - `"#RRGGBB"` or `"RRGGBB"` (6-char RGB, needs FF alpha prefix)
-fn write_color_attr(xml: &mut String, element: &str, color: &str) {
-    if let Some(theme) = color.strip_prefix("theme:") {
-        xml.push_str(&format!(r#"<{} theme="{}"/>"#, element, theme));
-    } else {
-        let hex = color.strip_prefix('#').unwrap_or(color);
-        if hex.len() >= 8 {
-            xml.push_str(&format!(r#"<{} rgb="{}"/>"#, element, hex));
-        } else {
-            xml.push_str(&format!(r#"<{} rgb="FF{}"/>"#, element, hex));
+/// Write a `<color>`/`<fgColor>`/`<bgColor>` element.
+///
+/// Exactly one of rgb, theme, or indexed identifies the color, and any of them
+/// may carry a tint. rgb wins when more than one is set, since an explicit
+/// value is the least surprising thing to honour.
+fn write_color_attr(xml: &mut String, element: &str, color: &crate::style::Color) {
+    xml.push('<');
+    xml.push_str(element);
+
+    if let Some(argb) = color.argb() {
+        xml.push_str(&format!(r#" rgb="{}""#, escape_xml(&argb)));
+    } else if let Some(theme) = color.theme {
+        xml.push_str(&format!(r#" theme="{}""#, theme));
+    } else if let Some(indexed) = color.indexed {
+        xml.push_str(&format!(r#" indexed="{}""#, indexed));
+    }
+
+    if let Some(tint) = color.tint {
+        if tint != 0.0 {
+            xml.push_str(&format!(r#" tint="{}""#, tint));
         }
     }
+
+    xml.push_str("/>");
 }
 
 /// Write a single font element to the XML string.
@@ -2283,7 +2292,7 @@ pub fn write_table_xml<W: Write + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{BorderStyle, Fill};
+    use crate::style::{BorderStyle, Color, Fill};
 
     #[test]
     fn test_escape_xml_strips_illegal_control_chars() {
@@ -2334,28 +2343,28 @@ mod tests {
     #[test]
     fn test_write_color_attr_theme() {
         let mut xml = String::new();
-        write_color_attr(&mut xml, "fgColor", "theme:0");
+        write_color_attr(&mut xml, "fgColor", &Color::theme(0));
         assert_eq!(xml, r#"<fgColor theme="0"/>"#);
     }
 
     #[test]
     fn test_write_color_attr_theme_with_index() {
         let mut xml = String::new();
-        write_color_attr(&mut xml, "color", "theme:4");
+        write_color_attr(&mut xml, "color", &Color::theme(4));
         assert_eq!(xml, r#"<color theme="4"/>"#);
     }
 
     #[test]
     fn test_write_color_attr_rgb_hex() {
         let mut xml = String::new();
-        write_color_attr(&mut xml, "fgColor", "FF0000");
+        write_color_attr(&mut xml, "fgColor", &Color::rgb("FF0000"));
         assert_eq!(xml, r#"<fgColor rgb="FFFF0000"/>"#);
     }
 
     #[test]
     fn test_write_color_attr_rgb_with_hash() {
         let mut xml = String::new();
-        write_color_attr(&mut xml, "bgColor", "#00FF00");
+        write_color_attr(&mut xml, "bgColor", &Color::rgb("#00FF00"));
         assert_eq!(xml, r#"<bgColor rgb="FF00FF00"/>"#);
     }
 
@@ -2363,22 +2372,43 @@ mod tests {
     fn test_write_color_attr_argb_8char() {
         // 8-char aRGB values from XML roundtrip should not get double-prefixed
         let mut xml = String::new();
-        write_color_attr(&mut xml, "fgColor", "#0000FF00");
+        write_color_attr(&mut xml, "fgColor", &Color::rgb("#0000FF00"));
         assert_eq!(xml, r#"<fgColor rgb="0000FF00"/>"#);
     }
 
     #[test]
     fn test_write_color_attr_argb_8char_no_hash() {
         let mut xml = String::new();
-        write_color_attr(&mut xml, "fgColor", "FF00FF00");
+        write_color_attr(&mut xml, "fgColor", &Color::rgb("FF00FF00"));
         assert_eq!(xml, r#"<fgColor rgb="FF00FF00"/>"#);
+    }
+
+    /// tint rides along with whichever of rgb/theme/indexed identifies the color.
+    #[test]
+    fn test_write_color_attr_tint_and_indexed() {
+        let mut xml = String::new();
+        write_color_attr(&mut xml, "color", &Color::theme(1).with_tint(-0.25));
+        assert_eq!(xml, r#"<color theme="1" tint="-0.25"/>"#);
+
+        xml.clear();
+        write_color_attr(&mut xml, "color", &Color::indexed(5));
+        assert_eq!(xml, r#"<color indexed="5"/>"#);
+
+        xml.clear();
+        write_color_attr(&mut xml, "color", &Color::rgb("FF0000").with_tint(0.4));
+        assert_eq!(xml, r#"<color rgb="FFFF0000" tint="0.4"/>"#);
+
+        // A zero tint is the default; don't write it out
+        xml.clear();
+        write_color_attr(&mut xml, "color", &Color::theme(2).with_tint(0.0));
+        assert_eq!(xml, r#"<color theme="2"/>"#);
     }
 
     #[test]
     fn test_write_fill_xml_theme_fg_color() {
         let fill = Fill {
             pattern_type: Some("solid".to_string()),
-            fg_color: Some("theme:0".to_string()),
+            fg_color: Some(Color::theme(0)),
             bg_color: None,
         };
         let mut xml = String::new();
@@ -2392,7 +2422,7 @@ mod tests {
         let fill = Fill {
             pattern_type: Some("solid".to_string()),
             fg_color: None,
-            bg_color: Some("theme:2".to_string()),
+            bg_color: Some(Color::theme(2)),
         };
         let mut xml = String::new();
         write_fill_xml(&mut xml, &fill);
@@ -2404,7 +2434,7 @@ mod tests {
     fn test_write_fill_xml_rgb_color() {
         let fill = Fill {
             pattern_type: Some("solid".to_string()),
-            fg_color: Some("FFFF00".to_string()),
+            fg_color: Some(Color::rgb("FFFF00")),
             bg_color: None,
         };
         let mut xml = String::new();
@@ -2416,7 +2446,7 @@ mod tests {
     fn test_write_border_side_theme_color() {
         let side = Some(BorderStyle {
             style: "thin".to_string(),
-            color: Some("theme:1".to_string()),
+            color: Some(Color::theme(1)),
         });
         let mut xml = String::new();
         write_border_side(&mut xml, "left", &side);
@@ -2428,7 +2458,7 @@ mod tests {
     fn test_write_border_side_rgb_color() {
         let side = Some(BorderStyle {
             style: "thick".to_string(),
-            color: Some("FF0000".to_string()),
+            color: Some(Color::rgb("FF0000")),
         });
         let mut xml = String::new();
         write_border_side(&mut xml, "left", &side);

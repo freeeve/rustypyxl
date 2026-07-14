@@ -1,5 +1,92 @@
 //! Cell styling types: Font, Fill, Border, Alignment, CellStyle.
 
+/// A color in a cell style.
+///
+/// Excel's `<color>` element is one of an explicit aRGB value, an index into
+/// the workbook theme, or an index into the legacy palette -- any of which may
+/// carry a `tint` that lightens or darkens it. Colors used to be stored as a
+/// plain String with a `"theme:N"` sentinel, which could not express `tint` or
+/// `indexed` at all, so both were dropped on load and on save.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Color {
+    /// Explicit color as aRGB or RGB hex, with or without a leading '#'.
+    pub rgb: Option<String>,
+    /// Index into the workbook's theme color scheme.
+    pub theme: Option<u32>,
+    /// Index into the legacy indexed palette.
+    pub indexed: Option<u32>,
+    /// Tint applied to the color, -1.0 (darker) to 1.0 (lighter).
+    pub tint: Option<f64>,
+}
+
+impl Color {
+    /// A color from an explicit hex value.
+    pub fn rgb<S: Into<String>>(rgb: S) -> Self {
+        Color {
+            rgb: Some(rgb.into()),
+            ..Default::default()
+        }
+    }
+
+    /// A color from a theme index.
+    pub fn theme(theme: u32) -> Self {
+        Color {
+            theme: Some(theme),
+            ..Default::default()
+        }
+    }
+
+    /// A color from the legacy indexed palette.
+    pub fn indexed(indexed: u32) -> Self {
+        Color {
+            indexed: Some(indexed),
+            ..Default::default()
+        }
+    }
+
+    /// Apply a tint, -1.0 (darker) to 1.0 (lighter).
+    pub fn with_tint(mut self, tint: f64) -> Self {
+        self.tint = Some(tint);
+        self
+    }
+
+    /// True when nothing is set, i.e. there is no color at all.
+    pub fn is_empty(&self) -> bool {
+        self.rgb.is_none() && self.theme.is_none() && self.indexed.is_none()
+    }
+
+    /// The hex value with any leading '#' removed and an alpha channel, which
+    /// is the form the `rgb` XML attribute takes.
+    pub fn argb(&self) -> Option<String> {
+        let hex = self.rgb.as_deref()?;
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        Some(if hex.len() >= 8 {
+            hex.to_string()
+        } else {
+            format!("FF{}", hex)
+        })
+    }
+}
+
+/// Accepts the plain hex strings the API has always taken, plus the legacy
+/// `"theme:N"` form that colors used to be stored as.
+impl<S: AsRef<str>> From<S> for Color {
+    fn from(value: S) -> Self {
+        let value = value.as_ref();
+        if let Some(theme) = value.strip_prefix("theme:") {
+            if let Ok(theme) = theme.parse() {
+                return Color::theme(theme);
+            }
+        }
+        if let Some(indexed) = value.strip_prefix("indexed:") {
+            if let Ok(indexed) = indexed.parse() {
+                return Color::indexed(indexed);
+            }
+        }
+        Color::rgb(value)
+    }
+}
+
 /// Font properties for cell styling.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Font {
@@ -16,8 +103,8 @@ pub struct Font {
     pub underline: Option<String>,
     /// Strikethrough text.
     pub strike: bool,
-    /// Font color as RGB hex (e.g., "#FF0000") or theme reference.
-    pub color: Option<String>,
+    /// Font color.
+    pub color: Option<Color>,
     /// Vertical alignment (superscript/subscript).
     pub vert_align: Option<String>,
 }
@@ -65,7 +152,7 @@ impl Font {
     }
 
     /// Set font color.
-    pub fn with_color<S: Into<String>>(mut self, color: S) -> Self {
+    pub fn with_color<C: Into<Color>>(mut self, color: C) -> Self {
         self.color = Some(color.into());
         self
     }
@@ -124,8 +211,8 @@ impl Alignment {
 pub struct BorderStyle {
     /// Border style: thin, medium, thick, dashed, dotted, double, etc.
     pub style: String,
-    /// Border color as RGB hex.
-    pub color: Option<String>,
+    /// Border color.
+    pub color: Option<Color>,
 }
 
 impl BorderStyle {
@@ -153,7 +240,7 @@ impl BorderStyle {
     }
 
     /// Set the border color.
-    pub fn with_color<S: Into<String>>(mut self, color: S) -> Self {
+    pub fn with_color<C: Into<Color>>(mut self, color: C) -> Self {
         self.color = Some(color.into());
         self
     }
@@ -221,10 +308,10 @@ impl Border {
 pub struct Fill {
     /// Pattern type: solid, gray125, darkGray, etc.
     pub pattern_type: Option<String>,
-    /// Foreground color as RGB hex.
-    pub fg_color: Option<String>,
-    /// Background color as RGB hex.
-    pub bg_color: Option<String>,
+    /// Foreground color.
+    pub fg_color: Option<Color>,
+    /// Background color.
+    pub bg_color: Option<Color>,
 }
 
 impl Fill {
@@ -234,7 +321,7 @@ impl Fill {
     }
 
     /// Create a solid fill with the specified color.
-    pub fn solid<S: Into<String>>(color: S) -> Self {
+    pub fn solid<C: Into<Color>>(color: C) -> Self {
         Fill {
             pattern_type: Some("solid".to_string()),
             fg_color: Some(color.into()),
@@ -249,13 +336,13 @@ impl Fill {
     }
 
     /// Set the foreground color.
-    pub fn with_fg_color<S: Into<String>>(mut self, color: S) -> Self {
+    pub fn with_fg_color<C: Into<Color>>(mut self, color: C) -> Self {
         self.fg_color = Some(color.into());
         self
     }
 
     /// Set the background color.
-    pub fn with_bg_color<S: Into<String>>(mut self, color: S) -> Self {
+    pub fn with_bg_color<C: Into<Color>>(mut self, color: C) -> Self {
         self.bg_color = Some(color.into());
         self
     }
@@ -812,7 +899,28 @@ mod tests {
         assert_eq!(font.name, Some("Arial".to_string()));
         assert_eq!(font.size, Some(12.0));
         assert!(font.bold);
-        assert_eq!(font.color, Some("#FF0000".to_string()));
+        assert_eq!(font.color, Some(Color::rgb("#FF0000")));
+    }
+
+    /// A Color knows which of the three ways it identifies itself, and tint
+    /// rides along with any of them.
+    #[test]
+    fn test_color_kinds() {
+        assert_eq!(Color::from("FF0000"), Color::rgb("FF0000"));
+        assert_eq!(Color::from("theme:3"), Color::theme(3));
+        assert_eq!(Color::from("indexed:9"), Color::indexed(9));
+
+        let tinted = Color::theme(1).with_tint(-0.5);
+        assert_eq!(tinted.theme, Some(1));
+        assert_eq!(tinted.tint, Some(-0.5));
+        assert!(!tinted.is_empty());
+        assert!(Color::default().is_empty());
+
+        // argb() supplies the alpha channel the rgb attribute needs
+        assert_eq!(Color::rgb("FF0000").argb().as_deref(), Some("FFFF0000"));
+        assert_eq!(Color::rgb("#00FF00").argb().as_deref(), Some("FF00FF00"));
+        assert_eq!(Color::rgb("8000FF00").argb().as_deref(), Some("8000FF00"));
+        assert_eq!(Color::theme(1).argb(), None);
     }
 
     #[test]
@@ -840,7 +948,7 @@ mod tests {
     fn test_fill_solid() {
         let fill = Fill::solid("#FFFF00");
         assert_eq!(fill.pattern_type, Some("solid".to_string()));
-        assert_eq!(fill.fg_color, Some("#FFFF00".to_string()));
+        assert_eq!(fill.fg_color, Some(Color::rgb("#FFFF00")));
     }
 
     #[test]

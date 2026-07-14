@@ -24,7 +24,7 @@ use crate::conditional::{
 use crate::error::{Result, RustypyxlError};
 use crate::pagesetup::{Orientation, PageSetup, PaperSize};
 use crate::style::{
-    Alignment, Border, BorderStyle, CellStyle, CellXf, Fill, Font, Protection, StyleRegistry,
+    Alignment, Border, BorderStyle, CellStyle, CellXf, Color, Fill, Font, Protection, StyleRegistry,
 };
 use crate::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
 use crate::utils::{parse_coordinate, parse_coordinate_bytes, parse_f64_bytes, parse_u32_bytes};
@@ -1265,15 +1265,21 @@ impl Workbook {
             b"sz" => font.size = Self::get_attr_f64(e, b"val"),
             b"name" => font.name = Self::get_attr_str(e, b"val"),
             b"vertAlign" => font.vert_align = Self::get_attr_str(e, b"val"),
-            b"color" => {
-                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
-                    font.color = Some(format!("#{}", rgb));
-                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
-                    font.color = Some(format!("theme:{}", theme));
-                }
-            }
+            b"color" => font.color = Self::parse_style_color(e),
             _ => {}
         }
+    }
+
+    /// Read a `<color>`/`<fgColor>`/`<bgColor>` element. Any of rgb, theme, or
+    /// indexed may be set, and any of them may carry a tint.
+    fn parse_style_color(e: &quick_xml::events::BytesStart) -> Option<Color> {
+        let color = Color {
+            rgb: Self::get_attr_str(e, b"rgb").map(|rgb| format!("#{}", rgb)),
+            theme: Self::get_attr_str(e, b"theme").and_then(|v| v.parse().ok()),
+            indexed: Self::get_attr_str(e, b"indexed").and_then(|v| v.parse().ok()),
+            tint: Self::get_attr_f64(e, b"tint"),
+        };
+        (!color.is_empty()).then_some(color)
     }
 
     /// Parse fill properties from an XML element.
@@ -1284,20 +1290,8 @@ impl Workbook {
             b"patternFill" => {
                 fill.pattern_type = Self::get_attr_str(e, b"patternType");
             }
-            b"fgColor" => {
-                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
-                    fill.fg_color = Some(format!("#{}", rgb));
-                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
-                    fill.fg_color = Some(format!("theme:{}", theme));
-                }
-            }
-            b"bgColor" => {
-                if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
-                    fill.bg_color = Some(format!("#{}", rgb));
-                } else if let Some(theme) = Self::get_attr_str(e, b"theme") {
-                    fill.bg_color = Some(format!("theme:{}", theme));
-                }
-            }
+            b"fgColor" => fill.fg_color = Self::parse_style_color(e),
+            b"bgColor" => fill.bg_color = Self::parse_style_color(e),
             _ => {}
         }
     }
@@ -1310,16 +1304,6 @@ impl Workbook {
         let style = Self::get_attr_str(e, b"style");
         let color = None; // Color comes from nested element
         (style, color)
-    }
-
-    /// Parse a color element and return the color string.
-    #[allow(dead_code)]
-    fn parse_color_element(e: &quick_xml::events::BytesStart) -> Option<String> {
-        if let Some(rgb) = Self::get_attr_str(e, b"rgb") {
-            Some(format!("#{}", rgb))
-        } else {
-            Self::get_attr_str(e, b"theme").map(|theme| format!("theme:{}", theme))
-        }
     }
 
     fn parse_styles_xml(xml: &[u8]) -> Result<(HashMap<u32, Arc<CellStyle>>, StyleRegistry)> {
@@ -1343,7 +1327,7 @@ impl Workbook {
         let mut current_fill = Fill::default();
         let mut current_border = Border::default();
         let mut current_border_style: Option<String> = None;
-        let mut current_border_color: Option<String> = None;
+        let mut current_border_color: Option<Color> = None;
         let mut current_num_fmt_id: Option<u32> = None;
         let mut current_num_fmt_code: Option<String> = None;
 
@@ -1371,7 +1355,7 @@ impl Workbook {
                             || name == b"diagonal")
                     {
                         let mut style: Option<String> = None;
-                        let color: Option<String> = None;
+                        let color: Option<Color> = None;
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"style" {
                                 style = Some(String::from_utf8_lossy(&attr.value).to_string());
@@ -1391,12 +1375,7 @@ impl Workbook {
                     }
                     // Handle color inside border side (self-closing)
                     if in_border && in_border_side.is_some() && name == b"color" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"rgb" {
-                                current_border_color =
-                                    Some(format!("#{}", String::from_utf8_lossy(&attr.value)));
-                            }
-                        }
+                        current_border_color = Self::parse_style_color(&e);
                     }
                     // Handle numFmt as empty element (self-closing)
                     if name == b"numFmt" {
@@ -1480,12 +1459,7 @@ impl Workbook {
                             }
                         } else if prop_name == b"color" && in_border_side.is_some() {
                             // Get color for current border side
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"rgb" {
-                                    current_border_color =
-                                        Some(format!("#{}", String::from_utf8_lossy(&attr.value)));
-                                }
-                            }
+                            current_border_color = Self::parse_style_color(&e);
                         }
                     }
                 }

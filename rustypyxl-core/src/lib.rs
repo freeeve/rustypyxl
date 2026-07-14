@@ -54,7 +54,8 @@ pub mod s3;
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
 pub use style::{
-    Alignment, Border, BorderStyle, CellStyle, Fill, Font, GradientFill, GradientStop, Protection,
+    Alignment, Border, BorderStyle, CellStyle, Color, Fill, Font, GradientFill, GradientStop,
+    Protection,
 };
 pub use utils::{
     column_to_letter, coordinate_from_row_col, letter_to_column, parse_coordinate,

@@ -2,38 +2,61 @@
 
 #![allow(non_snake_case)]
 
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use rustypyxl_core::Color;
 
 /// Accept either an rgb string or a Color object wherever openpyxl does.
-///
-/// Styles store colors as an rgb value, so a theme, indexed, or tinted color
-/// cannot be represented. Rejecting it is better than returning None, which
-/// would hand back a font with no color at all.
-fn coerce_color(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<String>> {
+pub(crate) fn coerce_color(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Color>> {
     let Some(v) = value else { return Ok(None) };
     if v.is_none() {
         return Ok(None);
     }
-    if let Ok(s) = v.extract::<String>() {
-        return Ok(Some(s));
+    if let Ok(rgb) = v.extract::<String>() {
+        return Ok(Some(Color::rgb(rgb)));
     }
     if let Ok(color) = v.extract::<PyColor>() {
-        if color.rgb.is_none() && (color.theme.is_some() || color.indexed.is_some()) {
-            return Err(PyValueError::new_err(
-                "theme and indexed colors are not supported; pass Color(rgb=...) or an rgb string",
-            ));
-        }
-        if color.tint != 0.0 {
-            return Err(PyValueError::new_err(
-                "Color tint is not supported; pass the already-tinted rgb value",
-            ));
-        }
-        return Ok(color.rgb);
+        let color = Color {
+            rgb: color.rgb,
+            theme: color.theme,
+            indexed: color.indexed,
+            // 0.0 is the default, i.e. no tint at all
+            tint: (color.tint != 0.0).then_some(color.tint),
+        };
+        return Ok((!color.is_empty()).then_some(color));
     }
     Err(PyTypeError::new_err(
         "expected an rgb string or a Color object",
     ))
+}
+
+/// Hand a color back to Python.
+///
+/// A color that is only an rgb value comes back as the plain hex string it has
+/// always been, so existing code keeps working. One that carries a theme, a
+/// palette index, or a tint comes back as a Color, because a string cannot
+/// express those -- they used to be discarded on the way in.
+pub(crate) fn color_to_python(color: Option<&Color>, py: Python<'_>) -> PyResult<PyObject> {
+    let Some(color) = color else {
+        return Ok(py.None());
+    };
+
+    if color.theme.is_none() && color.indexed.is_none() && color.tint.is_none() {
+        if let Some(ref rgb) = color.rgb {
+            return Ok(rgb.clone().into_pyobject(py)?.into_any().unbind());
+        }
+    }
+
+    Ok(Py::new(
+        py,
+        PyColor {
+            rgb: color.rgb.clone(),
+            theme: color.theme,
+            tint: color.tint.unwrap_or(0.0),
+            indexed: color.indexed,
+        },
+    )?
+    .into_any())
 }
 
 /// Font styling (openpyxl-compatible).
@@ -52,14 +75,26 @@ pub struct PyFont {
     pub underline: Option<String>,
     #[pyo3(get, set)]
     pub strike: bool,
-    #[pyo3(get, set)]
-    pub color: Option<String>,
+    /// Exposed through get_color/set_color, which accept and return either a
+    /// hex string or a Color.
+    pub color: Option<Color>,
     #[pyo3(get, set)]
     pub vertAlign: Option<String>,
 }
 
 #[pymethods]
 impl PyFont {
+    #[getter(color)]
+    fn get_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.color.as_ref(), py)
+    }
+
+    #[setter(color)]
+    fn set_color(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.color = coerce_color(value.as_ref())?;
+        Ok(())
+    }
+
     #[new]
     // Mirrors openpyxl's Font keyword arguments
     #[allow(clippy::too_many_arguments)]
@@ -164,16 +199,37 @@ impl PyAlignment {
 pub struct PyPatternFill {
     #[pyo3(get, set)]
     pub fill_type: Option<String>,
-    #[pyo3(get, set)]
-    pub fgColor: Option<String>,
-    #[pyo3(get, set)]
-    pub bgColor: Option<String>,
+    /// See PyFont::color -- a hex string, or a Color when it carries more.
+    pub fgColor: Option<Color>,
+    pub bgColor: Option<Color>,
     #[pyo3(get, set)]
     pub patternType: Option<String>,
 }
 
 #[pymethods]
 impl PyPatternFill {
+    #[getter(fgColor)]
+    fn get_fg_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.fgColor.as_ref(), py)
+    }
+
+    #[setter(fgColor)]
+    fn set_fg_color(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.fgColor = coerce_color(value.as_ref())?;
+        Ok(())
+    }
+
+    #[getter(bgColor)]
+    fn get_bg_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.bgColor.as_ref(), py)
+    }
+
+    #[setter(bgColor)]
+    fn set_bg_color(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.bgColor = coerce_color(value.as_ref())?;
+        Ok(())
+    }
+
     #[new]
     // start_color/end_color are openpyxl's canonical aliases for fgColor/bgColor
     #[pyo3(signature = (fill_type=None, fgColor=None, bgColor=None, patternType=None, start_color=None, end_color=None))]
@@ -197,14 +253,14 @@ impl PyPatternFill {
 
     /// openpyxl alias for fgColor.
     #[getter]
-    fn start_color(&self) -> Option<String> {
-        self.fgColor.clone()
+    fn start_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.fgColor.as_ref(), py)
     }
 
     /// openpyxl alias for bgColor.
     #[getter]
-    fn end_color(&self) -> Option<String> {
-        self.bgColor.clone()
+    fn end_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.bgColor.as_ref(), py)
     }
 
     fn copy(&self) -> PyPatternFill {
@@ -229,12 +285,23 @@ impl PyPatternFill {
 pub struct PySide {
     #[pyo3(get, set)]
     pub style: Option<String>,
-    #[pyo3(get, set)]
-    pub color: Option<String>,
+    /// See PyFont::color -- a hex string, or a Color when it carries more.
+    pub color: Option<Color>,
 }
 
 #[pymethods]
 impl PySide {
+    #[getter(color)]
+    fn get_color(&self, py: Python<'_>) -> PyResult<PyObject> {
+        color_to_python(self.color.as_ref(), py)
+    }
+
+    #[setter(color)]
+    fn set_color(&mut self, value: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        self.color = coerce_color(value.as_ref())?;
+        Ok(())
+    }
+
     #[new]
     #[pyo3(signature = (style=None, color=None))]
     fn new(style: Option<String>, color: Option<Bound<'_, PyAny>>) -> PyResult<Self> {

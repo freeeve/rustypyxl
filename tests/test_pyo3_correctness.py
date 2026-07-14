@@ -66,26 +66,32 @@ class TestActiveAfterRemove:
 
 
 class TestColorCoercion:
-    """Theme/indexed/tint colors are not representable; say so, don't drop them."""
+    """An rgb-only color stays a plain string; the richer kinds come back as Color."""
 
-    def test_theme_color_raises_instead_of_producing_a_colorless_font(self):
-        with pytest.raises(ValueError, match="theme"):
-            rustypyxl.Font(color=rustypyxl.Color(theme=1))
+    def test_theme_color_is_kept(self):
+        font = rustypyxl.Font(color=rustypyxl.Color(theme=1))
+        assert font.color.theme == 1
+        assert font.color.rgb is None
 
-    def test_indexed_color_raises(self):
-        with pytest.raises(ValueError, match="indexed"):
-            rustypyxl.Font(color=rustypyxl.Color(indexed=3))
+    def test_indexed_color_is_kept(self):
+        font = rustypyxl.Font(color=rustypyxl.Color(indexed=3))
+        assert font.color.indexed == 3
 
-    def test_tint_raises(self):
-        with pytest.raises(ValueError, match="tint"):
-            rustypyxl.Font(color=rustypyxl.Color(rgb="FFFF0000", tint=0.4))
+    def test_tint_is_kept(self):
+        font = rustypyxl.Font(color=rustypyxl.Color(rgb="FFFF0000", tint=0.4))
+        assert font.color.rgb == "FFFF0000"
+        assert font.color.tint == 0.4
 
-    def test_rgb_color_object_still_works(self):
+    def test_rgb_color_object_comes_back_as_a_string(self):
         font = rustypyxl.Font(color=rustypyxl.Color(rgb="FFFF0000"))
         assert font.color == "FFFF0000"
 
     def test_rgb_string_still_works(self):
         assert rustypyxl.Font(color="FF00FF00").color == "FF00FF00"
+
+    def test_a_bad_color_type_still_raises(self):
+        with pytest.raises(TypeError):
+            rustypyxl.Font(color=object())
 
 
 class TestDataType:

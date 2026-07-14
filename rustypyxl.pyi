@@ -7,6 +7,9 @@ from typing import Any, BinaryIO, Iterator
 
 CellValue = str | int | float | bool | datetime.datetime | datetime.date | datetime.time | None
 _ColorArg = str | Color | None
+# A color reads back as the plain hex string when that is all it is, and as a
+# Color when it carries a theme, a palette index, or a tint.
+_ColorValue = str | Color | None
 
 def load_workbook(source: str | os.PathLike[str] | bytes | BinaryIO) -> Workbook: ...
 
@@ -217,7 +220,7 @@ class Font:
     italic: bool
     underline: str | None
     strike: bool
-    color: str | None
+    color: _ColorValue
     vertAlign: str | None
     def __init__(
         self,
@@ -252,13 +255,13 @@ class Alignment:
 
 class PatternFill:
     fill_type: str | None
-    fgColor: str | None
-    bgColor: str | None
+    fgColor: _ColorValue
+    bgColor: _ColorValue
     patternType: str | None
     @property
-    def start_color(self) -> str | None: ...
+    def start_color(self) -> _ColorValue: ...
     @property
-    def end_color(self) -> str | None: ...
+    def end_color(self) -> _ColorValue: ...
     def __init__(
         self,
         fill_type: str | None = None,
@@ -272,7 +275,7 @@ class PatternFill:
 
 class Side:
     style: str | None
-    color: str | None
+    color: _ColorValue
     def __init__(self, style: str | None = None, color: _ColorArg = None) -> None: ...
     def copy(self) -> Side: ...
 

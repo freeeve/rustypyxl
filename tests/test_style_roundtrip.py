@@ -630,3 +630,72 @@ class TestMultiSheetRoundtrip:
             rels = zf.read("xl/_rels/workbook.xml.rels").decode()
             for i in range(1, len(sheet_names) + 1):
                 assert f"worksheets/sheet{i}.xml" in rels
+
+
+class TestThemeAndTintColors:
+    """Theme, indexed, and tinted colors survive the file, not just the API.
+
+    Colors used to be stored as a plain string with a "theme:N" sentinel, which
+    could express a theme but had nowhere to put a tint or a palette index --
+    both were dropped on load and on save.
+    """
+
+    def test_theme_color_with_tint_roundtrips(self, temp_xlsx_path):
+        import openpyxl
+
+        wb = rustypyxl.Workbook()
+        ws = wb.create_sheet("T")
+        ws["A1"] = "themed"
+        ws["A1"].font = rustypyxl.Font(color=rustypyxl.Color(theme=4, tint=-0.25))
+        wb.save(temp_xlsx_path)
+
+        color = openpyxl.load_workbook(temp_xlsx_path)["T"]["A1"].font.color
+        assert color.type == "theme"
+        assert color.theme == 4
+        assert color.tint == -0.25
+
+    def test_tinted_rgb_color_roundtrips(self, temp_xlsx_path):
+        import openpyxl
+
+        wb = rustypyxl.Workbook()
+        ws = wb.create_sheet("T")
+        ws["A1"] = "tinted"
+        ws["A1"].font = rustypyxl.Font(color=rustypyxl.Color(rgb="FFFF0000", tint=0.4))
+        wb.save(temp_xlsx_path)
+
+        color = openpyxl.load_workbook(temp_xlsx_path)["T"]["A1"].font.color
+        assert color.rgb == "FFFF0000"
+        assert color.tint == 0.4
+
+    def test_externally_authored_theme_color_is_not_lost(self, tmp_path, temp_xlsx_path):
+        """The case that matters: load someone else's file, save it, keep the theme."""
+        import openpyxl
+        from openpyxl.styles import Font as OpenpyxlFont
+        from openpyxl.styles.colors import Color as OpenpyxlColor
+
+        src = str(tmp_path / "themed.xlsx")
+        op = openpyxl.Workbook()
+        sheet = op.active
+        sheet.title = "T"
+        sheet["A1"] = "themed"
+        sheet["A1"].font = OpenpyxlFont(color=OpenpyxlColor(theme=6, tint=0.6))
+        op.save(src)
+
+        wb = rustypyxl.load_workbook(src)
+        wb.save(temp_xlsx_path)
+
+        color = openpyxl.load_workbook(temp_xlsx_path)["T"]["A1"].font.color
+        assert color.theme == 6
+        assert color.tint == 0.6
+
+    def test_rgb_only_color_is_still_a_plain_string(self, temp_xlsx_path):
+        wb = rustypyxl.Workbook()
+        ws = wb.create_sheet("T")
+        ws["A1"] = "red"
+        ws["A1"].font = rustypyxl.Font(color="FF0000")
+        wb.save(temp_xlsx_path)
+
+        reloaded = rustypyxl.load_workbook(temp_xlsx_path)
+        color = reloaded["T"]["A1"].font.color
+        assert isinstance(color, str), "an rgb color must stay a str for compatibility"
+        assert "FF0000" in color.upper()
