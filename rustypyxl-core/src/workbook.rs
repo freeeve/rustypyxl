@@ -268,11 +268,22 @@ impl Workbook {
     }
 
     /// Remove a worksheet by name.
+    ///
+    /// The active tab follows the sheet it pointed at: removing a sheet before
+    /// it shifts the index down, and removing the active sheet itself leaves
+    /// the index in place so it lands on the next sheet (clamped to the end),
+    /// matching openpyxl.
     pub fn remove_sheet(&mut self, sheet_name: &str) -> Result<()> {
         for (idx, name) in self.sheet_names.iter().enumerate() {
             if name == sheet_name {
                 self.worksheets.remove(idx);
                 self.sheet_names.remove(idx);
+                if idx < self.active_sheet {
+                    self.active_sheet -= 1;
+                }
+                self.active_sheet = self
+                    .active_sheet
+                    .min(self.worksheets.len().saturating_sub(1));
                 return Ok(());
             }
         }
@@ -3468,6 +3479,46 @@ mod tests {
                 SheetVisibility::Visible
             )
         );
+    }
+
+    /// The active tab must follow the sheet it pointed at, not the index.
+    #[test]
+    fn test_remove_sheet_tracks_the_active_tab() {
+        let mut wb = Workbook::new();
+        for name in ["A", "B", "C"] {
+            wb.create_sheet(Some(name.to_string())).unwrap();
+        }
+        wb.active_sheet = 1; // B
+
+        // Removing a sheet before the active one keeps the same sheet active
+        wb.remove_sheet("A").unwrap();
+        assert_eq!(wb.active_sheet, 0);
+        assert_eq!(wb.sheet_names[wb.active_sheet], "B");
+
+        // Removing one after the active sheet leaves it alone
+        wb.remove_sheet("C").unwrap();
+        assert_eq!(wb.active_sheet, 0);
+        assert_eq!(wb.sheet_names[wb.active_sheet], "B");
+    }
+
+    /// Removing the active sheet itself leaves the index in place, so it lands
+    /// on the next sheet -- and clamps when there is no next sheet.
+    #[test]
+    fn test_remove_active_sheet_lands_on_the_next_one() {
+        let mut wb = Workbook::new();
+        for name in ["A", "B", "C"] {
+            wb.create_sheet(Some(name.to_string())).unwrap();
+        }
+        wb.active_sheet = 1;
+
+        wb.remove_sheet("B").unwrap();
+        assert_eq!(wb.sheet_names[wb.active_sheet], "C");
+
+        wb.remove_sheet("C").unwrap();
+        assert_eq!(wb.sheet_names[wb.active_sheet], "A", "clamped to the end");
+
+        wb.remove_sheet("A").unwrap();
+        assert_eq!(wb.active_sheet, 0, "no sheets left");
     }
 
     #[test]

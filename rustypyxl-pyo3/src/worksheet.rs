@@ -214,11 +214,14 @@ impl PyWorksheet {
             ));
         }
         let (row, col) = parse_coordinate(key).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        // Convert before borrowing the workbook: the conversion can run
+        // arbitrary Python (__str__), which may re-enter this workbook.
+        let cell_value = python_to_cell_value(&value)?;
         if let Some(ref wb) = self.workbook {
             let mut this = wb.borrow_mut(py);
             let idx = self.resolve_index(&this)?;
             let name = this.inner.sheet_names[idx].clone();
-            this.set_cell_value(&name, row, col, &value)
+            this.set_converted_cell_value(&name, row, col, cell_value)
         } else {
             Err(PyValueError::new_err(
                 "Worksheet is not attached to a workbook",

@@ -93,6 +93,32 @@ impl PyWorkbook {
         Ok(PyWorksheet::connected(self_.clone_ref(py), uid, title))
     }
 
+    /// Set the active worksheet, by index or by worksheet, as openpyxl allows.
+    #[setter]
+    fn set_active(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let index = if let Ok(ws) = value.extract::<PyRef<'_, PyWorksheet>>() {
+            self.inner
+                .sheet_index_by_uid(ws.uid)
+                .ok_or_else(|| PyValueError::new_err("Worksheet is not in this workbook"))?
+        } else if let Ok(index) = value.extract::<usize>() {
+            index
+        } else {
+            return Err(PyTypeError::new_err(
+                "active must be a worksheet or a sheet index",
+            ));
+        };
+
+        if index >= self.inner.worksheets.len() {
+            return Err(PyValueError::new_err(format!(
+                "Sheet index {} is out of range ({} sheets)",
+                index,
+                self.inner.worksheets.len()
+            )));
+        }
+        self.inner.active_sheet = index;
+        Ok(())
+    }
+
     /// Get all sheet names.
     #[getter]
     fn sheetnames(&self) -> Vec<String> {
@@ -375,16 +401,18 @@ impl PyWorkbook {
     ///     column: Column number (1-indexed)
     ///     value: Value to set (string, number, boolean, or None)
     pub fn set_cell_value(
-        &mut self,
+        self_: Py<Self>,
+        py: Python<'_>,
         sheet_name: &str,
         row: u32,
         column: u32,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
+        // Convert before borrowing: see write_rows
         let cell_value = python_to_cell_value(value)?;
-        self.inner
-            .set_cell_value_in_sheet(sheet_name, row, column, cell_value)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        self_
+            .borrow_mut(py)
+            .set_converted_cell_value(sheet_name, row, column, cell_value)
     }
 
     /// Get a cell value from a specific sheet.
@@ -426,24 +454,32 @@ impl PyWorkbook {
     ///     start_col: Starting column (1-indexed, default 1)
     #[pyo3(signature = (sheet_name, data, start_row=1, start_col=1))]
     fn write_rows(
-        &mut self,
+        self_: Py<Self>,
+        py: Python<'_>,
         sheet_name: &str,
         data: Vec<Vec<Bound<'_, PyAny>>>,
         start_row: u32,
         start_col: u32,
     ) -> PyResult<()> {
+        // Convert every value before borrowing the workbook: the conversion
+        // falls back to __str__, which is arbitrary Python and may touch this
+        // same workbook -- doing that under borrow_mut raises "Already borrowed".
+        let rows: Vec<Vec<CellValue>> = data
+            .iter()
+            .map(|row| row.iter().map(python_to_cell_value).collect())
+            .collect::<PyResult<_>>()?;
+
+        let mut this = self_.borrow_mut(py);
         // Get mutable reference to worksheet once (avoid repeated lookups)
-        let ws = self
+        let ws = this
             .inner
             .get_sheet_by_name_mut(sheet_name)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        for (row_idx, row_data) in data.iter().enumerate() {
+        for (row_idx, row_data) in rows.into_iter().enumerate() {
             let row = start_row + row_idx as u32;
-            for (col_idx, value) in row_data.iter().enumerate() {
-                let col = start_col + col_idx as u32;
-                let cell_value = python_to_cell_value(value)?;
-                ws.set_cell_value(row, col, cell_value);
+            for (col_idx, cell_value) in row_data.into_iter().enumerate() {
+                ws.set_cell_value(row, start_col + col_idx as u32, cell_value);
             }
         }
         Ok(())
@@ -1220,6 +1256,20 @@ impl PyWorkbook {
 }
 
 impl PyWorkbook {
+    /// Store an already-converted value. Callers convert from Python first, so
+    /// no arbitrary Python runs while the workbook is mutably borrowed.
+    pub(crate) fn set_converted_cell_value(
+        &mut self,
+        sheet_name: &str,
+        row: u32,
+        column: u32,
+        value: CellValue,
+    ) -> PyResult<()> {
+        self.inner
+            .set_cell_value_in_sheet(sheet_name, row, column, value)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Helper to set or merge a cell style with the existing style.
     fn set_or_merge_cell_style(
         &mut self,
@@ -1338,7 +1388,7 @@ pub(crate) fn python_to_cell_value(value: &Bound<'_, PyAny>) -> PyResult<CellVal
 
 /// True when the value is a datetime.datetime, datetime.date, or
 /// datetime.time instance (datetime subclasses date, so two checks suffice).
-fn is_datetime_like(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+pub(crate) fn is_datetime_like(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     let module = value.py().import("datetime")?;
     Ok(value.is_instance(&module.getattr("date")?)?
         || value.is_instance(&module.getattr("time")?)?)

@@ -2,10 +2,14 @@
 
 #![allow(non_snake_case)]
 
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 /// Accept either an rgb string or a Color object wherever openpyxl does.
+///
+/// Styles store colors as an rgb value, so a theme, indexed, or tinted color
+/// cannot be represented. Rejecting it is better than returning None, which
+/// would hand back a font with no color at all.
 fn coerce_color(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<String>> {
     let Some(v) = value else { return Ok(None) };
     if v.is_none() {
@@ -15,6 +19,16 @@ fn coerce_color(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<String>> {
         return Ok(Some(s));
     }
     if let Ok(color) = v.extract::<PyColor>() {
+        if color.rgb.is_none() && (color.theme.is_some() || color.indexed.is_some()) {
+            return Err(PyValueError::new_err(
+                "theme and indexed colors are not supported; pass Color(rgb=...) or an rgb string",
+            ));
+        }
+        if color.tint != 0.0 {
+            return Err(PyValueError::new_err(
+                "Color tint is not supported; pass the already-tinted rgb value",
+            ));
+        }
         return Ok(color.rgb);
     }
     Err(PyTypeError::new_err(

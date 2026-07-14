@@ -119,9 +119,15 @@ impl PyCell {
     fn set_value(&mut self, py: Python<'_>, value: PyObject) -> PyResult<()> {
         if let Some(sheet) = self.sheet_name(py)? {
             if let Some(ref wb) = self.workbook {
-                let mut wb_ref = wb.borrow_mut(py);
-                let bound_value = value.bind(py);
-                return wb_ref.set_cell_value(&sheet, self.row, self.column, bound_value);
+                // Convert before borrowing the workbook: the conversion can run
+                // arbitrary Python (__str__), which may re-enter this workbook.
+                let cell_value = crate::workbook::python_to_cell_value(value.bind(py))?;
+                return wb.borrow_mut(py).set_converted_cell_value(
+                    &sheet,
+                    self.row,
+                    self.column,
+                    cell_value,
+                );
             }
         }
         self.value_internal = Some(value);
@@ -350,7 +356,8 @@ impl PyCell {
         Ok(())
     }
 
-    /// Get the data type of the cell: 'n' number, 's' string, 'b' bool, 'f' formula.
+    /// Get the data type of the cell: 'n' number, 's' string, 'b' bool,
+    /// 'f' formula, 'd' datetime.
     #[getter]
     fn data_type(&self, py: Python<'_>) -> PyResult<&'static str> {
         let val = self.value(py)?;
@@ -366,6 +373,9 @@ impl PyCell {
         }
         if bound.extract::<f64>().is_ok() {
             return Ok("n");
+        }
+        if crate::workbook::is_datetime_like(bound)? {
+            return Ok("d");
         }
         Ok("s")
     }
