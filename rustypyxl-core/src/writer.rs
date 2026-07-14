@@ -413,6 +413,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
     sheets: &[(String, SheetVisibility)],
     named_ranges: &[crate::workbook::NamedRange],
     active_tab: usize,
+    date1904: bool,
 ) -> Result<()> {
     zip.start_file("xl/workbook.xml", options.clone())?;
 
@@ -429,9 +430,11 @@ pub fn write_workbook_xml<W: Write + Seek>(
     writer.write_event(quick_xml::events::Event::Start(workbook_start))?;
 
     // workbookPr
-    writer.write_event(quick_xml::events::Event::Empty(BytesStart::new(
-        "workbookPr",
-    )))?;
+    let mut workbook_pr = BytesStart::new("workbookPr");
+    if date1904 {
+        workbook_pr.push_attribute(("date1904", "1"));
+    }
+    writer.write_event(quick_xml::events::Event::Empty(workbook_pr))?;
 
     // bookViews
     writer.write_event(quick_xml::events::Event::Start(BytesStart::new(

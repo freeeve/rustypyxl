@@ -71,6 +71,10 @@ pub struct Workbook {
     pub styles: StyleRegistry,
     /// Index of the active (selected) sheet tab.
     pub active_sheet: usize,
+    /// True when the file uses the 1904 date system (Excel for Mac's legacy
+    /// epoch). Date serials are stored as written; this preserves the flag so
+    /// consumers can interpret them against the right epoch.
+    pub date1904: bool,
     /// Monotonic source for Worksheet::uid values; never reused so stale
     /// handles can't silently resolve to a different sheet.
     next_sheet_uid: u64,
@@ -133,6 +137,7 @@ impl Workbook {
             compression: CompressionLevel::default(),
             styles: StyleRegistry::new(),
             active_sheet: 0,
+            date1904: false,
             next_sheet_uid: 1,
         }
     }
@@ -539,6 +544,7 @@ impl Workbook {
             &sheet_meta,
             &self.named_ranges,
             self.active_sheet,
+            self.date1904,
         )?;
 
         // Write xl/_rels/workbook.xml.rels
@@ -671,10 +677,11 @@ impl Workbook {
 
         // Parse workbook.xml to get sheet names, IDs, relationship IDs,
         // visibility, and the active tab
-        let (sheet_info, named_ranges, active_tab) =
+        let (sheet_info, named_ranges, active_tab, date1904) =
             Self::parse_workbook_xml(Cursor::new(&workbook_xml))?;
         self.named_ranges = named_ranges;
         self.active_sheet = active_tab;
+        self.date1904 = date1904;
 
         // Parse workbook.xml.rels to get the mapping from rId to actual file paths
         let rels_map: HashMap<String, String> = if let Some(rels_xml) = workbook_rels_xml {
@@ -842,13 +849,14 @@ impl Workbook {
     /// visibility), named ranges, and the active tab index.
     fn parse_workbook_xml<R: BufRead>(
         reader: R,
-    ) -> Result<(Vec<SheetInfo>, Vec<NamedRange>, usize)> {
+    ) -> Result<(Vec<SheetInfo>, Vec<NamedRange>, usize, bool)> {
         let mut reader = Reader::from_reader(reader);
         reader.config_mut().trim_text(true);
 
         let mut sheets = Vec::new();
         let mut named_ranges = Vec::new();
         let mut active_tab: usize = 0;
+        let mut date1904 = false;
         let mut buf = Vec::new();
         let mut current_sheet_name: Option<String> = None;
         let mut current_sheet_id: Option<u32> = None;
@@ -868,6 +876,10 @@ impl Workbook {
                     let local = e.local_name();
                     let name = name.as_ref();
                     let local = local.as_ref();
+
+                    if local == b"workbookPr" {
+                        date1904 = Self::parse_date1904(&e);
+                    }
 
                     // Handle self-closing sheet tags
                     if name == b"sheet" || local == b"sheet" {
@@ -918,6 +930,10 @@ impl Workbook {
                     let is_sheet = name == b"sheet" || local == b"sheet";
                     let is_defined_names = name == b"definedNames" || local == b"definedNames";
                     let is_defined_name = name == b"definedName" || local == b"definedName";
+
+                    if local == b"workbookPr" {
+                        date1904 = Self::parse_date1904(&e);
+                    }
 
                     if is_defined_names {
                         in_defined_names = true;
@@ -1018,7 +1034,16 @@ impl Workbook {
             buf.clear();
         }
 
-        Ok((sheets, named_ranges, active_tab))
+        Ok((sheets, named_ranges, active_tab, date1904))
+    }
+
+    /// Reads the date1904 flag off `<workbookPr>`; Excel writes it as "1",
+    /// other producers as "true".
+    fn parse_date1904(e: &quick_xml::events::BytesStart) -> bool {
+        e.attributes().flatten().any(|attr| {
+            attr.key.local_name().as_ref() == b"date1904"
+                && matches!(attr.value.as_ref(), b"1" | b"true")
+        })
     }
 
     /// Parses a worksheet's .rels part into a map of relationship id -> SheetRel.
@@ -1148,7 +1173,8 @@ impl Workbook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"t" {
+                    // Local names so <x:t>/<x:si> parse like their unprefixed forms
+                    if e.local_name().as_ref() == b"t" {
                         in_t = true;
                     }
                 }
@@ -1158,9 +1184,9 @@ impl Workbook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"t" {
+                    if e.local_name().as_ref() == b"t" {
                         in_t = false;
-                    } else if e.name().as_ref() == b"si" {
+                    } else if e.local_name().as_ref() == b"si" {
                         strings.push(std::sync::Arc::from(current_string.as_str()));
                         current_string.clear();
                     }
@@ -2260,6 +2286,53 @@ impl Workbook {
         Ok(table)
     }
 
+    /// Read the `<row>` attributes in a single pass so the result does not
+    /// depend on the order the attributes appear in.
+    fn parse_row_attrs(e: &quick_xml::events::BytesStart) -> (Option<u32>, Option<f64>) {
+        let mut index = None;
+        let mut height = None;
+        for attr in e.attributes().flatten() {
+            match attr.key.as_ref() {
+                b"r" => index = String::from_utf8_lossy(&attr.value).parse().ok(),
+                b"ht" => height = String::from_utf8_lossy(&attr.value).parse().ok(),
+                _ => {}
+            }
+        }
+        (index, height)
+    }
+
+    /// Read the `<c>` attributes. `r` is optional in OOXML, so the coordinate
+    /// is returned as an Option and the caller supplies the implied position.
+    fn parse_cell_attrs(
+        e: &quick_xml::events::BytesStart,
+    ) -> (Option<(u32, u32)>, u8, Option<u32>) {
+        let mut coord = None;
+        let mut cell_type = 0u8;
+        let mut style_id = None;
+        for attr in e.attributes().flatten() {
+            match attr.key.as_ref() {
+                b"r" => coord = parse_coordinate_bytes(&attr.value),
+                // Map the full type to a one-byte code; matching on the first
+                // byte alone would conflate t="s" (shared string) with t="str"
+                // (formula string result).
+                b"t" => {
+                    cell_type = match attr.value.as_ref() {
+                        b"s" => b's',
+                        b"str" => b'f',
+                        b"b" => b'b',
+                        b"d" => b'd',
+                        b"e" => b'e',
+                        b"inlineStr" => b'i',
+                        _ => 0,
+                    }
+                }
+                b"s" => style_id = parse_u32_bytes(&attr.value),
+                _ => {}
+            }
+        }
+        (coord, cell_type, style_id)
+    }
+
     fn parse_worksheet_xml<R: BufRead>(
         reader: R,
         shared_strings: &[crate::cell::InternedString],
@@ -2275,6 +2348,11 @@ impl Workbook {
         let mut buf = Vec::new();
         let mut current_row: Option<u32> = None;
         let mut current_col: Option<u32> = None;
+        // `r` is optional on both <row> and <c>; when absent the position is
+        // implied by the element's index within its parent, so track the next
+        // implied row and column as a fallback.
+        let mut next_row: u32 = 1;
+        let mut next_col: u32 = 1;
         enum TempValue {
             SharedIdx(usize),
             Bool(bool),
@@ -2289,6 +2367,12 @@ impl Workbook {
         let mut current_style_id: Option<u32> = None;
         let mut current_formula: Option<String> = None;
         let mut current_number_format: Option<String> = None;
+        // Raw <v> text of a formula cell, kept verbatim so the cached result
+        // round-trips as written rather than being reformatted as an f64.
+        let mut current_v_raw: Option<String> = None;
+        // True once an inline-string run has contributed text to this cell, so
+        // that later <t> runs append instead of replacing.
+        let mut inline_runs = false;
         let mut in_cell = false;
         let mut in_v = false;
         let mut in_t = false;
@@ -2318,7 +2402,9 @@ impl Workbook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Empty(e)) => {
-                    let name = e.name();
+                    // Match on the local name so namespace-prefixed documents
+                    // (<x:c>, <x:row>, ...) parse the same as unprefixed ones.
+                    let name = e.local_name();
                     let name = name.as_ref();
                     if name == b"sheetProtection" {
                         let mut prot = WorksheetProtection {
@@ -2468,35 +2554,24 @@ impl Workbook {
                                 worksheet.set_column_width(col, w);
                             }
                         }
+                    } else if name == b"row" {
+                        // A row with no cells still carries formatting, e.g.
+                        // <row r="3" ht="20" customHeight="1"/>
+                        let (index, height) = Self::parse_row_attrs(&e);
+                        let row = index.unwrap_or(next_row);
+                        next_row = row.saturating_add(1);
+                        next_col = 1;
+                        if let Some(height) = height {
+                            worksheet.set_row_height(row, height);
+                        }
                     } else if name == b"c" {
                         // Handle self-closing cell elements like <c r="A1" t="inlineStr" />
                         // These are typically empty cells but with a specific type (e.g., empty string)
-                        let mut cell_row: Option<u32> = None;
-                        let mut cell_col: Option<u32> = None;
-                        let mut cell_type: u8 = 0;
-                        let mut style_id: Option<u32> = None;
-
-                        for attr in e.attributes().flatten() {
-                            let attr_key = attr.key.as_ref();
-                            if attr_key == b"r" {
-                                if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
-                                    cell_row = Some(row);
-                                    cell_col = Some(col);
-                                }
-                            } else if attr_key == b"t" {
-                                // Same one-byte type codes as the open-cell path below
-                                cell_type = match attr.value.as_ref() {
-                                    b"s" => b's',
-                                    b"str" => b'f',
-                                    b"b" => b'b',
-                                    b"d" => b'd',
-                                    b"e" => b'e',
-                                    b"inlineStr" => b'i',
-                                    _ => 0,
-                                };
-                            } else if attr_key == b"s" {
-                                style_id = parse_u32_bytes(&attr.value);
-                            }
+                        let (coord, cell_type, style_id) = Self::parse_cell_attrs(&e);
+                        let cell_row = coord.map(|(r, _)| r).or(current_row);
+                        let cell_col = Some(coord.map_or(next_col, |(_, c)| c));
+                        if let Some(col) = cell_col {
+                            next_col = col.saturating_add(1);
                         }
 
                         if let (Some(row), Some(col)) = (cell_row, cell_col) {
@@ -2534,7 +2609,7 @@ impl Workbook {
                     }
                 }
                 Ok(Event::Start(e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     let name = name.as_ref();
 
                     if name == b"dimension" && !reserved_cells {
@@ -2551,54 +2626,32 @@ impl Workbook {
                             }
                         }
                     } else if name == b"row" {
-                        for attr in e.attributes().flatten() {
-                            let attr_key = attr.key.as_ref();
-                            if attr_key == b"r" {
-                                let r_str = String::from_utf8_lossy(&attr.value);
-                                current_row = r_str.parse().ok();
-                            } else if attr_key == b"ht" {
-                                if let (Some(row), Ok(height)) = (
-                                    current_row,
-                                    String::from_utf8_lossy(&attr.value).parse::<f64>(),
-                                ) {
-                                    worksheet.set_row_height(row, height);
-                                }
-                            }
+                        let (index, height) = Self::parse_row_attrs(&e);
+                        let row = index.unwrap_or(next_row);
+                        current_row = Some(row);
+                        next_row = row.saturating_add(1);
+                        next_col = 1;
+                        if let Some(height) = height {
+                            worksheet.set_row_height(row, height);
                         }
                     } else if name == b"c" {
                         in_cell = true;
                         current_value = None;
-                        current_type = 0; // 0 = number (default)
-                        current_style_id = None;
                         current_formula = None;
                         current_number_format = None;
+                        current_v_raw = None;
+                        inline_runs = false;
 
-                        for attr in e.attributes().flatten() {
-                            let attr_key = attr.key.as_ref();
-                            if attr_key == b"r" {
-                                // Use byte-based coordinate parsing (no String allocation)
-                                if let Some((row, col)) = parse_coordinate_bytes(&attr.value) {
-                                    current_row = Some(row);
-                                    current_col = Some(col);
-                                }
-                            } else if attr_key == b"t" {
-                                // Map the full type to a one-byte code; matching on the
-                                // first byte alone would conflate t="s" (shared string)
-                                // with t="str" (formula string result).
-                                current_type = match attr.value.as_ref() {
-                                    b"s" => b's',
-                                    b"str" => b'f',
-                                    b"b" => b'b',
-                                    b"d" => b'd',
-                                    b"e" => b'e',
-                                    b"inlineStr" => b'i',
-                                    _ => 0,
-                                };
-                            } else if attr_key == b"s" {
-                                // Parse style index directly from bytes
-                                current_style_id = parse_u32_bytes(&attr.value);
-                            }
+                        // cell_type 0 = number, the default when t is absent
+                        let (coord, cell_type, style_id) = Self::parse_cell_attrs(&e);
+                        current_type = cell_type;
+                        current_style_id = style_id;
+                        if let Some((row, _)) = coord {
+                            current_row = Some(row);
                         }
+                        let col = coord.map_or(next_col, |(_, c)| c);
+                        current_col = Some(col);
+                        next_col = col.saturating_add(1);
                     } else if name == b"v" {
                         in_v = true;
                     } else if name == b"t" {
@@ -2750,6 +2803,13 @@ impl Workbook {
                 Ok(Event::Text(e)) => {
                     let text = e.unescape().unwrap_or_default();
                     if in_v && in_cell {
+                        // <f> precedes <v> in the schema, so a formula seen by now
+                        // means this <v> is a cached result. Keep it verbatim: a
+                        // round-trip through f64 would rewrite "5" as "5.0". Shared
+                        // indices still need resolving, so leave those to the parse.
+                        if current_formula.is_some() && current_type != b's' {
+                            current_v_raw = Some(text.to_string());
+                        }
                         // Use byte-based type check (b's'=shared, b'b'=bool, b'd'=date)
                         current_value = match current_type {
                             b's' => {
@@ -2776,7 +2836,16 @@ impl Workbook {
                             }
                         };
                     } else if in_t && in_cell {
-                        current_value = Some(TempValue::String(text.into_owned()));
+                        // Rich-text inline strings split their content across
+                        // <is><r><t> runs; concatenate them rather than keeping
+                        // only the last one.
+                        match current_value.as_mut() {
+                            Some(TempValue::String(s)) if inline_runs => s.push_str(&text),
+                            _ => {
+                                current_value = Some(TempValue::String(text.into_owned()));
+                                inline_runs = true;
+                            }
+                        }
                     } else if in_f && in_cell {
                         current_formula = Some(text.to_string());
                     } else if in_formula1 {
@@ -2806,7 +2875,7 @@ impl Workbook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     let name = name.as_ref();
 
                     if name == b"formula" && in_cf_formula {
@@ -2911,7 +2980,7 @@ impl Workbook {
                             let cell_value = if let Some(formula) = current_formula.take() {
                                 // Preserve the cached <v> so a save doesn't
                                 // blank the cell in viewers that don't recalc
-                                cached_formula_value = current_value.take().map(|v| match v {
+                                let parsed = current_value.take().map(|v| match v {
                                     TempValue::SharedIdx(idx) => shared_strings
                                         .get(idx)
                                         .map(|s| s.to_string())
@@ -2924,6 +2993,7 @@ impl Workbook {
                                     TempValue::Date(d) => d,
                                     TempValue::String(s) => s,
                                 });
+                                cached_formula_value = current_v_raw.take().or(parsed);
                                 CellValue::Formula(formula)
                             } else if let Some(value) = current_value.take() {
                                 match value {
@@ -3180,7 +3250,7 @@ mod tests {
     </sheets>
 </workbook>"#;
 
-        let (sheets, _, _) = Workbook::parse_workbook_xml(Cursor::new(workbook_xml)).unwrap();
+        let (sheets, _, _, _) = Workbook::parse_workbook_xml(Cursor::new(workbook_xml)).unwrap();
 
         assert_eq!(sheets.len(), 2);
         assert_eq!(
