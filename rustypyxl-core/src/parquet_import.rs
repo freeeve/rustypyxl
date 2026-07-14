@@ -312,6 +312,30 @@ impl Workbook {
 const DATE_FORMAT: &str = "yyyy-mm-dd";
 const DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
 
+/// Largest magnitude an f64 represents exactly. Excel stores every number as
+/// an f64, so an integer beyond this cannot be held as a number without
+/// silently rounding -- 9007199254740993 would come back as ...992. Keep the
+/// exact digits as text instead: rounding an ID column is the worse failure.
+const MAX_EXACT_INT: u64 = 1 << 53;
+
+/// An i64 as a number when f64 holds it exactly, as text otherwise.
+fn int64_cell_value(value: i64) -> CellValue {
+    if value.unsigned_abs() <= MAX_EXACT_INT {
+        CellValue::Number(value as f64)
+    } else {
+        CellValue::String(Arc::from(value.to_string()))
+    }
+}
+
+/// A u64 as a number when f64 holds it exactly, as text otherwise.
+fn uint64_cell_value(value: u64) -> CellValue {
+    if value <= MAX_EXACT_INT {
+        CellValue::Number(value as f64)
+    } else {
+        CellValue::String(Arc::from(value.to_string()))
+    }
+}
+
 /// Write an Excel date serial with the matching number format.
 fn set_date_cell(worksheet: &mut Worksheet, row: u32, col: u32, serial: f64, format: &str) {
     let cell = worksheet.get_or_create_cell_mut(row, col);
@@ -520,14 +544,15 @@ fn write_arrow_array_to_worksheet(
         }
         // For other types, convert to string representation
         _ => {
-            for i in 0..num_rows {
-                let row = start_row + i as u32;
-                if array.is_valid(i) {
-                    let formatter = arrow::util::display::ArrayFormatter::try_new(
-                        array.as_ref(),
-                        &arrow::util::display::FormatOptions::default(),
-                    );
-                    if let Ok(fmt) = formatter {
+            // One formatter per column, not per row
+            let formatter = arrow::util::display::ArrayFormatter::try_new(
+                array.as_ref(),
+                &arrow::util::display::FormatOptions::default(),
+            );
+            if let Ok(fmt) = formatter {
+                for i in 0..num_rows {
+                    let row = start_row + i as u32;
+                    if array.is_valid(i) {
                         let s = fmt.value(i).to_string();
                         worksheet.set_cell_value(row, col, CellValue::String(Arc::from(s)));
                     }
@@ -578,11 +603,7 @@ fn write_int_array(
     } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
         for i in 0..num_rows {
             if arr.is_valid(i) {
-                worksheet.set_cell_value(
-                    start_row + i as u32,
-                    col,
-                    CellValue::Number(arr.value(i) as f64),
-                );
+                worksheet.set_cell_value(start_row + i as u32, col, int64_cell_value(arr.value(i)));
             }
         }
     }
@@ -631,7 +652,7 @@ fn write_uint_array(
                 worksheet.set_cell_value(
                     start_row + i as u32,
                     col,
-                    CellValue::Number(arr.value(i) as f64),
+                    uint64_cell_value(arr.value(i)),
                 );
             }
         }
@@ -1172,6 +1193,102 @@ fn cell_value_to_timestamp_ms(value: &CellValue) -> Option<i64> {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    /// Write a single-column parquet file and import it into a fresh workbook.
+    fn import_column(field: Field, array: ArrayRef) -> Workbook {
+        let schema = Arc::new(Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
+
+        let file = NamedTempFile::new().unwrap();
+        let mut writer = ArrowWriter::try_new(file.reopen().unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let mut wb = Workbook::new();
+        wb.create_sheet(Some("Data".to_string())).unwrap();
+        wb.insert_from_parquet("Data", file.path().to_str().unwrap(), 1, 1, None)
+            .unwrap();
+        wb
+    }
+
+    /// An i64 past 2^53 cannot be held in an f64: 9007199254740993 would come
+    /// back as ...992. Keep the exact digits as text rather than corrupting an
+    /// ID column.
+    #[test]
+    fn test_int64_beyond_f64_precision_is_kept_exact() {
+        let values = Int64Array::from(vec![
+            42i64,
+            9_007_199_254_740_992,  // 2^53, still exact
+            9_007_199_254_740_993,  // 2^53 + 1, not representable
+            -9_007_199_254_740_993, // and the negative side
+        ]);
+        let wb = import_column(
+            Field::new("id", DataType::Int64, false),
+            Arc::new(values) as ArrayRef,
+        );
+        let ws = wb.get_sheet_by_name("Data").unwrap();
+
+        // Row 1 is the header
+        assert_eq!(ws.get_cell_value(2, 1), Some(&CellValue::Number(42.0)));
+        assert_eq!(
+            ws.get_cell_value(3, 1),
+            Some(&CellValue::Number(9_007_199_254_740_992.0))
+        );
+        assert_eq!(
+            ws.get_cell_value(4, 1),
+            Some(&CellValue::String(Arc::from("9007199254740993"))),
+            "a value past 2^53 must keep its exact digits"
+        );
+        assert_eq!(
+            ws.get_cell_value(5, 1),
+            Some(&CellValue::String(Arc::from("-9007199254740993")))
+        );
+    }
+
+    /// Same for the unsigned side, where the gap opens at the same magnitude.
+    #[test]
+    fn test_uint64_beyond_f64_precision_is_kept_exact() {
+        let values = UInt64Array::from(vec![
+            7u64,
+            9_007_199_254_740_993,
+            u64::MAX, // 18446744073709551615
+        ]);
+        let wb = import_column(
+            Field::new("id", DataType::UInt64, false),
+            Arc::new(values) as ArrayRef,
+        );
+        let ws = wb.get_sheet_by_name("Data").unwrap();
+
+        assert_eq!(ws.get_cell_value(2, 1), Some(&CellValue::Number(7.0)));
+        assert_eq!(
+            ws.get_cell_value(3, 1),
+            Some(&CellValue::String(Arc::from("9007199254740993")))
+        );
+        assert_eq!(
+            ws.get_cell_value(4, 1),
+            Some(&CellValue::String(Arc::from("18446744073709551615")))
+        );
+    }
+
+    /// Int32 columns are always exact in an f64 and stay numbers.
+    #[test]
+    fn test_int32_stays_numeric() {
+        let values = Int32Array::from(vec![i32::MIN, 0, i32::MAX]);
+        let wb = import_column(
+            Field::new("n", DataType::Int32, false),
+            Arc::new(values) as ArrayRef,
+        );
+        let ws = wb.get_sheet_by_name("Data").unwrap();
+
+        assert_eq!(
+            ws.get_cell_value(2, 1),
+            Some(&CellValue::Number(i32::MIN as f64))
+        );
+        assert_eq!(
+            ws.get_cell_value(4, 1),
+            Some(&CellValue::Number(i32::MAX as f64))
+        );
+    }
 
     #[test]
     fn test_import_options_builder() {
