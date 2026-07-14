@@ -17,12 +17,16 @@ thiserror = "2.0"
 # abi3-py310: build against CPython's stable ABI, so one wheel per platform
 # covers 3.10 and every version after it, including versions not yet released.
 #
-# The stable ABI withholds the C datetime API, but that costs nothing here: the
-# datetime path already goes through the datetime module rather than PyDateTime
-# types (see is_datetime_like), so it is the same code either way. Benchmarked
-# against per-version builds across the boundary-heavy paths (bulk writes,
-# iter_rows, cell access, datetime conversion): no difference outside the noise
-# floor, which a pure-Rust control run establishes at roughly 6%.
+# This costs a little speed at the Python boundary. Benchmarked against
+# per-version builds on an idle machine (noise floor ~1-2%, established by a
+# pure-Rust control path that measured 1.2% apart): converting datetimes is
+# about 5% slower, with no overlap between the two sets of runs. Bulk writes and
+# iter_rows look 5-9% slower by median, but those ranges do overlap, so treat
+# them as unproven. Pure-Rust work -- parsing, serializing, deflate -- is
+# unaffected, and that is where the time actually goes on a large file.
+#
+# The trade bought: 7 wheel builds instead of 15, and new Python versions work
+# without a release. Revisit if the boundary ever dominates a real workload.
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
