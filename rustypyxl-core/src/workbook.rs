@@ -484,7 +484,7 @@ impl Workbook {
         let options = self.get_file_options();
 
         // Collect shared strings first to know if we have any
-        let (shared_strings_vec, shared_strings_map) =
+        let (shared_strings_vec, shared_strings_map, shared_strings_refs) =
             writer::collect_shared_strings(&self.worksheets);
         let has_shared_strings = !shared_strings_vec.is_empty();
 
@@ -552,7 +552,7 @@ impl Workbook {
 
         // Write shared strings if we have any
         if has_shared_strings {
-            writer::write_shared_strings(zip, &options, &shared_strings_vec)?;
+            writer::write_shared_strings(zip, &options, &shared_strings_vec, shared_strings_refs)?;
         }
 
         // Resolve styles set through the core API into registry xfs. Cells

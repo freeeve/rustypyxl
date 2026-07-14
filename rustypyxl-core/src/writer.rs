@@ -37,6 +37,30 @@ pub(crate) fn strip_illegal_xml_chars(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// True when `<t>` text needs `xml:space="preserve"`. Without it a conforming
+/// consumer is free to collapse the surrounding whitespace, so `<t>  hi  </t>`
+/// may come back trimmed.
+#[inline]
+fn needs_space_preserve(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_whitespace()) || s.ends_with(|c: char| c.is_whitespace())
+}
+
+/// Write an element whose content is user-supplied text: strip the control
+/// characters quick-xml's entity escaping leaves behind (they are illegal in
+/// XML 1.0 even as entities, and Excel rejects the file as corrupt) and add
+/// `xml:space="preserve"` when the whitespace is significant.
+fn write_text_element<W: Write>(writer: &mut Writer<W>, name: &str, text: &str) -> Result<()> {
+    let clean = strip_illegal_xml_chars(text);
+    let mut start = BytesStart::new(name);
+    if needs_space_preserve(&clean) {
+        start.push_attribute(("xml:space", "preserve"));
+    }
+    writer.write_event(Event::Start(start))?;
+    writer.write_event(Event::Text(BytesText::new(&clean)))?;
+    writer.write_event(Event::End(BytesEnd::new(name)))?;
+    Ok(())
+}
+
 /// Compute the legacy 16-bit Excel sheet-protection password verifier
 /// (CreatePasswordVerifier_Method1 from MS-XLS 2.2.9), as stored in the
 /// `password` attribute of `sheetProtection`.
@@ -174,7 +198,12 @@ fn write_cell_direct(
                 buf.push_str(coord);
                 buf.push('"');
                 buf.push_str(style_str);
-                buf.push_str(" t=\"inlineStr\"><is><t>");
+                buf.push_str(" t=\"inlineStr\"><is>");
+                if needs_space_preserve(&escaped) {
+                    buf.push_str("<t xml:space=\"preserve\">");
+                } else {
+                    buf.push_str("<t>");
+                }
                 buf.push_str(&escaped);
                 buf.push_str("</t></is></c>");
             }
@@ -459,7 +488,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
         let sheet_id = (idx + 1) as u32;
         let r_id = format!("rId{}", idx + 1);
         let mut sheet = BytesStart::new("sheet");
-        sheet.push_attribute(("name", name.as_str()));
+        sheet.push_attribute(("name", strip_illegal_xml_chars(name).as_ref()));
         sheet.push_attribute(("sheetId", sheet_id.to_string().as_str()));
         sheet.push_attribute(("state", visibility.as_str()));
         sheet.push_attribute(("r:id", r_id.as_str()));
@@ -474,7 +503,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
         )))?;
         for nr in named_ranges {
             let mut defined_name = BytesStart::new("definedName");
-            defined_name.push_attribute(("name", nr.name.as_str()));
+            defined_name.push_attribute(("name", strip_illegal_xml_chars(&nr.name).as_ref()));
             if let Some(sheet_id) = nr.local_sheet_id {
                 defined_name.push_attribute(("localSheetId", sheet_id.to_string().as_str()));
             }
@@ -482,7 +511,9 @@ pub fn write_workbook_xml<W: Write + Seek>(
                 defined_name.push_attribute(("hidden", "1"));
             }
             writer.write_event(quick_xml::events::Event::Start(defined_name))?;
-            writer.write_event(quick_xml::events::Event::Text(BytesText::new(&nr.range)))?;
+            writer.write_event(quick_xml::events::Event::Text(BytesText::new(
+                &strip_illegal_xml_chars(&nr.range),
+            )))?;
             writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedName")))?;
         }
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedNames")))?;
@@ -531,9 +562,11 @@ pub fn write_workbook_rels<W: Write + Seek>(
 }
 
 /// Returns (ordered list of strings, map from string -> index for O(1) lookup)
+/// Returns the unique strings, the value-to-index map, and the total number of
+/// cells referencing them (the sst `count`, as distinct from `uniqueCount`).
 pub fn collect_shared_strings(
     worksheets: &[Worksheet],
-) -> (Vec<InternedString>, HashMap<InternedString, usize>) {
+) -> (Vec<InternedString>, HashMap<InternedString, usize>, usize) {
     // Estimate capacity: count string cells across all worksheets
     let estimated_strings: usize = worksheets
         .iter()
@@ -547,10 +580,12 @@ pub fn collect_shared_strings(
 
     let mut strings = Vec::with_capacity(estimated_strings);
     let mut string_map = HashMap::with_capacity(estimated_strings);
+    let mut total_refs = 0usize;
 
     for worksheet in worksheets {
         for cell_data in worksheet.cells.values() {
             if let CellValue::String(s) = &cell_data.value {
+                total_refs += 1;
                 if !string_map.contains_key(s) {
                     string_map.insert(s.clone(), strings.len());
                     strings.push(s.clone());
@@ -559,13 +594,14 @@ pub fn collect_shared_strings(
         }
     }
 
-    (strings, string_map)
+    (strings, string_map, total_refs)
 }
 
 pub fn write_shared_strings<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
     strings: &[InternedString],
+    total_refs: usize,
 ) -> Result<()> {
     zip.start_file("xl/sharedStrings.xml", options.clone())?;
 
@@ -577,18 +613,15 @@ pub fn write_shared_strings<W: Write + Seek>(
         "xmlns",
         "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     ));
-    let count_str = strings.len().to_string();
-    sst.push_attribute(("count", count_str.as_str()));
-    sst.push_attribute(("uniqueCount", count_str.as_str()));
+    // count is the number of cells pointing into the table; uniqueCount the
+    // number of entries in it.
+    sst.push_attribute(("count", total_refs.to_string().as_str()));
+    sst.push_attribute(("uniqueCount", strings.len().to_string().as_str()));
     writer.write_event(quick_xml::events::Event::Start(sst))?;
 
     for s in strings {
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("si")))?;
-        writer.write_event(quick_xml::events::Event::Start(BytesStart::new("t")))?;
-        writer.write_event(quick_xml::events::Event::Text(BytesText::new(
-            &strip_illegal_xml_chars(s.as_ref()),
-        )))?;
-        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("t")))?;
+        write_text_element(&mut writer, "t", s.as_ref())?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("si")))?;
     }
 
@@ -791,13 +824,17 @@ fn write_dxf_color(xml: &mut String, element: &str, color: &ConditionalColor) {
 
 /// Write the dxfs (differential formats) section referenced by cfRule dxfId.
 /// CT_Dxf child order: font, numFmt, fill, alignment, border, protection.
-fn write_dxfs_xml(xml: &mut String, dxfs: &[ConditionalFormat]) {
+///
+/// `next_num_fmt_id` is the first free id in the workbook's number-format
+/// space; dxf formats are allocated from it so they cannot collide with the
+/// workbook's custom formats.
+fn write_dxfs_xml(xml: &mut String, dxfs: &[ConditionalFormat], mut next_num_fmt_id: usize) {
     if dxfs.is_empty() {
         xml.push_str(r#"<dxfs count="0"/>"#);
         return;
     }
     xml.push_str(&format!(r#"<dxfs count="{}">"#, dxfs.len()));
-    for (idx, fmt) in dxfs.iter().enumerate() {
+    for fmt in dxfs.iter() {
         xml.push_str("<dxf>");
 
         let has_font = fmt.font_color.is_some()
@@ -830,13 +867,12 @@ fn write_dxfs_xml(xml: &mut String, dxfs: &[ConditionalFormat]) {
         }
 
         if let Some(ref code) = fmt.number_format {
-            // dxf numFmt ids only need to be unique among dxfs; 200+ avoids
-            // the builtin (0-163) and workbook custom (164+) ranges in use
             xml.push_str(&format!(
                 r#"<numFmt numFmtId="{}" formatCode="{}"/>"#,
-                200 + idx,
+                next_num_fmt_id,
                 escape_xml(code)
             ));
+            next_num_fmt_id += 1;
         }
 
         if let Some(ref fill) = fmt.fill_color {
@@ -935,7 +971,16 @@ pub fn write_styles_xml<W: Write + Seek>(
     xml.push_str("</cellStyles>");
 
     // Differential formats for conditional formatting (referenced by dxfId)
-    write_dxfs_xml(&mut xml, dxfs);
+    // Custom number formats start at 164 (0-163 are builtins); dxf formats
+    // continue above whatever the workbook already uses.
+    let next_num_fmt_id = styles
+        .num_fmts
+        .iter()
+        .map(|(id, _)| id + 1)
+        .max()
+        .unwrap_or(164)
+        .max(164);
+    write_dxfs_xml(&mut xml, dxfs, next_num_fmt_id);
 
     xml.push_str("</styleSheet>");
 
@@ -1346,14 +1391,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
             ));
             writer.write_event(quick_xml::events::Event::Start(dv))?;
             if let Some(ref f1) = validation.formula1 {
-                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula1")))?;
-                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f1)))?;
-                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula1")))?;
+                write_text_element(&mut writer, "formula1", f1)?;
             }
             if let Some(ref f2) = validation.formula2 {
-                writer.write_event(quick_xml::events::Event::Start(BytesStart::new("formula2")))?;
-                writer.write_event(quick_xml::events::Event::Text(BytesText::new(f2)))?;
-                writer.write_event(quick_xml::events::Event::End(BytesEnd::new("formula2")))?;
+                write_text_element(&mut writer, "formula2", f2)?;
             }
             writer.write_event(quick_xml::events::Event::End(BytesEnd::new(
                 "dataValidation",
@@ -1398,7 +1439,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
             let mut hyperlink = BytesStart::new("hyperlink");
             hyperlink.push_attribute(("ref", coord.as_str()));
             // The location attribute holds the anchor without the '#' prefix
-            hyperlink.push_attribute(("location", url.trim_start_matches('#')));
+            hyperlink.push_attribute((
+                "location",
+                strip_illegal_xml_chars(url.trim_start_matches('#')).as_ref(),
+            ));
             writer.write_event(quick_xml::events::Event::Empty(hyperlink))?;
         }
 
@@ -1516,11 +1560,7 @@ pub fn write_comments_xml<W: Write + Seek>(
 
         // text
         writer.write_event(quick_xml::events::Event::Start(BytesStart::new("text")))?;
-        writer.write_event(quick_xml::events::Event::Start(BytesStart::new("t")))?;
-        writer.write_event(quick_xml::events::Event::Text(BytesText::new(
-            &comment_text,
-        )))?;
-        writer.write_event(quick_xml::events::Event::End(BytesEnd::new("t")))?;
+        write_text_element(&mut writer, "t", &comment_text)?;
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("text")))?;
 
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("comment")))?;
@@ -1826,14 +1866,10 @@ fn write_conditional_formatting<W: std::io::Write>(
         // text/blank/error/time-period rules
         let implied = implied_rule_formula(rule, &anchor);
         if let Some(formula) = rule.formula1.as_deref().or(implied.as_deref()) {
-            writer.write_event(Event::Start(BytesStart::new("formula")))?;
-            writer.write_event(Event::Text(BytesText::new(formula)))?;
-            writer.write_event(Event::End(BytesEnd::new("formula")))?;
+            write_text_element(writer, "formula", formula)?;
         }
         if let Some(ref formula) = rule.formula2 {
-            writer.write_event(Event::Start(BytesStart::new("formula")))?;
-            writer.write_event(Event::Text(BytesText::new(formula)))?;
-            writer.write_event(Event::End(BytesEnd::new("formula")))?;
+            write_text_element(writer, "formula", formula)?;
         }
 
         // ColorScale
@@ -2015,14 +2051,10 @@ fn write_page_setup<W: std::io::Write>(
         writer.write_event(Event::Start(header_footer))?;
 
         if let Some(ref h) = hf.odd_header {
-            writer.write_event(Event::Start(BytesStart::new("oddHeader")))?;
-            writer.write_event(Event::Text(BytesText::new(&h.to_string())))?;
-            writer.write_event(Event::End(BytesEnd::new("oddHeader")))?;
+            write_text_element(writer, "oddHeader", &h.to_string())?;
         }
         if let Some(ref f) = hf.odd_footer {
-            writer.write_event(Event::Start(BytesStart::new("oddFooter")))?;
-            writer.write_event(Event::Text(BytesText::new(&f.to_string())))?;
-            writer.write_event(Event::End(BytesEnd::new("oddFooter")))?;
+            write_text_element(writer, "oddFooter", &f.to_string())?;
         }
 
         writer.write_event(Event::End(BytesEnd::new("headerFooter")))?;
@@ -2131,9 +2163,12 @@ pub fn write_table_xml<W: Write + Seek>(
     ));
     // Use the workbook-assigned id, not table.id, to guarantee uniqueness
     table_start.push_attribute(("id", table_id.to_string().as_str()));
-    table_start.push_attribute(("name", table.name.as_str()));
-    table_start.push_attribute(("displayName", table.display_name.as_str()));
-    table_start.push_attribute(("ref", table.range.as_str()));
+    table_start.push_attribute(("name", strip_illegal_xml_chars(&table.name).as_ref()));
+    table_start.push_attribute((
+        "displayName",
+        strip_illegal_xml_chars(&table.display_name).as_ref(),
+    ));
+    table_start.push_attribute(("ref", strip_illegal_xml_chars(&table.range).as_ref()));
 
     if !table.header_row {
         table_start.push_attribute(("headerRowCount", "0"));
@@ -2173,23 +2208,18 @@ pub fn write_table_xml<W: Write + Seek>(
     for col in &table.columns {
         let mut tc = BytesStart::new("tableColumn");
         tc.push_attribute(("id", col.id.to_string().as_str()));
-        tc.push_attribute(("name", col.name.as_str()));
+        tc.push_attribute(("name", strip_illegal_xml_chars(&col.name).as_ref()));
 
         if let Some(xml_name) = col.totals_row_function.xml_name() {
             tc.push_attribute(("totalsRowFunction", xml_name));
         }
         if let Some(ref label) = col.totals_row_label {
-            tc.push_attribute(("totalsRowLabel", label.as_str()));
+            tc.push_attribute(("totalsRowLabel", strip_illegal_xml_chars(label).as_ref()));
         }
 
-        if col.calculated_column_formula.is_some() {
+        if let Some(ref formula) = col.calculated_column_formula {
             writer.write_event(Event::Start(tc))?;
-            if let Some(ref formula) = col.calculated_column_formula {
-                let calc = BytesStart::new("calculatedColumnFormula");
-                writer.write_event(Event::Start(calc))?;
-                writer.write_event(Event::Text(BytesText::new(formula)))?;
-                writer.write_event(Event::End(BytesEnd::new("calculatedColumnFormula")))?;
-            }
+            write_text_element(&mut writer, "calculatedColumnFormula", formula)?;
             writer.write_event(Event::End(BytesEnd::new("tableColumn")))?;
         } else {
             writer.write_event(Event::Empty(tc))?;
