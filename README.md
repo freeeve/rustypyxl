@@ -194,43 +194,60 @@ This uses minimal memory regardless of file size, similar to openpyxl's `write_o
 
 ## Benchmarks
 
-Micro benchmarks on M1 MacBook Pro. Your results may vary depending on data characteristics and hardware.
+Apple Silicon, openpyxl 3.1.5. Times are the **minimum** wall-clock over several
+runs (the fastest run is the one least disturbed by other processes), measured
+on an otherwise-idle machine. Your results will vary with data and hardware.
 
-### Write Performance (1M rows × 20 columns)
+### Write Performance (1M rows × 20 columns, mixed data)
 
-| Library | Time |
-|---------|------|
-| rustypyxl | ~10s |
-| openpyxl | ~200s |
+| Method | Time | vs openpyxl |
+|--------|------|-------------|
+| rustypyxl `WriteOnlyWorkbook` (streaming) | ~4s | ~27x |
+| rustypyxl `write_rows` (build in memory, then save) | ~29s | ~4x |
+| openpyxl (`write_only`) | ~112s | — |
 
-### Read Performance
+The streaming path is the one to use for large writes: it serializes rows
+straight to disk and never holds the sheet in memory. `write_rows` is slower at
+this scale because all 20M cell values cross the Python/Rust boundary and the
+whole workbook is built in memory first; it is convenient for moderate sheets,
+not the throughput path. (Loading straight from Parquet with
+`insert_from_parquet` avoids the boundary entirely -- see the Parquet section.)
+
+### Read Performance (min wall time)
 
 | Dataset | rustypyxl | calamine | openpyxl |
 |---------|-----------|----------|----------|
-| 10k × 20 (numeric) | 0.08s | 0.10s | 0.51s |
-| 10k × 20 (strings) | 0.10s | 0.12s | 1.23s |
-| 100k × 20 (numeric) | 0.97s | 1.03s | 4.74s |
-| 100k × 20 (mixed) | 1.20s | 1.28s | 12.1s |
+| 10k × 20 (numeric) | 0.09s | 0.10s | 0.73s |
+| 10k × 20 (strings) | 0.11s | 0.11s | 1.55s |
+| 100k × 20 (numeric) | 1.02s | 1.01s | 7.16s |
+| 100k × 20 (mixed) | 1.25s | 1.16s | 11.9s |
 
-[calamine](https://github.com/tafia/calamine) is a Rust Excel reader with Python bindings via python-calamine (read-only).
+rustypyxl and [calamine](https://github.com/tafia/calamine) (a read-only Rust
+reader, via python-calamine) are within noise of each other, both roughly
+5-10x faster than openpyxl's read-only mode.
 
 ### Memory Usage (Read)
 
 | Dataset | rustypyxl | calamine | openpyxl |
 |---------|-----------|----------|----------|
 | 10k × 20 | 29 MB | 9 MB | 11 MB |
-| 50k × 20 | 58 MB | 48 MB | 53 MB |
-| 100k × 20 | 95 MB | 95 MB | 106 MB |
+| 50k × 20 | 62 MB | 48 MB | 53 MB |
+| 100k × 20 | 103 MB | 95 MB | 106 MB |
+
+rustypyxl keeps the whole workbook resident (like openpyxl's default mode), so
+its read footprint is comparable to openpyxl and above calamine's streaming
+reader. For low-memory reads of very large files, the trade-off is CPU vs RAM.
 
 ### Memory Usage (Write)
 
-| Dataset | rustypyxl | WriteOnlyWorkbook | openpyxl (write_only) |
-|---------|-----------|-------------------|----------------------|
+| Dataset | rustypyxl (`write_rows`) | `WriteOnlyWorkbook` | openpyxl (`write_only`) |
+|---------|--------------------------|---------------------|-------------------------|
 | 10k × 20 | 10 MB | ~0 MB | 0.4 MB |
 | 50k × 20 | 50 MB | ~0 MB | 0.4 MB |
 | 100k × 20 | 99 MB | ~0 MB | 0.4 MB |
 
-`WriteOnlyWorkbook` streams rows directly to disk like openpyxl's write_only mode.
+`WriteOnlyWorkbook` streams rows directly to disk, so its memory stays flat
+regardless of file size -- the same idea as openpyxl's `write_only` mode.
 
 ## Building from Source
 
