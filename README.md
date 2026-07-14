@@ -23,7 +23,7 @@ The core is a normal Rust library -- the Python package is a thin binding over i
 
 ```toml
 [dependencies]
-rustypyxl = "0.5"
+rustypyxl = "0.6"
 ```
 
 ```rust

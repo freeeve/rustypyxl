@@ -11,7 +11,7 @@ this crate is the Rust library it is built on (and that you can use on its own).
 
 ```toml
 [dependencies]
-rustypyxl = "0.5"
+rustypyxl = "0.6"
 ```
 
 ```rust
