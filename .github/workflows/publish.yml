@@ -3,6 +3,8 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  # Lets the wheel matrix be exercised without cutting a release
+  workflow_dispatch:
 
 jobs:
   test:
@@ -29,73 +31,80 @@ jobs:
           maturin develop --release
           pytest tests/
 
+  # One abi3 wheel per platform, good for CPython 3.10 and up -- including
+  # versions that do not exist yet, which no longer need a release to support.
   build-wheels:
-    name: Build wheels (${{ matrix.os }}, py${{ matrix.python-version }})
+    name: Wheel (${{ matrix.target }}, ${{ matrix.libc || matrix.runner }})
     needs: test
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
-          - os: ubuntu-latest
-            python-version: "3.10"
-          - os: ubuntu-latest
-            python-version: "3.11"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: ubuntu-latest
-            python-version: "3.13"
-          - os: ubuntu-latest
-            python-version: "3.14"
-          # macOS (arm64)
-          - os: macos-latest
-            python-version: "3.10"
-          - os: macos-latest
-            python-version: "3.11"
-          - os: macos-latest
-            python-version: "3.12"
-          - os: macos-latest
-            python-version: "3.13"
-          - os: macos-latest
-            python-version: "3.14"
-          # Windows x86_64
-          - os: windows-latest
-            python-version: "3.10"
-          - os: windows-latest
-            python-version: "3.11"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.13"
-          - os: windows-latest
-            python-version: "3.14"
+          - { runner: ubuntu-latest, target: x86_64, libc: manylinux, manylinux: auto }
+          - { runner: ubuntu-latest, target: aarch64, libc: manylinux, manylinux: auto }
+          - { runner: ubuntu-latest, target: x86_64, libc: musllinux, manylinux: musllinux_1_2 }
+          - { runner: ubuntu-latest, target: aarch64, libc: musllinux, manylinux: musllinux_1_2 }
+          - { runner: macos-13, target: x86_64 }
+          - { runner: macos-latest, target: aarch64 }
+          - { runner: windows-latest, target: x64 }
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --out dist
+          sccache: "true"
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.libc || 'native' }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # An abi3 wheel claims to work on every CPython from 3.10 up, so prove it on
+  # more than the one version it happened to be built with.
+  verify-wheels:
+    name: Verify wheel on Python ${{ matrix.python-version }}
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Build wheels
-        run: maturin build --release --out dist
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: ${{ (matrix.python-version == '3.13' || matrix.python-version == '3.14') && '1' || '' }}
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+      - name: Download wheels
+        uses: actions/download-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: dist/*.whl
-          if-no-files-found: error
+          path: dist
+          merge-multiple: true
+
+      - name: Install the wheel and run the suite against it
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest openpyxl pyarrow
+          # Only the manylinux x86_64 wheel is installable here; pip ignores the
+          # rest. --no-index proves the wheel is used, not a PyPI download.
+          python -m pip install --no-index --find-links dist rustypyxl
+          python -c "import rustypyxl; print('imported ok')"
+          pytest tests/
 
   build-sdist:
     name: Build source distribution
@@ -108,11 +117,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install maturin
-        run: pip install maturin
-
       - name: Build sdist
-        run: maturin sdist --out dist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
@@ -123,7 +132,9 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [build-wheels, build-sdist]
+    needs: [verify-wheels, build-sdist]
+    # workflow_dispatch builds and verifies the matrix but must not publish
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -133,8 +144,6 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:

@@ -11,7 +11,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-quick-xml = "0.37"
+# zip builds the package the fuzzed XML parts are wrapped in. quick-xml used to
+# be here so fuzz_xml could drive it directly, which fuzzed the dependency
+# rather than this library; the targets now go through Workbook instead.
 zip = "2.4"
 tempfile = "3"
 

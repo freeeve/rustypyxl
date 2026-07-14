@@ -1,0 +1,62 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Nightly, off the critical path of PRs -- fuzzing is a soak, not a gate
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Seconds to run each target"
+        required: false
+        default: "60"
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_load, fuzz_xml, fuzz_roundtrip, fuzz_coordinates]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz needs nightly for -Z sanitizer
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo-fuzz and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-fuzz
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rustypyxl-core/fuzz/target/
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run ${{ matrix.target }}
+        working-directory: rustypyxl-core/fuzz
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event.inputs.duration || '60' }} \
+            -rss_limit_mb=4096
+
+      # A crash leaves the offending input behind; keep it, or the run tells us
+      # something broke without telling us what.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            rustypyxl-core/fuzz/artifacts/
+          if-no-files-found: ignore

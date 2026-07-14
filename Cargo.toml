@@ -14,7 +14,16 @@ zip = "2.2"
 quick-xml = "0.37"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
-pyo3 = { version = "0.23", features = ["extension-module"] }
+# abi3-py310: build against CPython's stable ABI, so one wheel per platform
+# covers 3.10 and every version after it, including versions not yet released.
+#
+# The stable ABI withholds the C datetime API, but that costs nothing here: the
+# datetime path already goes through the datetime module rather than PyDateTime
+# types (see is_datetime_like), so it is the same code either way. Bulk writes
+# and the pure-Rust paths measured identical to per-version builds; the datetime
+# conversion path was not measurable cleanly and is the one place to check first
+# if this ever looks slow.
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
 lto = true

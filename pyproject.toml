@@ -12,7 +12,10 @@ authors = [
     { name = "Eve Freeman", email = "eve.freema@gmail.com" }
 ]
 keywords = ["excel", "xlsx", "spreadsheet", "openpyxl", "rust", "performance"]
-requires-python = ">=3.10,<3.15"
+# No upper bound: the wheels are abi3 (built for CPython 3.10's stable ABI), so
+# they load on Python versions released after this one without a new build. An
+# upper cap would throw that away by making pip refuse to install on them.
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

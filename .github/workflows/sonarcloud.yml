@@ -20,14 +20,35 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
+      # cargo-tarpaulin was recompiled from source on every run, which is
+      # several minutes of the job. Cache the built binary and the registry.
+      - name: Cache cargo-tarpaulin and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-tarpaulin
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-tarpaulin-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tarpaulin-
 
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      # No continue-on-error: coverage silently failing meant Sonar scanned with
+      # a stale or missing report and nobody noticed. If coverage cannot be
+      # produced, that is a broken build, not a footnote.
       - name: Generate coverage report
         run: |
-          cd rustypyxl-core
-          cargo tarpaulin --out Xml --output-dir ..
-        continue-on-error: true
+          cargo tarpaulin -p rustypyxl-core --features parquet \
+            --exclude-files 'rustypyxl-pyo3/*' \
+            --out Xml --output-dir .
+
+      - name: Check the coverage report exists
+        run: test -s cobertura.xml || (echo "tarpaulin produced no coverage report" && exit 1)
 
       - name: SonarQube Cloud Scan
         uses: SonarSource/sonarqube-scan-action@v6

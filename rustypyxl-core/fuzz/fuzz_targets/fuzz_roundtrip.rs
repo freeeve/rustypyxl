@@ -174,7 +174,10 @@ fn build_style(cell: &FuzzCell) -> Option<CellStyle> {
 
     let fill = cell.bg_color.map(|rgb| Fill {
         pattern_type: Some("solid".to_string()),
-        fg_color: Some(format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])),
+        fg_color: Some(rustypyxl_core::Color::rgb(format!(
+            "{:02X}{:02X}{:02X}",
+            rgb[0], rgb[1], rgb[2]
+        ))),
         bg_color: None,
     });
 

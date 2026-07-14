@@ -1,180 +1,102 @@
 #![no_main]
 
-//! Fuzz target for XML parsing in rustypyxl-core.
+//! Fuzz target for the worksheet, shared-string, and style XML parsers.
 //!
-//! Tests that malformed XML input does not cause crashes or panics in the
-//! XML parsing code. The parser should gracefully handle:
-//! - Invalid UTF-8 sequences
-//! - Malformed XML structure (unclosed tags, invalid attributes)
-//! - Deeply nested elements
-//! - Very long attribute values or text content
-//! - Invalid characters in element names or attributes
-//! - Entity expansion edge cases
+//! This target used to re-implement quick-xml event loops over the fuzz input,
+//! which only ever exercised quick-xml -- a bug in rustypyxl's own parsing
+//! could not be found by it. Instead, wrap the input as each of the XML parts
+//! of a minimal but valid ZIP package and drive `Workbook::load_from_bytes`, so
+//! the fuzzer reaches the real parsers with arbitrary bytes.
+//!
+//! `fuzz_load` covers xl/workbook.xml; this covers the parts underneath it,
+//! where the parsing is far more involved: implied cell positions, inline rich
+//! text, shared-string indices, and style/xf resolution.
 
 use libfuzzer_sys::fuzz_target;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
-/// Test workbook.xml parsing with arbitrary input.
-/// This exercises the XML parser that reads sheet metadata, named ranges,
-/// and workbook structure.
-fn fuzz_workbook_xml(data: &[u8]) {
-    // Try to parse as if it were a workbook.xml file
-    // The parser should handle arbitrary byte sequences without panicking
-    let cursor = Cursor::new(data);
+const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#;
 
-    // We use quick_xml directly to test the low-level parsing
-    let mut reader = quick_xml::Reader::from_reader(cursor);
-    reader.config_mut().trim_text(true);
+const WORKBOOK_RELS: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#;
 
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(_) => {}
-            Err(_) => break, // Parser error is acceptable, panic is not
+const CONTENT_TYPES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+</Types>"#;
+
+const DEFAULT_SHEET: &[u8] =
+    br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData>
+</worksheet>"#;
+
+/// The parts of a minimal package. The one under test is replaced by the fuzz
+/// input; the rest stay well-formed, so the loader gets far enough to actually
+/// reach the parser being fuzzed.
+const FUZZED_PARTS: [&str; 3] = [
+    "xl/worksheets/sheet1.xml",
+    "xl/sharedStrings.xml",
+    "xl/styles.xml",
+];
+
+fn package_with(part: &str, data: &[u8]) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(Cursor::new(&mut buffer));
+        let options = zip::write::FileOptions::<()>::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        let mut write = |name: &str, body: &[u8]| -> Option<()> {
+            zip.start_file(name, options).ok()?;
+            zip.write_all(body).ok()?;
+            Some(())
+        };
+
+        write("[Content_Types].xml", CONTENT_TYPES)?;
+        write("xl/workbook.xml", WORKBOOK_XML)?;
+        write("xl/_rels/workbook.xml.rels", WORKBOOK_RELS)?;
+        write(
+            "xl/worksheets/sheet1.xml",
+            if part == "xl/worksheets/sheet1.xml" {
+                data
+            } else {
+                DEFAULT_SHEET
+            },
+        )?;
+
+        // sharedStrings.xml and styles.xml are optional parts; include only the
+        // one being fuzzed, so each run exercises exactly one parser with the
+        // arbitrary bytes.
+        if part == "xl/sharedStrings.xml" || part == "xl/styles.xml" {
+            write(part, data)?;
         }
-        buf.clear();
+
+        zip.finish().ok()?;
     }
-}
-
-/// Test shared strings XML parsing with arbitrary input.
-/// Shared strings contain cell text values and are parsed during workbook load.
-fn fuzz_shared_strings_xml(data: &[u8]) {
-    let cursor = Cursor::new(data);
-    let mut reader = quick_xml::Reader::from_reader(cursor);
-    reader.config_mut().trim_text(false); // Preserve whitespace like the real parser
-
-    let mut buf = Vec::new();
-    let mut in_t = false;
-    let mut _current_string = String::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(e)) => {
-                if e.name().as_ref() == b"t" {
-                    in_t = true;
-                }
-            }
-            Ok(quick_xml::events::Event::Text(e)) => {
-                if in_t {
-                    // Attempt to unescape XML entities - this can fail on malformed input
-                    let _ = e.unescape();
-                }
-            }
-            Ok(quick_xml::events::Event::End(e)) => {
-                if e.name().as_ref() == b"t" {
-                    in_t = false;
-                } else if e.name().as_ref() == b"si" {
-                    _current_string.clear();
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        buf.clear();
-    }
-}
-
-/// Test worksheet XML parsing with arbitrary input.
-/// This is the most complex parser, handling cells, formulas, styles, merged cells, etc.
-fn fuzz_worksheet_xml(data: &[u8]) {
-    let cursor = Cursor::new(data);
-    let mut reader = quick_xml::Reader::from_reader(cursor);
-    reader.config_mut().trim_text(false);
-
-    let mut buf = Vec::new();
-    let mut in_v = false;
-    let mut in_f = false;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(e)) => {
-                let name = e.name();
-                match name.as_ref() {
-                    b"c" => {
-                        // Parse attributes like r="A1", t="s", s="1"
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                let _ = std::str::from_utf8(attr.key.as_ref());
-                                let _ = std::str::from_utf8(&attr.value);
-                            }
-                        }
-                    }
-                    b"v" => in_v = true,
-                    b"f" => in_f = true,
-                    _ => {}
-                }
-            }
-            Ok(quick_xml::events::Event::Text(e)) => {
-                if in_v || in_f {
-                    let _ = e.unescape();
-                }
-            }
-            Ok(quick_xml::events::Event::End(e)) => {
-                match e.name().as_ref() {
-                    b"v" => in_v = false,
-                    b"f" => in_f = false,
-                    _ => {}
-                }
-            }
-            Ok(quick_xml::events::Event::Empty(e)) => {
-                // Handle self-closing elements like <c r="A1"/>
-                if e.name().as_ref() == b"c" {
-                    for attr in e.attributes() {
-                        if let Ok(attr) = attr {
-                            let _ = std::str::from_utf8(attr.key.as_ref());
-                            let _ = std::str::from_utf8(&attr.value);
-                        }
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        buf.clear();
-    }
-}
-
-/// Test styles.xml parsing with arbitrary input.
-/// Styles contain fonts, fills, borders, number formats, and cell formatting.
-fn fuzz_styles_xml(data: &[u8]) {
-    let cursor = Cursor::new(data);
-    let mut reader = quick_xml::Reader::from_reader(cursor);
-    reader.config_mut().trim_text(true);
-
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e)) => {
-                // Parse all attributes
-                for attr in e.attributes() {
-                    if let Ok(attr) = attr {
-                        let _ = std::str::from_utf8(attr.key.as_ref());
-                        let _ = std::str::from_utf8(&attr.value);
-                        // Try parsing as numbers (common in styles)
-                        if let Ok(val_str) = std::str::from_utf8(&attr.value) {
-                            let _ = val_str.parse::<u32>();
-                            let _ = val_str.parse::<f64>();
-                        }
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        buf.clear();
-    }
+    Some(buffer)
 }
 
 fuzz_target!(|data: &[u8]| {
-    // Run all XML parsing variants on the input
-    // The goal is to ensure none of them panic
-    fuzz_workbook_xml(data);
-    fuzz_shared_strings_xml(data);
-    fuzz_worksheet_xml(data);
-    fuzz_styles_xml(data);
+    // Keep inputs small: the point is deep coverage of the parsers, not of the
+    // ZIP layer, and huge inputs only slow the fuzzer down.
+    if data.len() > 4096 {
+        return;
+    }
+
+    for part in FUZZED_PARTS {
+        if let Some(package) = package_with(part, data) {
+            // A parse error is fine; a panic is not. Anything that does load
+            // must also survive being written back out.
+            if let Ok(workbook) = rustypyxl_core::Workbook::load_from_bytes(&package) {
+                let _ = workbook.save_to_bytes();
+            }
+        }
+    }
 });
