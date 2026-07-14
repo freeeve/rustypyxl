@@ -7,10 +7,32 @@
 
 A Rust-powered Excel (XLSX) library for Python with an openpyxl-compatible API.
 
+It is also a standalone Rust crate: the same library is published on crates.io
+as [`rustypyxl`](https://crates.io/crates/rustypyxl) for use directly from Rust,
+with no Python involved. See [Using from Rust](#using-from-rust).
+
 ## Installation
 
 ```bash
 pip install rustypyxl
+```
+
+## Using from Rust
+
+The core is a normal Rust library -- the Python package is a thin binding over it.
+
+```toml
+[dependencies]
+rustypyxl = "0.5"
+```
+
+```rust
+use rustypyxl::{Workbook, CellValue};
+
+let mut wb = Workbook::new();
+wb.create_sheet(Some("Data".to_string())).unwrap();
+wb.set_cell_value_in_sheet("Data", 1, 1, CellValue::from("Hello")).unwrap();
+wb.save("output.xlsx").unwrap();
 ```
 
 ## Usage
