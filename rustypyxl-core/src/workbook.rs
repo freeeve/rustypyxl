@@ -12,7 +12,10 @@ use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::sync::Arc;
 use zip::ZipArchive;
 
-use crate::autofilter::AutoFilter;
+use crate::autofilter::{
+    AutoFilter, ColorFilter, CustomFilter, DynamicFilterType, FilterColumn, FilterOperator,
+    FilterType, Top10Filter,
+};
 use crate::cell::CellValue;
 use crate::conditional::{
     ColorScale, ConditionalColor, ConditionalFormat, ConditionalFormatType, ConditionalFormatting,
@@ -1911,8 +1914,8 @@ impl Workbook {
         }
     }
 
-    /// Apply a worksheet-level `<autoFilter>` element (range only; individual
-    /// column filter criteria are not yet modeled on load).
+    /// Apply the `ref` range of a worksheet-level `<autoFilter>` element. The
+    /// filter criteria live in child elements; see parse_autofilter_children.
     fn parse_autofilter_attrs(e: &BytesStart, worksheet: &mut Worksheet) {
         for attr in e.attributes().flatten() {
             if attr.key.as_ref() == b"ref" {
@@ -1920,6 +1923,182 @@ impl Workbook {
                 worksheet.auto_filter = Some(AutoFilter::new(range));
             }
         }
+    }
+
+    /// Read a single attribute as an owned String.
+    fn attr_value(e: &BytesStart, key: &[u8]) -> Option<String> {
+        e.attributes()
+            .flatten()
+            .find(|attr| attr.key.local_name().as_ref() == key)
+            .map(|attr| String::from_utf8_lossy(&attr.value).to_string())
+    }
+
+    /// True when an attribute is present and not explicitly disabled.
+    fn attr_flag(e: &BytesStart, key: &[u8], default: bool) -> bool {
+        match Self::attr_value(e, key) {
+            Some(v) => v == "1" || v == "true",
+            None => default,
+        }
+    }
+
+    fn parse_filter_operator(value: &str) -> FilterOperator {
+        match value {
+            "notEqual" => FilterOperator::NotEqual,
+            "greaterThan" => FilterOperator::GreaterThan,
+            "greaterThanOrEqual" => FilterOperator::GreaterThanOrEqual,
+            "lessThan" => FilterOperator::LessThan,
+            "lessThanOrEqual" => FilterOperator::LessThanOrEqual,
+            _ => FilterOperator::Equal,
+        }
+    }
+
+    fn parse_dynamic_filter(value: &str) -> DynamicFilterType {
+        match value {
+            "yesterday" => DynamicFilterType::Yesterday,
+            "tomorrow" => DynamicFilterType::Tomorrow,
+            "thisWeek" => DynamicFilterType::ThisWeek,
+            "nextWeek" => DynamicFilterType::NextWeek,
+            "lastWeek" => DynamicFilterType::LastWeek,
+            "thisMonth" => DynamicFilterType::ThisMonth,
+            "nextMonth" => DynamicFilterType::NextMonth,
+            "lastMonth" => DynamicFilterType::LastMonth,
+            "thisQuarter" => DynamicFilterType::ThisQuarter,
+            "nextQuarter" => DynamicFilterType::NextQuarter,
+            "lastQuarter" => DynamicFilterType::LastQuarter,
+            "thisYear" => DynamicFilterType::ThisYear,
+            "nextYear" => DynamicFilterType::NextYear,
+            "lastYear" => DynamicFilterType::LastYear,
+            "yearToDate" => DynamicFilterType::YearToDate,
+            "aboveAverage" => DynamicFilterType::AboveAverage,
+            "belowAverage" => DynamicFilterType::BelowAverage,
+            _ => DynamicFilterType::Today,
+        }
+    }
+
+    /// Parse the children of a worksheet `<autoFilter>` -- the per-column filter
+    /// criteria and the sort state -- consuming events through `</autoFilter>`.
+    /// Without this a load->save cycle silently clears an active filter.
+    fn parse_autofilter_children<R: BufRead>(
+        reader: &mut Reader<R>,
+        auto_filter: &mut AutoFilter,
+    ) -> Result<()> {
+        let mut buf = Vec::new();
+        let mut column_id: u32 = 0;
+        let mut show_button = true;
+        let mut values: Vec<String> = Vec::new();
+        let mut custom_and = true;
+        let mut custom_conditions: Vec<(FilterOperator, String)> = Vec::new();
+        let mut filter: Option<FilterType> = None;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.local_name().as_ref() {
+                    b"filterColumn" => {
+                        column_id = Self::attr_value(&e, b"colId")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                        show_button = !Self::attr_flag(&e, b"hiddenButton", false);
+                        values.clear();
+                        custom_conditions.clear();
+                        filter = None;
+                    }
+                    b"filters" => values.clear(),
+                    b"filter" => {
+                        if let Some(val) = Self::attr_value(&e, b"val") {
+                            values.push(val);
+                        }
+                    }
+                    b"customFilters" => {
+                        custom_and = Self::attr_flag(&e, b"and", true);
+                        custom_conditions.clear();
+                    }
+                    b"customFilter" => {
+                        let operator = Self::attr_value(&e, b"operator")
+                            .map(|v| Self::parse_filter_operator(&v))
+                            .unwrap_or(FilterOperator::Equal);
+                        let value = Self::attr_value(&e, b"val").unwrap_or_default();
+                        custom_conditions.push((operator, value));
+                    }
+                    b"dynamicFilter" => {
+                        let kind = Self::attr_value(&e, b"type")
+                            .map(|v| Self::parse_dynamic_filter(&v))
+                            .unwrap_or(DynamicFilterType::Today);
+                        filter = Some(FilterType::DynamicFilter(kind));
+                    }
+                    b"top10" => {
+                        filter = Some(FilterType::Top10Filter(Top10Filter {
+                            top: Self::attr_flag(&e, b"top", true),
+                            value: Self::attr_value(&e, b"val")
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(10.0),
+                            percent: Self::attr_flag(&e, b"percent", false),
+                        }));
+                    }
+                    b"colorFilter" => {
+                        filter = Some(FilterType::ColorFilter(ColorFilter {
+                            cell_color: Self::attr_flag(&e, b"cellColor", true),
+                            color: Self::attr_value(&e, b"dxfId").unwrap_or_default(),
+                        }));
+                    }
+                    b"sortCondition" => {
+                        // The writer emits a single-column ref like "B:B"
+                        if let Some(reference) = Self::attr_value(&e, b"ref") {
+                            let letters: String = reference
+                                .chars()
+                                .take_while(|c| c.is_ascii_alphabetic())
+                                .collect();
+                            if let Ok(col) = crate::utils::letter_to_column(&letters) {
+                                auto_filter
+                                    .sort_by(col - 1, Self::attr_flag(&e, b"descending", false));
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::End(e)) => match e.local_name().as_ref() {
+                    b"filters" => {
+                        if !values.is_empty() {
+                            filter = Some(FilterType::Values(std::mem::take(&mut values)));
+                        }
+                    }
+                    b"customFilters" => {
+                        let mut conditions = custom_conditions.drain(..);
+                        if let Some((operator1, value1)) = conditions.next() {
+                            let second = conditions.next();
+                            filter = Some(FilterType::Custom(CustomFilter {
+                                operator1,
+                                value1,
+                                and: custom_and,
+                                operator2: second.as_ref().map(|(op, _)| op.clone()),
+                                value2: second.map(|(_, val)| val),
+                            }));
+                        }
+                    }
+                    b"filterColumn" => {
+                        if let Some(filter) = filter.take() {
+                            auto_filter.columns.push(FilterColumn {
+                                column_id,
+                                filter,
+                                show_button,
+                            });
+                        }
+                    }
+                    b"autoFilter" => break,
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(RustypyxlError::ParseError(format!(
+                        "XML parsing error in autoFilter: {}",
+                        e
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(())
     }
 
     /// Apply `<pageMargins>` to the worksheet's page setup.
@@ -2192,9 +2371,24 @@ impl Workbook {
         table.auto_filter = false;
         let mut header_row_count: u32 = 1;
         let mut totals_row_count: u32 = 0;
+        // calculatedColumnFormula is a child element of tableColumn, not an
+        // attribute of it, so its text arrives in a later event.
+        let mut in_calc_formula = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"calculatedColumnFormula" => {
+                    in_calc_formula = true;
+                }
+                Ok(Event::Text(e)) if in_calc_formula => {
+                    let text = e.unescape().unwrap_or_default();
+                    if let Some(col) = table.columns.last_mut() {
+                        col.calculated_column_formula = Some(text.into_owned());
+                    }
+                }
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"calculatedColumnFormula" => {
+                    in_calc_formula = false;
+                }
                 Ok(Event::Empty(e)) | Ok(Event::Start(e)) => match e.local_name().as_ref() {
                     b"table" => {
                         for attr in e.attributes().flatten() {
@@ -2761,8 +2955,11 @@ impl Workbook {
                         }
                         cf_icon = Some(icon);
                     } else if name == b"autoFilter" {
-                        // Start form (with filter column children, which are not yet modeled)
+                        // Start form: the criteria live in the child elements
                         Self::parse_autofilter_attrs(&e, worksheet);
+                        if let Some(auto_filter) = worksheet.auto_filter.as_mut() {
+                            Self::parse_autofilter_children(&mut reader, auto_filter)?;
+                        }
                     } else if name == b"dataValidation" {
                         current_validation = Some(Self::parse_data_validation_attrs(&e));
                     } else if name == b"formula1" {

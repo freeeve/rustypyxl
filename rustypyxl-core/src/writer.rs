@@ -1642,7 +1642,11 @@ fn write_auto_filter<W: std::io::Write>(
                     let mut color_filter = BytesStart::new("colorFilter");
                     color_filter
                         .push_attribute(("cellColor", if cf.cell_color { "1" } else { "0" }));
-                    // Color would be specified via dxfId in real implementation
+                    // The color itself is a dxf reference, not a literal value
+                    if !cf.color.is_empty() {
+                        color_filter
+                            .push_attribute(("dxfId", strip_illegal_xml_chars(&cf.color).as_ref()));
+                    }
                     writer.write_event(Event::Empty(color_filter))?;
                 }
             }
