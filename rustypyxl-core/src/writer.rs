@@ -113,7 +113,12 @@ pub fn format_cell_value(buf: &mut String, coord: &str, value: &CellValue) {
             let escaped = escape_xml(s.as_ref());
             buf.push_str("<c r=\"");
             buf.push_str(coord);
-            buf.push_str("\" t=\"inlineStr\"><is><t>");
+            buf.push_str("\" t=\"inlineStr\"><is>");
+            if needs_space_preserve(&escaped) {
+                buf.push_str("<t xml:space=\"preserve\">");
+            } else {
+                buf.push_str("<t>");
+            }
             buf.push_str(&escaped);
             buf.push_str("</t></is></c>");
         }
@@ -160,44 +165,45 @@ pub fn format_cell_value(buf: &mut String, coord: &str, value: &CellValue) {
     }
 }
 
+/// Write `<c r="A1" s="3"` -- every cell starts this way. The closing bracket
+/// is left to the caller, which may still need a `t` attribute.
+#[inline]
+fn write_cell_open(buf: &mut String, row: u32, col: u32, style_index: Option<u32>) {
+    buf.push_str("<c r=\"");
+    crate::utils::push_coordinate(buf, row, col);
+    buf.push('"');
+    if let Some(style) = style_index {
+        buf.push_str(" s=\"");
+        buf.push_str(itoa::Buffer::new().format(style));
+        buf.push('"');
+    }
+}
+
 /// Write cell data directly to a string buffer (fast path, no quick_xml overhead).
-/// Uses itoa/ryu for fast number formatting.
+/// Uses itoa/ryu for fast number formatting. The coordinate and style attribute
+/// go straight into the buffer: building them as owned Strings first cost three
+/// heap allocations per cell, which dominates on a million-cell sheet.
 #[inline]
 fn write_cell_direct(
     buf: &mut String,
-    coord: &str,
+    row: u32,
+    col: u32,
     cell_data: &CellData,
     style_index: Option<u32>,
     shared_string_map: &HashMap<InternedString, usize>,
 ) {
-    // Helper to write style attribute
-    let style_attr = style_index.map(|s| {
-        let mut attr = String::with_capacity(10);
-        attr.push_str(" s=\"");
-        attr.push_str(itoa::Buffer::new().format(s));
-        attr.push('"');
-        attr
-    });
-    let style_str = style_attr.as_deref().unwrap_or("");
-
     match &cell_data.value {
         CellValue::String(s) => {
             if let Some(&idx) = shared_string_map.get(s) {
                 // Shared string reference - use itoa for fast integer formatting
-                buf.push_str("<c r=\"");
-                buf.push_str(coord);
-                buf.push('"');
-                buf.push_str(style_str);
+                write_cell_open(buf, row, col, style_index);
                 buf.push_str(" t=\"s\"><v>");
                 buf.push_str(itoa::Buffer::new().format(idx));
                 buf.push_str("</v></c>");
             } else {
                 // Inline string
                 let escaped = escape_xml(s.as_ref());
-                buf.push_str("<c r=\"");
-                buf.push_str(coord);
-                buf.push('"');
-                buf.push_str(style_str);
+                write_cell_open(buf, row, col, style_index);
                 buf.push_str(" t=\"inlineStr\"><is>");
                 if needs_space_preserve(&escaped) {
                     buf.push_str("<t xml:space=\"preserve\">");
@@ -211,40 +217,28 @@ fn write_cell_direct(
         CellValue::Number(n) => {
             if !n.is_finite() {
                 // NaN/Infinity are not valid SpreadsheetML numbers; emit an error cell.
-                buf.push_str("<c r=\"");
-                buf.push_str(coord);
-                buf.push('"');
-                buf.push_str(style_str);
+                write_cell_open(buf, row, col, style_index);
                 buf.push_str(" t=\"e\"><v>#NUM!</v></c>");
                 return;
             }
             // Use ryu for fast float formatting
-            buf.push_str("<c r=\"");
-            buf.push_str(coord);
-            buf.push('"');
-            buf.push_str(style_str);
+            write_cell_open(buf, row, col, style_index);
             buf.push_str("><v>");
             buf.push_str(ryu::Buffer::new().format(*n));
             buf.push_str("</v></c>");
         }
         CellValue::Boolean(b) => {
-            buf.push_str("<c r=\"");
-            buf.push_str(coord);
-            buf.push('"');
-            buf.push_str(style_str);
+            write_cell_open(buf, row, col, style_index);
             buf.push_str(" t=\"b\"><v>");
             buf.push_str(if *b { "1" } else { "0" });
             buf.push_str("</v></c>");
         }
         CellValue::Formula(f) => {
             let escaped = escape_xml(f);
-            buf.push_str("<c r=\"");
-            buf.push_str(coord);
-            buf.push('"');
-            buf.push_str(style_str);
+            write_cell_open(buf, row, col, style_index);
             // The cached result's type rides on the t attribute (numeric when absent)
             if cell_data.cached_formula_value.is_some() {
-                if let Some(t) = cell_data.data_type.as_deref() {
+                if let Some(t) = cell_data.data_type {
                     if matches!(t, "str" | "b" | "e") {
                         buf.push_str(" t=\"");
                         buf.push_str(t);
@@ -264,23 +258,17 @@ fn write_cell_direct(
         }
         CellValue::Date(d) => {
             let escaped = escape_xml(d);
-            buf.push_str("<c r=\"");
-            buf.push_str(coord);
-            buf.push('"');
-            buf.push_str(style_str);
+            write_cell_open(buf, row, col, style_index);
             buf.push_str(" t=\"d\"><v>");
             buf.push_str(&escaped);
             buf.push_str("</v></c>");
         }
         CellValue::Empty => {
             // Skip empty cells without styles, but include if there's a style
-            if style_str.is_empty() {
-                return; // Skip completely empty cells
-            }
-            buf.push_str("<c r=\"");
-            buf.push_str(coord);
-            buf.push('"');
-            buf.push_str(style_str);
+            let Some(style) = style_index else {
+                return;
+            };
+            write_cell_open(buf, row, col, Some(style));
             buf.push_str("/>");
         }
     }
@@ -1147,8 +1135,10 @@ pub fn write_worksheet_xml<W: Write + Seek>(
         "sheetData",
     )))?;
 
-    // Group cells by row - pre-allocate based on max_row
-    let estimated_rows = worksheet.max_row as usize;
+    // Group cells by row. Size by the populated-cell count, not max_row: a
+    // sparse sheet with one cell at row 1,000,000 would otherwise reserve a
+    // million buckets for a handful of entries.
+    let estimated_rows = (worksheet.max_row as usize).min(worksheet.cells.len());
     type RowCells<'a> = HashMap<u32, Vec<((u32, u32), &'a CellData)>>;
     let mut rows: RowCells = HashMap::with_capacity(estimated_rows);
     for (key, cell_data) in &worksheet.cells {
@@ -1197,13 +1187,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
 
                     // Write cells
                     for &((row, col), cell_data) in &sorted_cells {
-                        let coord = format!("{}{}", column_to_letter(col), row);
                         let style_index = cell_data
                             .style_index
                             .or_else(|| style_overrides.get(&cell_key(row, col)).copied());
                         write_cell_direct(
                             &mut buf,
-                            &coord,
+                            row,
+                            col,
                             cell_data,
                             style_index,
                             shared_string_map,
@@ -1246,11 +1236,17 @@ pub fn write_worksheet_xml<W: Write + Seek>(
             }
 
             for &((row, col), cell_data) in cells.iter() {
-                let coord = format!("{}{}", column_to_letter(col), row);
                 let style_index = cell_data
                     .style_index
                     .or_else(|| style_overrides.get(&cell_key(row, col)).copied());
-                write_cell_direct(&mut buf, &coord, cell_data, style_index, shared_string_map);
+                write_cell_direct(
+                    &mut buf,
+                    row,
+                    col,
+                    cell_data,
+                    style_index,
+                    shared_string_map,
+                );
             }
 
             buf.push_str("</row>");
@@ -2295,7 +2291,7 @@ mod tests {
                 value: CellValue::Number(v),
                 ..Default::default()
             };
-            write_cell_direct(&mut buf, "A1", &cell, cell.style_index, &map);
+            write_cell_direct(&mut buf, 1, 1, &cell, cell.style_index, &map);
             assert_eq!(buf, r#"<c r="A1" t="e"><v>#NUM!</v></c>"#);
 
             let mut buf2 = String::new();

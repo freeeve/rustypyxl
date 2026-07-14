@@ -849,7 +849,7 @@ impl PyWorkbook {
 
         if let Some(cell) = ws.get_cell(row, column) {
             if let Some(ref style) = cell.style {
-                return Ok(style.number_format.clone());
+                return Ok(style.number_format.as_deref().map(str::to_string));
             }
         }
         Ok(None)

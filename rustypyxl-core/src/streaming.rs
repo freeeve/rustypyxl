@@ -5,7 +5,6 @@
 
 use crate::cell::CellValue;
 use crate::error::{Result, RustypyxlError};
-use crate::utils::column_to_letter;
 use crate::writer::{escape_xml, format_cell_value};
 
 use std::fs::File;
@@ -165,9 +164,12 @@ impl StreamingWorkbook {
         // Build row XML
         let mut row_xml = format!("<row r=\"{}\">", row_num);
 
+        // One scratch buffer for the whole row rather than a String per cell
+        let mut coord = String::with_capacity(12);
         for (col_idx, value) in values.iter().enumerate() {
             let col = (col_idx + 1) as u32;
-            let coord = format!("{}{}", column_to_letter(col), row_num);
+            coord.clear();
+            crate::utils::push_coordinate(&mut coord, row_num, col);
             format_cell_value(&mut row_xml, &coord, value);
         }
 

@@ -796,6 +796,7 @@ impl Workbook {
                 &input.rels,
                 dxfs_ref,
                 &mut worksheet,
+                input.sheet_xml.len(),
             )?;
 
             if let Some(comments) = &input.comments_xml {
@@ -1601,11 +1602,11 @@ impl Workbook {
                                 if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     if let Some(format) = number_formats.get(&id) {
-                                        current_xf.number_format = Some(format.clone());
+                                        current_xf.number_format = Some(Arc::from(format.as_str()));
                                     } else if let Some(code) =
                                         StyleRegistry::builtin_num_fmt_code(id)
                                     {
-                                        current_xf.number_format = Some(code.to_string());
+                                        current_xf.number_format = Some(Arc::from(code));
                                     }
                                 }
                             }
@@ -1760,11 +1761,11 @@ impl Workbook {
                                 if let Ok(id) = String::from_utf8_lossy(&attr.value).parse::<u32>()
                                 {
                                     if let Some(format) = number_formats.get(&id) {
-                                        xf.number_format = Some(format.clone());
+                                        xf.number_format = Some(Arc::from(format.as_str()));
                                     } else if let Some(code) =
                                         StyleRegistry::builtin_num_fmt_code(id)
                                     {
-                                        xf.number_format = Some(code.to_string());
+                                        xf.number_format = Some(Arc::from(code));
                                     }
                                 }
                             }
@@ -1848,7 +1849,7 @@ impl Workbook {
                                 registry
                                     .num_fmts
                                     .iter()
-                                    .find(|(_, code)| code == nf)
+                                    .find(|(_, code)| code.as_str() == nf.as_ref())
                                     .map(|(id, _)| *id)
                             })
                         })
@@ -1906,6 +1907,23 @@ impl Workbook {
         }
 
         Some(cells as usize)
+    }
+
+    /// The smallest a cell can be in the XML: `<c/>`. Used to bound the
+    /// up-front reserve by what the sheet could actually contain.
+    const MIN_CELL_XML_BYTES: usize = 4;
+
+    /// How many cells to reserve for a sheet whose `<dimension>` claims `ref`.
+    ///
+    /// `<dimension>` is untrusted: a few-byte `<dimension ref="A1:E1000000"/>`
+    /// would otherwise reserve five million entries -- hundreds of megabytes --
+    /// before a single cell is read. Cap the estimate by the number of cells the
+    /// sheet XML has room for, which cannot be inflated without actually
+    /// shipping the bytes.
+    fn dimension_reserve(ref_str: &str, sheet_xml_len: usize) -> Option<usize> {
+        let estimate = Self::estimate_dimension_cells(ref_str)?;
+        let possible = sheet_xml_len / Self::MIN_CELL_XML_BYTES;
+        Some(estimate.min(possible)).filter(|cap| *cap > 0)
     }
 
     /// Apply a frozen `<pane>` element to the worksheet's freeze_panes.
@@ -2506,6 +2524,21 @@ impl Workbook {
         (index, height)
     }
 
+    /// Map the internal one-byte cell type to its OOXML `t` attribute. The
+    /// codes are a fixed set, so this borrows rather than allocating a String
+    /// for every typed cell on the sheet.
+    fn data_type_code(cell_type: u8) -> Option<&'static str> {
+        match cell_type {
+            b's' => Some("s"),
+            b'b' => Some("b"),
+            b'd' => Some("d"),
+            b'f' => Some("str"),
+            b'e' => Some("e"),
+            b'i' => Some("inlineStr"),
+            _ => None,
+        }
+    }
+
     /// Read the `<c>` attributes. `r` is optional in OOXML, so the coordinate
     /// is returned as an Option and the caller supplies the implied position.
     fn parse_cell_attrs(
@@ -2545,6 +2578,7 @@ impl Workbook {
         rels: &HashMap<String, SheetRel>,
         dxfs: &[ConditionalFormat],
         worksheet: &mut Worksheet,
+        sheet_xml_len: usize,
     ) -> Result<()> {
         let mut reader = Reader::from_reader(reader);
         // Don't trim text - we need to preserve whitespace in cell values
@@ -2571,7 +2605,7 @@ impl Workbook {
         let mut current_type: u8 = 0;
         let mut current_style_id: Option<u32> = None;
         let mut current_formula: Option<String> = None;
-        let mut current_number_format: Option<String> = None;
+        let mut current_number_format: Option<crate::cell::InternedString> = None;
         // Raw <v> text of a formula cell, kept verbatim so the cached result
         // round-trips as written rather than being reformatted as an f64.
         let mut current_v_raw: Option<String> = None;
@@ -2647,7 +2681,8 @@ impl Workbook {
                             let attr_key = attr_key.as_ref();
                             if attr_key == b"ref" {
                                 let ref_str = String::from_utf8_lossy(&attr.value);
-                                if let Some(cap) = Self::estimate_dimension_cells(ref_str.as_ref())
+                                if let Some(cap) =
+                                    Self::dimension_reserve(ref_str.as_ref(), sheet_xml_len)
                                 {
                                     worksheet.cells.reserve(cap);
                                     reserved_cells = true;
@@ -2790,15 +2825,7 @@ impl Workbook {
 
                             let style = style_id.and_then(|id| styles.get(&id).cloned());
                             let num_format = style.as_ref().and_then(|s| s.number_format.clone());
-                            let data_type_str = match cell_type {
-                                b's' => Some("s".to_string()),
-                                b'b' => Some("b".to_string()),
-                                b'd' => Some("d".to_string()),
-                                b'f' => Some("str".to_string()),
-                                b'e' => Some("e".to_string()),
-                                b'i' => Some("inlineStr".to_string()),
-                                _ => None,
-                            };
+                            let data_type_str = Self::data_type_code(cell_type);
 
                             let cell_data = CellData {
                                 value: cell_value,
@@ -2823,7 +2850,8 @@ impl Workbook {
                             let attr_key = attr_key.as_ref();
                             if attr_key == b"ref" {
                                 let ref_str = String::from_utf8_lossy(&attr.value);
-                                if let Some(cap) = Self::estimate_dimension_cells(ref_str.as_ref())
+                                if let Some(cap) =
+                                    Self::dimension_reserve(ref_str.as_ref(), sheet_xml_len)
                                 {
                                     worksheet.cells.reserve(cap);
                                     reserved_cells = true;
@@ -3238,17 +3266,7 @@ impl Workbook {
                                 .take()
                                 .or_else(|| style.as_ref().and_then(|s| s.number_format.clone()));
 
-                            // Convert u8 type back to Option<String> for CellData
-                            // Only allocate if there's an explicit type
-                            let data_type_str = match current_type {
-                                b's' => Some("s".to_string()),
-                                b'b' => Some("b".to_string()),
-                                b'd' => Some("d".to_string()),
-                                b'f' => Some("str".to_string()),
-                                b'e' => Some("e".to_string()),
-                                b'i' => Some("inlineStr".to_string()),
-                                _ => None,
-                            };
+                            let data_type_str = Self::data_type_code(current_type);
 
                             let cell_data = CellData {
                                 value: cell_value,
@@ -3479,6 +3497,33 @@ mod tests {
                 SheetVisibility::Visible
             )
         );
+    }
+
+    /// `<dimension>` is untrusted. A few-byte ref claiming five million cells
+    /// must not make us reserve five million entries: the reserve is bounded by
+    /// what the sheet XML actually has room for.
+    #[test]
+    fn test_dimension_reserve_is_bounded_by_the_sheet_size() {
+        // The attack: a tiny sheet whose dimension claims 5M cells
+        let tiny_sheet_len = 200;
+        let cap = Workbook::dimension_reserve("A1:E1000000", tiny_sheet_len);
+        assert_eq!(
+            cap,
+            Some(tiny_sheet_len / Workbook::MIN_CELL_XML_BYTES),
+            "a 200-byte sheet cannot hold more than 50 cells"
+        );
+
+        // A dimension larger than the hard cap is still rejected outright
+        assert_eq!(
+            Workbook::dimension_reserve("A1:XFD1048576", 10_000_000),
+            None
+        );
+
+        // An honest dimension in a sheet big enough to hold it reserves in full
+        assert_eq!(Workbook::dimension_reserve("A1:J100", 100_000), Some(1000));
+
+        // An empty sheet reserves nothing rather than zero-capacity churn
+        assert_eq!(Workbook::dimension_reserve("A1:J100", 0), None);
     }
 
     /// The active tab must follow the sheet it pointed at, not the index.

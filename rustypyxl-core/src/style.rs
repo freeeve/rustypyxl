@@ -399,8 +399,9 @@ pub struct CellStyle {
     pub fill: Option<Fill>,
     /// Gradient fill properties.
     pub gradient_fill: Option<GradientFill>,
-    /// Number format string.
-    pub number_format: Option<String>,
+    /// Number format string. Interned so that cloning a style -- which happens
+    /// per cell while resolving styles on save -- is a refcount bump.
+    pub number_format: Option<crate::cell::InternedString>,
     /// Protection properties.
     pub protection: Option<Protection>,
 }
@@ -442,8 +443,8 @@ impl CellStyle {
     }
 
     /// Set the number format.
-    pub fn with_number_format<S: Into<String>>(mut self, format: S) -> Self {
-        self.number_format = Some(format.into());
+    pub fn with_number_format<S: AsRef<str>>(mut self, format: S) -> Self {
+        self.number_format = Some(std::sync::Arc::from(format.as_ref()));
         self
     }
 
@@ -759,14 +760,14 @@ impl StyleRegistry {
     }
 
     /// Get the format string for a number format ID.
-    fn get_num_fmt_string(&self, id: usize) -> Option<String> {
+    fn get_num_fmt_string(&self, id: usize) -> Option<crate::cell::InternedString> {
         // Check custom formats
         if let Some((_, fmt)) = self.num_fmts.iter().find(|(i, _)| *i == id) {
-            return Some(fmt.clone());
+            return Some(std::sync::Arc::from(fmt.as_str()));
         }
 
         // Built-ins are implicit in the file but must round-trip in the model
-        Self::builtin_num_fmt_code(id as u32).map(|code| code.to_string())
+        Self::builtin_num_fmt_code(id as u32).map(std::sync::Arc::from)
     }
 }
 
@@ -851,6 +852,6 @@ mod tests {
 
         assert!(style.font.is_some());
         assert!(style.alignment.is_some());
-        assert_eq!(style.number_format, Some("#,##0.00".to_string()));
+        assert_eq!(style.number_format.as_deref(), Some("#,##0.00"));
     }
 }

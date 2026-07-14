@@ -1,7 +1,7 @@
 //! Worksheet representation and cell operations.
 
 use crate::autofilter::AutoFilter;
-use crate::cell::CellValue;
+use crate::cell::{CellValue, InternedString};
 use crate::conditional::ConditionalFormatting;
 use crate::pagesetup::PageSetup;
 use crate::style::CellStyle;
@@ -36,10 +36,12 @@ pub struct CellData {
     pub style: Option<Arc<CellStyle>>,
     /// Style index for writing (preserves original style during roundtrip).
     pub style_index: Option<u32>,
-    /// Number format string.
-    pub number_format: Option<String>,
-    /// Data type (s=string, n=number, b=boolean, d=date).
-    pub data_type: Option<String>,
+    /// Number format string. Interned: the same format is shared by every cell
+    /// in a column, and it is cloned per cell when styles are resolved on save.
+    pub number_format: Option<InternedString>,
+    /// Data type (s=string, n=number, b=boolean, d=date). Always one of a fixed
+    /// set of codes, so it borrows rather than allocating per cell.
+    pub data_type: Option<&'static str>,
     /// Hyperlink URL.
     pub hyperlink: Option<String>,
     /// Cell comment text.
@@ -380,9 +382,9 @@ impl Worksheet {
     }
 
     /// Set a cell's number format.
-    pub fn set_cell_number_format<S: Into<String>>(&mut self, row: u32, column: u32, format: S) {
+    pub fn set_cell_number_format<S: AsRef<str>>(&mut self, row: u32, column: u32, format: S) {
         let cell_data = self.cells.entry(cell_key(row, column)).or_default();
-        cell_data.number_format = Some(format.into());
+        cell_data.number_format = Some(Arc::from(format.as_ref()));
         // Invalidate any loaded xf index so the format is re-resolved on save
         cell_data.style_index = None;
         self.update_dimensions(row, column);
@@ -500,22 +502,17 @@ impl Worksheet {
         cells.into_iter().map(|(k, v)| (decode_cell_key(k), v))
     }
 
-    /// Iterate over cells in a specific row.
+    /// Iterate over the populated cells of one row, in column order.
+    ///
+    /// Probes the row's columns by key rather than scanning the whole cell map:
+    /// filtering and sorting every cell to serve one row made row-by-row
+    /// iteration O(rows * total_cells).
     pub fn iter_row(&self, row: u32) -> impl Iterator<Item = (u32, &CellData)> + '_ {
-        let mut cells: Vec<_> = self
-            .cells
-            .iter()
-            .filter_map(|(k, v)| {
-                let (r, c) = decode_cell_key(*k);
-                if r == row {
-                    Some((c, v))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        cells.sort_by_key(|(c, _)| *c);
-        cells.into_iter()
+        (1..=self.max_column).filter_map(move |col| {
+            self.cells
+                .get(&cell_key(row, col))
+                .map(|cell_data| (col, cell_data))
+        })
     }
 
     /// Update max_row and max_column.
@@ -534,6 +531,28 @@ mod tests {
         let ws = Worksheet::new("Sheet1");
         assert_eq!(ws.title(), "Sheet1");
         assert!(ws.cells.is_empty());
+    }
+
+    /// iter_row yields only the populated cells of the requested row, in
+    /// column order, and skips gaps.
+    #[test]
+    fn test_iter_row_returns_populated_cells_in_column_order() {
+        let mut ws = Worksheet::new("S");
+        ws.set_cell_value(2, 3, CellValue::Number(3.0));
+        ws.set_cell_value(2, 1, CellValue::Number(1.0));
+        ws.set_cell_value(1, 2, CellValue::Number(99.0)); // different row
+        ws.set_cell_value(2, 6, CellValue::Number(6.0));
+
+        let row: Vec<(u32, f64)> = ws
+            .iter_row(2)
+            .map(|(col, cell)| match cell.value {
+                CellValue::Number(n) => (col, n),
+                _ => panic!("expected a number"),
+            })
+            .collect();
+
+        assert_eq!(row, vec![(1, 1.0), (3, 3.0), (6, 6.0)]);
+        assert_eq!(ws.iter_row(3).count(), 0, "empty row yields nothing");
     }
 
     #[test]

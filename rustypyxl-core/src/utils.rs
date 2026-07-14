@@ -150,16 +150,34 @@ pub fn letter_to_column(letters: &str) -> Result<u32> {
 /// Convert column number (1-indexed) to letters (e.g., 1 -> "A", 28 -> "AB").
 pub fn column_to_letter(column: u32) -> String {
     let mut result = String::new();
+    push_column_letters(&mut result, column);
+    result
+}
+
+/// Append a column's letters to a buffer without allocating. The write path
+/// does this once per cell, where an owned String per call is millions of
+/// allocations on a large sheet.
+pub fn push_column_letters(buf: &mut String, column: u32) {
+    // u32::MAX needs 7 letters; Excel itself stops at 16384 (XFD)
+    let mut letters = [0u8; 7];
     let mut col = column;
+    let mut start = letters.len();
 
     while col > 0 {
         col -= 1;
-        let letter = (b'A' + (col % 26) as u8) as char;
-        result.insert(0, letter);
+        start -= 1;
+        letters[start] = b'A' + (col % 26) as u8;
         col /= 26;
     }
 
-    result
+    // Every byte written is an ASCII letter
+    buf.push_str(std::str::from_utf8(&letters[start..]).unwrap_or_default());
+}
+
+/// Append an `A1`-style coordinate to a buffer without allocating.
+pub fn push_coordinate(buf: &mut String, row: u32, column: u32) {
+    push_column_letters(buf, column);
+    buf.push_str(itoa::Buffer::new().format(row));
 }
 
 /// Create a cell coordinate string from row and column (1-indexed).
@@ -228,6 +246,35 @@ mod tests {
         assert_eq!(column_to_letter(27), "AA");
         assert_eq!(column_to_letter(28), "AB");
         assert_eq!(column_to_letter(16384), "XFD");
+    }
+
+    /// The allocation-free writer must agree with the owned-String version,
+    /// including at the u32 edge where the letter buffer is fullest.
+    #[test]
+    fn test_push_column_letters_matches_column_to_letter() {
+        for col in [1u32, 2, 26, 27, 28, 52, 53, 702, 703, 16384, u32::MAX] {
+            let mut buf = String::new();
+            push_column_letters(&mut buf, col);
+            assert_eq!(buf, column_to_letter(col), "column {}", col);
+        }
+    }
+
+    #[test]
+    fn test_push_column_letters_appends() {
+        let mut buf = String::from("<c r=\"");
+        push_column_letters(&mut buf, 27);
+        assert_eq!(buf, "<c r=\"AA");
+    }
+
+    #[test]
+    fn test_push_coordinate() {
+        let mut buf = String::new();
+        push_coordinate(&mut buf, 1, 1);
+        assert_eq!(buf, "A1");
+
+        buf.clear();
+        push_coordinate(&mut buf, 1_048_576, 16384);
+        assert_eq!(buf, "XFD1048576");
     }
 
     #[test]

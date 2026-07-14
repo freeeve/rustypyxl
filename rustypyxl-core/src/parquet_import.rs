@@ -308,9 +308,20 @@ impl Workbook {
 }
 
 /// Number formats applied to imported date/timestamp cells so Excel renders
-/// them as dates instead of bare serial numbers.
+/// them as dates instead of bare serial numbers. Interned once so that every
+/// cell in a timestamp column shares one allocation.
 const DATE_FORMAT: &str = "yyyy-mm-dd";
 const DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
+
+fn date_format() -> &'static crate::cell::InternedString {
+    static FORMAT: std::sync::OnceLock<crate::cell::InternedString> = std::sync::OnceLock::new();
+    FORMAT.get_or_init(|| Arc::from(DATE_FORMAT))
+}
+
+fn datetime_format() -> &'static crate::cell::InternedString {
+    static FORMAT: std::sync::OnceLock<crate::cell::InternedString> = std::sync::OnceLock::new();
+    FORMAT.get_or_init(|| Arc::from(DATETIME_FORMAT))
+}
 
 /// Largest magnitude an f64 represents exactly. Excel stores every number as
 /// an f64, so an integer beyond this cannot be held as a number without
@@ -337,10 +348,19 @@ fn uint64_cell_value(value: u64) -> CellValue {
 }
 
 /// Write an Excel date serial with the matching number format.
-fn set_date_cell(worksheet: &mut Worksheet, row: u32, col: u32, serial: f64, format: &str) {
+///
+/// The format is interned and cloned per cell: a million-row timestamp column
+/// otherwise allocates the same short string a million times.
+fn set_date_cell(
+    worksheet: &mut Worksheet,
+    row: u32,
+    col: u32,
+    serial: f64,
+    format: &crate::cell::InternedString,
+) {
     let cell = worksheet.get_or_create_cell_mut(row, col);
     cell.value = CellValue::Number(serial);
-    cell.number_format = Some(format.to_string());
+    cell.number_format = Some(format.clone());
     // Force re-resolution of the style at save time
     cell.style_index = None;
 }
@@ -429,7 +449,7 @@ fn write_arrow_array_to_worksheet(
                     // Convert to Excel serial number (Excel epoch is 1900-01-01, but with the 1900 leap year bug)
                     // Unix epoch (1970-01-01) is Excel serial 25569
                     let excel_serial = days + 25569;
-                    set_date_cell(worksheet, row, col, excel_serial as f64, DATE_FORMAT);
+                    set_date_cell(worksheet, row, col, excel_serial as f64, date_format());
                 }
             }
         }
@@ -442,7 +462,7 @@ fn write_arrow_array_to_worksheet(
                     let ms = arr.value(i);
                     let days = ms as f64 / (24.0 * 60.0 * 60.0 * 1000.0);
                     let excel_serial = days + 25569.0;
-                    set_date_cell(worksheet, row, col, excel_serial, DATE_FORMAT);
+                    set_date_cell(worksheet, row, col, excel_serial, date_format());
                 }
             }
         }
@@ -460,7 +480,7 @@ fn write_arrow_array_to_worksheet(
                         let secs = arr.value(i) as f64;
                         let days = secs / (24.0 * 60.0 * 60.0);
                         let excel_serial = days + 25569.0;
-                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                        set_date_cell(worksheet, row, col, excel_serial, datetime_format());
                     }
                 }
             }
@@ -475,7 +495,7 @@ fn write_arrow_array_to_worksheet(
                         let ms = arr.value(i) as f64;
                         let days = ms / (24.0 * 60.0 * 60.0 * 1000.0);
                         let excel_serial = days + 25569.0;
-                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                        set_date_cell(worksheet, row, col, excel_serial, datetime_format());
                     }
                 }
             }
@@ -490,7 +510,7 @@ fn write_arrow_array_to_worksheet(
                         let us = arr.value(i) as f64;
                         let days = us / (24.0 * 60.0 * 60.0 * 1_000_000.0);
                         let excel_serial = days + 25569.0;
-                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                        set_date_cell(worksheet, row, col, excel_serial, datetime_format());
                     }
                 }
             }
@@ -505,7 +525,7 @@ fn write_arrow_array_to_worksheet(
                         let ns = arr.value(i) as f64;
                         let days = ns / (24.0 * 60.0 * 60.0 * 1_000_000_000.0);
                         let excel_serial = days + 25569.0;
-                        set_date_cell(worksheet, row, col, excel_serial, DATETIME_FORMAT);
+                        set_date_cell(worksheet, row, col, excel_serial, datetime_format());
                     }
                 }
             }

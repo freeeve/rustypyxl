@@ -929,7 +929,7 @@ fn test_roundtrip_names_formulas_headers_comments() {
         let cell = ws.get_or_create_cell_mut(2, 3);
         cell.value = CellValue::Formula("CONCATENATE(\"a\",\"b\")".to_string());
         cell.cached_formula_value = Some("ab".to_string());
-        cell.data_type = Some("str".to_string());
+        cell.data_type = Some("str");
 
         ws.set_cell_comment(3, 1, "a comment".to_string());
 
