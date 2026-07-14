@@ -4,7 +4,7 @@ use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::Py;
-use rustypyxl_core::{column_to_letter, parse_coordinate, Worksheet};
+use rustypyxl_core::{column_to_letter, parse_coordinate, CellValue, Worksheet};
 
 use crate::cell::PyCell;
 use crate::workbook::{cell_value_to_python, python_to_cell_value, PyWorkbook};
@@ -520,8 +520,17 @@ pub struct PyCellRangeIterator {
 }
 
 impl PyCellRangeIterator {
-    fn read_value(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
-        if let Some(ref wb) = self.workbook {
+    /// Read a whole row (or column) of values in one pass.
+    ///
+    /// Resolves the sheet once rather than scanning the workbook's sheet list
+    /// for every cell, and copies the values out before converting them, so no
+    /// Python object is built while the workbook is borrowed.
+    fn read_values(&self, coords: &[(u32, u32)], py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let Some(ref wb) = self.workbook else {
+            return Ok(coords.iter().map(|_| py.None()).collect());
+        };
+
+        let values: Vec<CellValue> = {
             let this = wb.borrow(py);
             let idx = this
                 .inner
@@ -529,17 +538,26 @@ impl PyCellRangeIterator {
                 .ok_or_else(|| {
                     PyValueError::new_err("Worksheet no longer exists in this workbook")
                 })?;
-            if let Some(cell) = this.inner.worksheets[idx].get_cell(row, col) {
-                return Ok(cell_value_to_python(&cell.value, py));
-            }
-        }
-        Ok(py.None())
+            let worksheet = &this.inner.worksheets[idx];
+            coords
+                .iter()
+                .map(|&(row, col)| {
+                    worksheet
+                        .get_cell(row, col)
+                        .map(|cell| cell.value.clone())
+                        .unwrap_or(CellValue::Empty)
+                })
+                .collect()
+        };
+
+        Ok(values
+            .iter()
+            .map(|value| cell_value_to_python(value, py))
+            .collect())
     }
 
-    fn make_item(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
-        if self.values_only {
-            self.read_value(row, col, py)
-        } else if let Some(ref wb) = self.workbook {
+    fn make_cell(&self, row: u32, col: u32, py: Python<'_>) -> PyResult<PyObject> {
+        if let Some(ref wb) = self.workbook {
             Ok(Py::new(
                 py,
                 PyCell::connected(row, col, wb.clone_ref(py), self.sheet_uid),
@@ -571,13 +589,22 @@ impl PyCellRangeIterator {
         let outer = self.position;
         self.position += 1;
 
-        let items: Vec<PyObject> = if self.by_columns {
+        let coords: Vec<(u32, u32)> = if self.by_columns {
             (self.min_row..=self.max_row)
-                .map(|row| self.make_item(row, outer, py))
-                .collect::<PyResult<_>>()?
+                .map(|row| (row, outer))
+                .collect()
         } else {
             (self.min_col..=self.max_col)
-                .map(|col| self.make_item(outer, col, py))
+                .map(|col| (outer, col))
+                .collect()
+        };
+
+        let items: Vec<PyObject> = if self.values_only {
+            self.read_values(&coords, py)?
+        } else {
+            coords
+                .iter()
+                .map(|&(row, col)| self.make_cell(row, col, py))
                 .collect::<PyResult<_>>()?
         };
         Ok(Some(PyTuple::new(py, items)?.into_any().unbind()))

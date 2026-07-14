@@ -267,3 +267,58 @@ class TestStreamingMultiSheet:
         with pytest.raises(ValueError):
             wb.create_sheet("Fine")
         wb.close()
+
+
+class TestWriteOnlyWorkbookBatch:
+    """append_rows writes a batch with the GIL released once, not per row."""
+
+    def test_append_rows_writes_every_row(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("S")
+        wb.append_rows([["a", 1, True], ["b", 2, False], ["c", 3, None]])
+        wb.close()
+
+        chk = rustypyxl.load_workbook(temp_xlsx_path)["S"]
+        assert chk["A1"].value == "a"
+        assert chk["B2"].value == 2
+        assert chk["C1"].value is True
+        assert chk["A3"].value == "c"
+
+    def test_append_rows_interleaves_with_append_row(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("S")
+        wb.append_row(["first"])
+        wb.append_rows([["second"], ["third"]])
+        wb.append_row(["fourth"])
+        wb.close()
+
+        chk = rustypyxl.load_workbook(temp_xlsx_path)["S"]
+        assert [chk[f"A{r}"].value for r in range(1, 5)] == [
+            "first",
+            "second",
+            "third",
+            "fourth",
+        ]
+
+    def test_append_rows_empty_batch_is_a_noop(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("S")
+        wb.append_rows([])
+        wb.append_row(["only"])
+        wb.close()
+
+        assert rustypyxl.load_workbook(temp_xlsx_path)["S"]["A1"].value == "only"
+
+    def test_append_rows_requires_a_sheet(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        with pytest.raises(ValueError, match="No sheet"):
+            wb.append_rows([["x"]])
+        wb.create_sheet("S")
+        wb.close()
+
+    def test_append_rows_rejects_too_many_columns(self, temp_xlsx_path):
+        wb = rustypyxl.WriteOnlyWorkbook(temp_xlsx_path)
+        wb.create_sheet("S")
+        with pytest.raises(ValueError, match="column limit"):
+            wb.append_rows([[1] * 16_385])
+        wb.close()

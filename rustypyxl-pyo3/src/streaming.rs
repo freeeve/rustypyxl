@@ -61,26 +61,50 @@ impl PyStreamingWorkbook {
     ///
     /// Args:
     ///     values: List of values (str, int, float, bool, or None)
+    ///
+    /// Holds the GIL for the duration. A single row is a few microseconds of
+    /// Rust work, and releasing the GIL that often costs far more than it
+    /// saves: each re-acquire has to wait out a competing thread's switch
+    /// interval, which made a contended million-row write orders of magnitude
+    /// slower. Use append_rows to hand a batch to Rust and release the GIL once.
     fn append_row(&mut self, values: Vec<PyObject>, py: Python<'_>) -> PyResult<()> {
-        let wb = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
-
-        let sheet = self
-            .current_sheet
-            .as_mut()
-            .ok_or_else(|| PyValueError::new_err("No sheet created. Call create_sheet() first."))?;
-
         let cell_values: Vec<CellValue> = values
             .into_iter()
             .map(|v| crate::workbook::python_to_cell_value(v.bind(py)))
             .collect::<PyResult<Vec<_>>>()?;
 
+        let (wb, sheet) = self.parts_mut()?;
         wb.append_row(sheet, cell_values)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
 
-        Ok(())
+    /// Append many rows at once.
+    ///
+    /// Converts the batch, then writes it with the GIL released, so other
+    /// Python threads run while the rows are serialized, compressed, and
+    /// written. This is the throughput path for large streams: prefer it over
+    /// calling append_row in a loop.
+    ///
+    /// Args:
+    ///     rows: Iterable of rows, each a list of values
+    fn append_rows(&mut self, rows: Vec<Vec<PyObject>>, py: Python<'_>) -> PyResult<()> {
+        let batch: Vec<Vec<CellValue>> = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|v| crate::workbook::python_to_cell_value(v.bind(py)))
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .collect::<PyResult<_>>()?;
+
+        let (wb, sheet) = self.parts_mut()?;
+        py.allow_threads(|| {
+            for row in batch {
+                wb.append_row(sheet, row)?;
+            }
+            Ok(())
+        })
+        .map_err(|e: rustypyxl_core::RustypyxlError| PyValueError::new_err(e.to_string()))
     }
 
     /// Close the workbook and finalize the file.
@@ -121,6 +145,19 @@ impl PyStreamingWorkbook {
 }
 
 impl PyStreamingWorkbook {
+    /// The open workbook and its current sheet, or the matching error.
+    fn parts_mut(&mut self) -> PyResult<(&mut StreamingWorkbook, &mut StreamingSheet)> {
+        let wb = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("Workbook already closed"))?;
+        let sheet = self
+            .current_sheet
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("No sheet created. Call create_sheet() first."))?;
+        Ok((wb, sheet))
+    }
+
     /// Consume the inner workbook and finalize the file, with or without an
     /// open sheet.
     fn do_close(&mut self) -> PyResult<()> {

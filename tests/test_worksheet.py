@@ -158,6 +158,31 @@ class TestIterRows:
         with pytest.raises(StopIteration):
             next(it)
 
+    def test_iter_rows_yields_none_for_gaps(self, workbook_with_sheet):
+        ws = workbook_with_sheet.active
+        ws["A1"] = 1
+        ws["C1"] = 3
+        ws["B2"] = 2
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows == [(1, None, 3), (None, 2, None)]
+
+    def test_iter_rows_raises_if_the_sheet_is_removed_mid_iteration(self):
+        wb = rustypyxl.Workbook()
+        wb.create_sheet("A")
+        wb.create_sheet("B")
+        ws = wb["B"]
+        ws.append([1, 2])
+        ws.append([3, 4])
+
+        it = ws.iter_rows(values_only=True)
+        assert next(it) == (1, 2)
+
+        wb.remove(wb["B"])
+        # The sheet is resolved by uid on every step, so a removed sheet errors
+        # rather than silently reading whatever sheet took its place.
+        with pytest.raises(ValueError, match="no longer exists"):
+            next(it)
+
 
 class TestIterCols:
     def test_iter_cols_values(self, workbook_with_sheet):
