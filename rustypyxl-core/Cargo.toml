@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Core Rust library for reading and writing Excel xlsx files"
+repository.workspace = true
+description = "Fast, dependency-light Rust library for reading and writing Excel (XLSX) files"
+readme = "README.md"
+homepage = "https://github.com/freeeve/rustypyxl"
+documentation = "https://docs.rs/rustypyxl-core"
+keywords = ["excel", "xlsx", "spreadsheet", "ooxml", "office"]
+categories = ["parser-implementations", "encoding"]
 
 [dependencies]
 zip = { workspace = true }
