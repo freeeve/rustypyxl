@@ -184,6 +184,10 @@ jobs:
     needs: [test]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    # Must match the environment set on the crates.io Trusted Publisher config;
+    # crates.io rejects the OIDC token if the JWT's environment claim differs.
+    environment:
+      name: gh
     permissions:
       id-token: write   # required for the OIDC token exchange
       contents: read
