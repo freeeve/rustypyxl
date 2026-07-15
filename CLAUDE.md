@@ -47,8 +47,10 @@ rustypyxl/
 
 ### Two-Crate Design
 
-1. **rustypyxl-core**: Pure Rust library with no Python dependencies. Can be used standalone in Rust projects.
-2. **rustypyxl-pyo3**: Thin Python bindings wrapping rustypyxl-core via PyO3.
+1. **rustypyxl-core** (directory): Pure Rust library with no Python dependencies,
+   published to crates.io as the `rustypyxl` crate. Usable standalone in Rust.
+2. **rustypyxl-pyo3** (directory): Thin Python bindings wrapping the core via PyO3,
+   published to PyPI as `rustypyxl`.
 
 ### Key Data Structures
 
@@ -108,7 +110,7 @@ Note: For Python S3 support, use `save_to_bytes()`/`load_workbook(bytes)` with b
 
 ```bash
 # Rust library only
-cargo build -p rustypyxl-core
+cargo build -p rustypyxl
 
 # Python extension (development)
 maturin develop --release
@@ -121,10 +123,10 @@ maturin build --release
 
 ```bash
 # Rust tests
-cargo test -p rustypyxl-core
+cargo test -p rustypyxl
 
 # Rust tests with S3 feature
-cargo test -p rustypyxl-core --features s3
+cargo test -p rustypyxl --features s3
 
 # Python tests
 pytest tests/
@@ -137,7 +139,7 @@ cd rustypyxl-core/fuzz && cargo +nightly fuzz run fuzz_load
 
 ```bash
 # Rust benchmarks
-cargo bench -p rustypyxl-core
+cargo bench -p rustypyxl
 
 # Python benchmarks
 python benchmarks/compare_openpyxl.py

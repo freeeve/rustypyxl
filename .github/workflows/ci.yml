@@ -116,7 +116,7 @@ jobs:
       # compiles out, so a silent wrap here fails the build instead of
       # corrupting a coordinate at runtime.
       - name: Run Rust tests (debug, overflow checks on)
-        run: cargo test -p rustypyxl-core --features parquet
+        run: cargo test -p rustypyxl --features parquet
 
       - name: Run Rust tests (release)
         run: cargo test --workspace --release

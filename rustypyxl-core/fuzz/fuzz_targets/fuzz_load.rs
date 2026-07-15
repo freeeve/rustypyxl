@@ -1,6 +1,6 @@
 #![no_main]
 
-//! Fuzz target for workbook loading in rustypyxl-core.
+//! Fuzz target for workbook loading in rustypyxl.
 //!
 //! Drives the real `Workbook::load_from_bytes` entry point so that panics in
 //! the library's own parsing (ZIP handling, XML parsing, shared-string and

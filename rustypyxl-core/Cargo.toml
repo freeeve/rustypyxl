@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Fast, dependency-light Rust library for reading and writing Excel (XLSX) files"
 readme = "README.md"
 homepage = "https://github.com/freeeve/rustypyxl"
-documentation = "https://docs.rs/rustypyxl-core"
+documentation = "https://docs.rs/rustypyxl"
 keywords = ["excel", "xlsx", "spreadsheet", "ooxml", "office"]
 categories = ["parser-implementations", "encoding"]
 

@@ -1,4 +1,4 @@
-//! Error types for rustypyxl-core.
+//! Error types for rustypyxl.
 
 use thiserror::Error;
 

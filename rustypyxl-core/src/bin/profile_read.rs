@@ -12,7 +12,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: profile_read <file.xlsx> [flamegraph.svg] [profile.pb]");
         eprintln!(
-            "Example: cargo run -p rustypyxl-core --features pprof --bin profile_read -- test.xlsx"
+            "Example: cargo run -p rustypyxl --features pprof --bin profile_read -- test.xlsx"
         );
         std::process::exit(2);
     }

@@ -1,6 +1,6 @@
 #![no_main]
 
-//! Fuzz target for cell coordinate parsing in rustypyxl-core.
+//! Fuzz target for cell coordinate parsing in rustypyxl.
 //!
 //! Tests the coordinate parsing functions with arbitrary input to ensure:
 //! - No panics on any input (graceful error handling)

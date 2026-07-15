@@ -43,7 +43,7 @@ jobs:
       # produced, that is a broken build, not a footnote.
       - name: Generate coverage report
         run: |
-          cargo tarpaulin -p rustypyxl-core --features parquet \
+          cargo tarpaulin -p rustypyxl --features parquet \
             --exclude-files 'rustypyxl-pyo3/*' \
             --out Xml --output-dir .
 

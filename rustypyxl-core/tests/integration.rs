@@ -1,4 +1,4 @@
-//! Integration tests for rustypyxl-core.
+//! Integration tests for rustypyxl.
 
 use rustypyxl::autofilter::{AutoFilter, CustomFilter, FilterColumn, FilterOperator};
 use rustypyxl::conditional::{

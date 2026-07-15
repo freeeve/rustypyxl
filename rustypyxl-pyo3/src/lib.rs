@@ -1,6 +1,6 @@
 //! Python bindings for rustypyxl - openpyxl-compatible Excel library.
 //!
-//! This crate provides Python bindings via PyO3 for the rustypyxl-core library,
+//! This crate provides Python bindings via PyO3 for the rustypyxl library,
 //! offering an API compatible with openpyxl.
 
 use pyo3::prelude::*;

@@ -1,7 +1,8 @@
-//! rustypyxl-core: Core Rust library for reading and writing Excel xlsx files.
+//! rustypyxl: Fast Rust library for reading and writing Excel xlsx files.
 //!
-//! This crate provides the core functionality for working with Excel files
-//! without any Python dependencies. For Python bindings, see the `rustypyxl-pyo3` crate.
+//! This crate provides the functionality for working with Excel files without
+//! any Python dependencies. The `rustypyxl` package on PyPI is a PyO3 binding
+//! over this same library, exposing an openpyxl-compatible API.
 //!
 //! # Example
 //!
