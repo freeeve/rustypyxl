@@ -43,8 +43,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-tarpaulin-
 
+      # The cache (including its restore-keys) may already provide the binary,
+      # in which case `cargo install` errors with "binary already exists".
+      # Install only on a cache miss.
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        run: command -v cargo-tarpaulin || cargo install cargo-tarpaulin --locked
 
       # No continue-on-error: coverage silently failing meant Sonar scanned with
       # a stale or missing report and nobody noticed. If coverage cannot be
