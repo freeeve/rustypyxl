@@ -114,6 +114,20 @@ impl PyCell {
         })
     }
 
+    /// Rich-text runs of the cell as a list of dicts (each with `text` and, when
+    /// the run is formatted, `bold`/`italic`/`size`/`color`/...), or None when
+    /// the cell's string is plain.
+    #[getter]
+    fn rich_text(&self, py: Python<'_>) -> PyResult<PyObject> {
+        if let Some(sheet) = self.sheet_name(py)? {
+            if let Some(ref wb) = self.workbook {
+                let wb_ref = wb.borrow(py);
+                return wb_ref.get_cell_rich_text(&sheet, self.row, self.column, py);
+            }
+        }
+        Ok(py.None())
+    }
+
     /// Set the cell value.
     #[setter]
     fn set_value(&mut self, py: Python<'_>, value: PyObject) -> PyResult<()> {

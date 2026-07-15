@@ -31,6 +31,7 @@ pub mod chart;
 pub mod conditional;
 pub mod error;
 pub mod image;
+pub mod rich_text;
 pub mod style;
 pub mod utils;
 pub mod workbook;
@@ -54,6 +55,7 @@ pub mod s3;
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
+pub use rich_text::{RichText, RunFont, TextRun};
 pub use style::{
     Alignment, Border, BorderStyle, CellStyle, Color, Fill, Font, GradientFill, GradientStop,
     Protection,

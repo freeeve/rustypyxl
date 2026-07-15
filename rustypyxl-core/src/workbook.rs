@@ -1175,37 +1175,113 @@ impl Workbook {
         Ok(rels)
     }
 
-    fn parse_shared_strings_xml<R: BufRead>(reader: R) -> Result<Vec<crate::cell::InternedString>> {
+    /// Apply one `<rPr>` child element to a run font.
+    fn parse_run_prop(e: &BytesStart, font: &mut crate::rich_text::RunFont) {
+        match e.local_name().as_ref() {
+            b"b" => font.bold = !Self::attr_is_off(e),
+            b"i" => font.italic = !Self::attr_is_off(e),
+            b"strike" => font.strike = !Self::attr_is_off(e),
+            b"u" => {
+                font.underline =
+                    Some(Self::get_attr_str(e, b"val").unwrap_or_else(|| "single".to_string()))
+            }
+            b"sz" => font.size = Self::get_attr_f64(e, b"val"),
+            b"rFont" => font.name = Self::get_attr_str(e, b"val"),
+            b"vertAlign" => font.vert_align = Self::get_attr_str(e, b"val"),
+            b"color" => font.color = Self::parse_style_color(e),
+            _ => {}
+        }
+    }
+
+    /// Parse sharedStrings.xml. Each `<si>` returns its concatenated plain text
+    /// and, when it is rich text (built from `<r>` runs), the runs preserved for
+    /// round-trip.
+    fn parse_shared_strings_xml<R: BufRead>(
+        reader: R,
+    ) -> Result<
+        Vec<(
+            crate::cell::InternedString,
+            Option<crate::rich_text::RichText>,
+        )>,
+    > {
+        use crate::rich_text::{RichText, RunFont, TextRun};
         let mut reader = Reader::from_reader(reader);
         // Don't trim text - we need to preserve whitespace in string values
         reader.config_mut().trim_text(false);
 
         let mut strings = Vec::new();
         let mut buf = Vec::new();
-        let mut current_string = String::new();
+
+        // Per-<si> accumulation.
+        let mut plain = String::new(); // full concatenated text
+        let mut runs: Vec<TextRun> = Vec::new();
+        let mut saw_run = false;
         let mut in_t = false;
+        let mut in_rpr = false;
+        // Per-<r> accumulation.
+        let mut in_run = false;
+        let mut run_text = String::new();
+        let mut run_font = RunFont::default();
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    // Local names so <x:t>/<x:si> parse like their unprefixed forms
-                    if e.local_name().as_ref() == b"t" {
-                        in_t = true;
+                Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                    b"r" => {
+                        in_run = true;
+                        saw_run = true;
+                        run_text.clear();
+                        run_font = RunFont::default();
+                    }
+                    b"rPr" => in_rpr = true,
+                    b"t" => in_t = true,
+                    _ if in_rpr => Self::parse_run_prop(&e, &mut run_font),
+                    _ => {}
+                },
+                // rPr children are usually self-closing (<b/>, <sz .../>, ...).
+                Ok(Event::Empty(e)) => {
+                    if in_rpr {
+                        Self::parse_run_prop(&e, &mut run_font);
                     }
                 }
                 Ok(Event::Text(e)) => {
                     if in_t {
-                        current_string.push_str(&e.unescape().unwrap_or_default());
+                        let text = e.unescape().unwrap_or_default();
+                        if in_run {
+                            run_text.push_str(&text);
+                        } else {
+                            plain.push_str(&text);
+                        }
                     }
                 }
-                Ok(Event::End(e)) => {
-                    if e.local_name().as_ref() == b"t" {
-                        in_t = false;
-                    } else if e.local_name().as_ref() == b"si" {
-                        strings.push(std::sync::Arc::from(current_string.as_str()));
-                        current_string.clear();
+                Ok(Event::End(e)) => match e.local_name().as_ref() {
+                    b"t" => in_t = false,
+                    b"rPr" => in_rpr = false,
+                    b"r" => {
+                        plain.push_str(&run_text);
+                        let font = if run_font.is_empty() {
+                            None
+                        } else {
+                            Some(std::mem::take(&mut run_font))
+                        };
+                        runs.push(TextRun {
+                            text: std::mem::take(&mut run_text),
+                            font,
+                        });
+                        in_run = false;
                     }
-                }
+                    b"si" => {
+                        let rich = if saw_run && !runs.is_empty() {
+                            Some(RichText::new(std::mem::take(&mut runs)))
+                        } else {
+                            None
+                        };
+                        strings.push((std::sync::Arc::from(plain.as_str()), rich));
+                        plain.clear();
+                        runs.clear();
+                        saw_run = false;
+                    }
+                    _ => {}
+                },
                 Ok(Event::Eof) => break,
                 Err(e) => {
                     return Err(RustypyxlError::ParseError(format!(
@@ -2549,7 +2625,10 @@ impl Workbook {
 
     fn parse_worksheet_xml<R: BufRead>(
         reader: R,
-        shared_strings: &[crate::cell::InternedString],
+        shared_strings: &[(
+            crate::cell::InternedString,
+            Option<crate::rich_text::RichText>,
+        )],
         styles: &HashMap<u32, Arc<CellStyle>>,
         rels: &HashMap<String, SheetRel>,
         dxfs: &[ConditionalFormat],
@@ -2588,6 +2667,12 @@ impl Workbook {
         // True once an inline-string run has contributed text to this cell, so
         // that later <t> runs append instead of replacing.
         let mut inline_runs = false;
+        // Inline rich-text runs for the current cell (<is><r><rPr>..</rPr><t>..</t></r>..).
+        let mut cell_runs: Vec<crate::rich_text::TextRun> = Vec::new();
+        let mut in_run = false;
+        let mut in_rpr = false;
+        let mut run_text = String::new();
+        let mut run_font = crate::rich_text::RunFont::default();
         let mut in_cell = false;
         let mut in_v = false;
         let mut in_t = false;
@@ -2621,7 +2706,11 @@ impl Workbook {
                     // (<x:c>, <x:row>, ...) parse the same as unprefixed ones.
                     let name = e.local_name();
                     let name = name.as_ref();
-                    if name == b"sheetProtection" {
+                    if in_rpr {
+                        // Self-closing run-property children: <b/>, <i/>, <sz/>,
+                        // <color/>, <rFont/>, <vertAlign/>, ...
+                        Self::parse_run_prop(&e, &mut run_font);
+                    } else if name == b"sheetProtection" {
                         let mut prot = WorksheetProtection {
                             sheet: true,
                             ..Default::default()
@@ -2850,6 +2939,9 @@ impl Workbook {
                         current_number_format = None;
                         current_v_raw = None;
                         inline_runs = false;
+                        cell_runs.clear();
+                        in_run = false;
+                        in_rpr = false;
 
                         // cell_type 0 = number, the default when t is absent
                         let (coord, cell_type, style_id) = Self::parse_cell_attrs(&e);
@@ -2865,6 +2957,16 @@ impl Workbook {
                         in_v = true;
                     } else if name == b"t" {
                         in_t = true;
+                    } else if name == b"r" && in_cell {
+                        in_run = true;
+                        run_text.clear();
+                        run_font = crate::rich_text::RunFont::default();
+                    } else if name == b"rPr" {
+                        in_rpr = true;
+                    } else if in_rpr {
+                        // rPr children can arrive as Start (rare); handle the same
+                        // as the Empty form below.
+                        Self::parse_run_prop(&e, &mut run_font);
                     } else if name == b"f" {
                         in_f = true;
                     } else if name == b"mergeCell" {
@@ -3048,9 +3150,14 @@ impl Workbook {
                             }
                         };
                     } else if in_t && in_cell {
-                        // Rich-text inline strings split their content across
-                        // <is><r><t> runs; concatenate them rather than keeping
-                        // only the last one.
+                        // Capture the run text so per-run formatting can be
+                        // preserved (see the <r> End handler).
+                        if in_run {
+                            run_text.push_str(&text);
+                        }
+                        // Also build the plain concatenation: rich-text inline
+                        // strings split their content across <is><r><t> runs, and
+                        // the cell's plain value is all runs joined.
                         match current_value.as_mut() {
                             Some(TempValue::String(s)) if inline_runs => s.push_str(&text),
                             _ => {
@@ -3189,13 +3296,16 @@ impl Workbook {
                     } else if name == b"c" {
                         if let (Some(row), Some(col)) = (current_row, current_col) {
                             let mut cached_formula_value: Option<String> = None;
+                            // Rich-text runs, carried over when the cell resolves a
+                            // shared string that was rich.
+                            let mut rich_text: Option<crate::rich_text::RichText> = None;
                             let cell_value = if let Some(formula) = current_formula.take() {
                                 // Preserve the cached <v> so a save doesn't
                                 // blank the cell in viewers that don't recalc
                                 let parsed = current_value.take().map(|v| match v {
                                     TempValue::SharedIdx(idx) => shared_strings
                                         .get(idx)
-                                        .map(|s| s.to_string())
+                                        .map(|s| s.0.to_string())
                                         .unwrap_or_default(),
                                     TempValue::Bool(b) => (if b { "1" } else { "0" }).to_string(),
                                     TempValue::Number(n) => {
@@ -3210,8 +3320,9 @@ impl Workbook {
                             } else if let Some(value) = current_value.take() {
                                 match value {
                                     TempValue::SharedIdx(idx) => {
-                                        if idx < shared_strings.len() {
-                                            CellValue::String(shared_strings[idx].clone())
+                                        if let Some((text, rich)) = shared_strings.get(idx) {
+                                            rich_text = rich.clone();
+                                            CellValue::String(text.clone())
                                         } else {
                                             // A dangling index means a corrupt file; an empty
                                             // string is less misleading than fabricating the
@@ -3236,6 +3347,19 @@ impl Workbook {
                                 }
                             };
 
+                            // Inline rich text: prefer the parsed runs when the
+                            // cell was built from formatted <r> runs. A single
+                            // unformatted run is just a plain inline string.
+                            if !cell_runs.is_empty()
+                                && (cell_runs.len() > 1
+                                    || cell_runs.iter().any(|r| r.font.is_some()))
+                            {
+                                rich_text = Some(crate::rich_text::RichText::new(std::mem::take(
+                                    &mut cell_runs,
+                                )));
+                            }
+                            cell_runs.clear();
+
                             let style = current_style_id.and_then(|id| styles.get(&id).cloned());
 
                             let num_format = current_number_format
@@ -3251,6 +3375,7 @@ impl Workbook {
                                 number_format: num_format,
                                 data_type: data_type_str,
                                 cached_formula_value,
+                                rich_text,
                                 ..Default::default()
                             };
 
@@ -3263,6 +3388,20 @@ impl Workbook {
                         in_v = false;
                     } else if name == b"t" {
                         in_t = false;
+                    } else if name == b"r" && in_run {
+                        // End of an inline rich-text run: keep its text and font.
+                        let font = if run_font.is_empty() {
+                            None
+                        } else {
+                            Some(std::mem::take(&mut run_font))
+                        };
+                        cell_runs.push(crate::rich_text::TextRun {
+                            text: std::mem::take(&mut run_text),
+                            font,
+                        });
+                        in_run = false;
+                    } else if name == b"rPr" {
+                        in_rpr = false;
                     } else if name == b"f" {
                         in_f = false;
                     } else if name == b"row" {

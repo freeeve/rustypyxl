@@ -443,6 +443,45 @@ impl PyWorkbook {
         }
     }
 
+    /// Rich-text runs of a cell as a list of dicts (text + font attributes), or
+    /// None if the cell is not rich text.
+    pub fn get_cell_rich_text(
+        &self,
+        sheet_name: &str,
+        row: u32,
+        column: u32,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        use pyo3::types::{PyDict, PyList};
+        let ws = self
+            .inner
+            .get_sheet_by_name(sheet_name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let Some(cell) = ws.get_cell(row, column) else {
+            return Ok(py.None());
+        };
+        let Some(rich) = &cell.rich_text else {
+            return Ok(py.None());
+        };
+        let runs = PyList::empty(py);
+        for run in &rich.runs {
+            let d = PyDict::new(py);
+            d.set_item("text", &run.text)?;
+            if let Some(font) = &run.font {
+                d.set_item("bold", font.bold)?;
+                d.set_item("italic", font.italic)?;
+                d.set_item("underline", font.underline.clone())?;
+                d.set_item("strike", font.strike)?;
+                d.set_item("size", font.size)?;
+                d.set_item("color", font.color.as_ref().and_then(|c| c.rgb.clone()))?;
+                d.set_item("name", font.name.clone())?;
+                d.set_item("vert_align", font.vert_align.clone())?;
+            }
+            runs.append(d)?;
+        }
+        Ok(runs.into_any().unbind())
+    }
+
     /// Write multiple rows of data to a sheet (bulk operation for performance).
     ///
     /// This is significantly faster than setting cells one at a time.

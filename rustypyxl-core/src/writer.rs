@@ -4,6 +4,7 @@ use crate::cell::InternedString;
 use crate::conditional::{ConditionalColor, ConditionalFormat, ConditionalFormatType};
 use crate::error::Result;
 use crate::pagesetup::Orientation;
+use crate::rich_text::{RichText, RunFont};
 use crate::style::StyleRegistry;
 use crate::utils::column_to_letter;
 use crate::worksheet::{cell_key, decode_cell_key, CellData, SheetVisibility, Worksheet};
@@ -179,6 +180,59 @@ fn write_cell_open(buf: &mut String, row: u32, col: u32, style_index: Option<u32
     }
 }
 
+/// Write the `<r>` runs of a rich-text string into an `<is>`/`<si>` body.
+fn write_rich_runs(buf: &mut String, rich: &RichText) {
+    for run in &rich.runs {
+        buf.push_str("<r>");
+        if let Some(font) = &run.font {
+            write_run_props(buf, font);
+        }
+        let escaped = escape_xml(&run.text);
+        if needs_space_preserve(&escaped) {
+            buf.push_str("<t xml:space=\"preserve\">");
+        } else {
+            buf.push_str("<t>");
+        }
+        buf.push_str(&escaped);
+        buf.push_str("</t></r>");
+    }
+}
+
+/// Write an `<rPr>` run-property block. Child order follows the OOXML
+/// CT_RPrElt schema (rFont, b, i, strike, color, sz, u, vertAlign).
+fn write_run_props(buf: &mut String, font: &RunFont) {
+    buf.push_str("<rPr>");
+    if let Some(name) = &font.name {
+        buf.push_str(&format!(r#"<rFont val="{}"/>"#, escape_xml(name)));
+    }
+    if font.bold {
+        buf.push_str("<b/>");
+    }
+    if font.italic {
+        buf.push_str("<i/>");
+    }
+    if font.strike {
+        buf.push_str("<strike/>");
+    }
+    if let Some(color) = &font.color {
+        write_color_attr(buf, "color", color);
+    }
+    if let Some(sz) = font.size {
+        buf.push_str(&format!(r#"<sz val="{}"/>"#, sz));
+    }
+    if let Some(u) = &font.underline {
+        if u == "single" {
+            buf.push_str("<u/>");
+        } else {
+            buf.push_str(&format!(r#"<u val="{}"/>"#, u));
+        }
+    }
+    if let Some(va) = &font.vert_align {
+        buf.push_str(&format!(r#"<vertAlign val="{}"/>"#, va));
+    }
+    buf.push_str("</rPr>");
+}
+
 /// Write cell data directly to a string buffer (fast path, no quick_xml overhead).
 /// Uses itoa/ryu for fast number formatting. The coordinate and style attribute
 /// go straight into the buffer: building them as owned Strings first cost three
@@ -194,7 +248,14 @@ fn write_cell_direct(
 ) {
     match &cell_data.value {
         CellValue::String(s) => {
-            if let Some(&idx) = shared_string_map.get(s) {
+            if let Some(rich) = &cell_data.rich_text {
+                // Rich text: emit the runs inline (t="inlineStr"), preserving the
+                // per-run formatting that a plain shared string cannot hold.
+                write_cell_open(buf, row, col, style_index);
+                buf.push_str(" t=\"inlineStr\"><is>");
+                write_rich_runs(buf, rich);
+                buf.push_str("</is></c>");
+            } else if let Some(&idx) = shared_string_map.get(s) {
                 // Shared string reference - use itoa for fast integer formatting
                 write_cell_open(buf, row, col, style_index);
                 buf.push_str(" t=\"s\"><v>");
@@ -572,6 +633,11 @@ pub fn collect_shared_strings(
 
     for worksheet in worksheets {
         for cell_data in worksheet.cells.values() {
+            // Rich-text cells are written inline (they carry per-run formatting a
+            // shared plain string cannot hold), so they never reference the table.
+            if cell_data.rich_text.is_some() {
+                continue;
+            }
             if let CellValue::String(s) = &cell_data.value {
                 total_refs += 1;
                 if !string_map.contains_key(s) {

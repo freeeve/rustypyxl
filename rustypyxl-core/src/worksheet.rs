@@ -50,6 +50,10 @@ pub struct CellData {
     /// Written back on save so viewers that don't recalculate show a value;
     /// `data_type` carries the matching `t` attribute (str/b/e or numeric).
     pub cached_formula_value: Option<String>,
+    /// Per-run formatting when the cell's string is rich text. When present,
+    /// `value` holds the concatenated plain text and the cell is written as a
+    /// rich string; when None, the string is a plain `<t>`.
+    pub rich_text: Option<crate::rich_text::RichText>,
 }
 
 impl CellData {
@@ -311,6 +315,18 @@ impl Worksheet {
     pub fn set_cell_value<V: Into<CellValue>>(&mut self, row: u32, column: u32, value: V) {
         let cell_data = self.cells.entry(cell_key(row, column)).or_default();
         cell_data.value = value.into();
+        self.update_dimensions(row, column);
+    }
+
+    /// Set a rich-text value on a cell. The cell's plain value becomes the
+    /// concatenated run text and the runs are preserved (and written as a rich
+    /// string on save).
+    pub fn set_cell_rich_text(&mut self, row: u32, column: u32, rich: crate::rich_text::RichText) {
+        let plain = rich.plain();
+        let cell = self.cells.entry(cell_key(row, column)).or_default();
+        cell.value = CellValue::String(Arc::from(plain.as_str()));
+        cell.data_type = Some("s");
+        cell.rich_text = Some(rich);
         self.update_dimensions(row, column);
     }
 
