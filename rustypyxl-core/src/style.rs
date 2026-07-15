@@ -963,3 +963,189 @@ mod tests {
         assert_eq!(style.number_format.as_deref(), Some("#,##0.00"));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn color_constructors_and_argb() {
+        assert_eq!(Color::rgb("FF0000").rgb.as_deref(), Some("FF0000"));
+        assert_eq!(Color::theme(4).theme, Some(4));
+        assert_eq!(Color::indexed(64).indexed, Some(64));
+        assert_eq!(Color::rgb("00FF00").with_tint(0.5).tint, Some(0.5));
+
+        assert!(Color {
+            rgb: None,
+            theme: None,
+            indexed: None,
+            tint: None
+        }
+        .is_empty());
+        assert!(!Color::rgb("000000").is_empty());
+
+        // argb pads a 6-digit hex with an alpha channel and strips '#'
+        assert_eq!(Color::rgb("#FF0000").argb().as_deref(), Some("FFFF0000"));
+        assert_eq!(Color::rgb("FF00FF00").argb().as_deref(), Some("FF00FF00"));
+        assert_eq!(Color::theme(1).argb(), None);
+    }
+
+    #[test]
+    fn color_from_str_forms() {
+        assert_eq!(Color::from("theme:3").theme, Some(3));
+        assert_eq!(Color::from("indexed:9").indexed, Some(9));
+        assert_eq!(Color::from("ABCDEF").rgb.as_deref(), Some("ABCDEF"));
+    }
+
+    #[test]
+    fn font_builders() {
+        let f = Font::new()
+            .with_name("Arial")
+            .with_size(12.0)
+            .with_bold(true)
+            .with_italic(true)
+            .with_underline("single")
+            .with_strike(true)
+            .with_color("FF0000")
+            .with_vert_align("superscript");
+        assert_eq!(f.name.as_deref(), Some("Arial"));
+        assert_eq!(f.size, Some(12.0));
+        assert!(f.bold && f.italic && f.strike);
+        assert_eq!(f.underline.as_deref(), Some("single"));
+        assert_eq!(f.color.unwrap().rgb.as_deref(), Some("FF0000"));
+        assert_eq!(f.vert_align.as_deref(), Some("superscript"));
+    }
+
+    #[test]
+    fn alignment_builders() {
+        let a = Alignment::new()
+            .with_horizontal("center")
+            .with_vertical("top")
+            .with_wrap_text(true);
+        assert_eq!(a.horizontal.as_deref(), Some("center"));
+        assert_eq!(a.vertical.as_deref(), Some("top"));
+        assert!(a.wrap_text);
+    }
+
+    #[test]
+    fn border_builders() {
+        assert_eq!(BorderStyle::thin().style, "thin");
+        assert_eq!(BorderStyle::medium().style, "medium");
+        assert_eq!(BorderStyle::thick().style, "thick");
+        assert_eq!(
+            BorderStyle::new("dashed")
+                .with_color("000000")
+                .color
+                .unwrap()
+                .rgb
+                .as_deref(),
+            Some("000000")
+        );
+
+        let all = Border::all(BorderStyle::thin());
+        assert!(
+            all.left.is_some() && all.right.is_some() && all.top.is_some() && all.bottom.is_some()
+        );
+
+        let b = Border::new()
+            .with_left(BorderStyle::thin())
+            .with_right(BorderStyle::medium())
+            .with_top(BorderStyle::thick())
+            .with_bottom(BorderStyle::thin());
+        assert_eq!(b.left.unwrap().style, "thin");
+        assert_eq!(b.right.unwrap().style, "medium");
+        assert_eq!(b.top.unwrap().style, "thick");
+        assert_eq!(b.bottom.unwrap().style, "thin");
+    }
+
+    #[test]
+    fn fill_builders() {
+        let solid = Fill::solid("FFFF00");
+        assert_eq!(solid.pattern_type.as_deref(), Some("solid"));
+        assert_eq!(solid.fg_color.unwrap().rgb.as_deref(), Some("FFFF00"));
+
+        let f = Fill::new()
+            .with_pattern("gray125")
+            .with_fg_color("111111")
+            .with_bg_color("222222");
+        assert_eq!(f.pattern_type.as_deref(), Some("gray125"));
+        assert_eq!(f.fg_color.unwrap().rgb.as_deref(), Some("111111"));
+        assert_eq!(f.bg_color.unwrap().rgb.as_deref(), Some("222222"));
+    }
+
+    #[test]
+    fn gradient_fill_builders() {
+        let g = GradientFill::linear("FF0000", "0000FF")
+            .with_type("linear")
+            .with_degree(90.0)
+            .with_stop(0.5, "00FF00");
+        assert_eq!(g.gradient_type.as_deref(), Some("linear"));
+        assert_eq!(g.degree, Some(90.0));
+        // linear() seeds two stops; with_stop adds a third
+        assert_eq!(g.stops.len(), 3);
+    }
+
+    #[test]
+    fn protection_builders() {
+        assert!(Protection::new().locked);
+        assert!(!Protection::unlocked().locked);
+        let p = Protection::new().with_locked(false).with_hidden(true);
+        assert!(!p.locked && p.hidden);
+    }
+
+    #[test]
+    fn cell_style_builders() {
+        let s = CellStyle::new()
+            .with_font(Font::new().with_bold(true))
+            .with_alignment(Alignment::new().with_wrap_text(true))
+            .with_border(Border::all(BorderStyle::thin()))
+            .with_fill(Fill::solid("EEEEEE"))
+            .with_gradient_fill(GradientFill::linear("FFF", "000"))
+            .with_number_format("0.00%")
+            .with_protection(Protection::unlocked());
+        assert!(s.font.is_some() && s.alignment.is_some() && s.border.is_some());
+        assert!(s.fill.is_some() && s.gradient_fill.is_some() && s.protection.is_some());
+        assert_eq!(s.number_format.as_deref(), Some("0.00%"));
+    }
+
+    #[test]
+    fn style_registry_dedup_and_num_fmt() {
+        let mut reg = StyleRegistry::new();
+        let font = Font::new().with_bold(true);
+        let a = reg.get_or_add_font(&font);
+        let b = reg.get_or_add_font(&font);
+        assert_eq!(a, b, "identical fonts dedup to one index");
+
+        let f1 = reg.get_or_add_fill(&Fill::solid("FF0000"));
+        assert_eq!(f1, reg.get_or_add_fill(&Fill::solid("FF0000")));
+        let bd = reg.get_or_add_border(&Border::all(BorderStyle::thin()));
+        assert_eq!(bd, reg.get_or_add_border(&Border::all(BorderStyle::thin())));
+
+        // Built-in formats resolve to their id; custom formats allocate >= 164.
+        assert_eq!(reg.get_or_add_num_fmt("0.00"), 2);
+        let custom = reg.get_or_add_num_fmt("0.000\"x\"");
+        assert!(custom >= 164);
+        assert_eq!(custom, reg.get_or_add_num_fmt("0.000\"x\""));
+    }
+
+    #[test]
+    fn builtin_num_fmt_roundtrip() {
+        assert_eq!(StyleRegistry::builtin_num_fmt_code(2), Some("0.00"));
+        assert_eq!(StyleRegistry::builtin_num_fmt_code(49), Some("@"));
+        assert_eq!(StyleRegistry::builtin_num_fmt_code(200), None);
+        assert_eq!(StyleRegistry::builtin_num_fmt_id("0.00"), Some(2));
+        assert_eq!(StyleRegistry::builtin_num_fmt_id("General"), Some(0));
+    }
+
+    #[test]
+    fn cell_xf_roundtrip_through_registry() {
+        let mut reg = StyleRegistry::new();
+        let style = CellStyle::new()
+            .with_font(Font::new().with_size(14.0))
+            .with_number_format("0.00%");
+        let xf = reg.get_or_add_cell_xf(&style);
+        let recovered = reg.get_cell_style(xf).expect("xf resolves back to a style");
+        assert_eq!(recovered.number_format.as_deref(), Some("0.00%"));
+        assert_eq!(recovered.font.and_then(|f| f.size), Some(14.0));
+    }
+}

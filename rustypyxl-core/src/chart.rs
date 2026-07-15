@@ -449,3 +449,62 @@ mod tests {
         assert_eq!(ChartType::Pie.xml_type(), "pieChart");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn chart_type_xml_names() {
+        assert_eq!(ChartType::Column.xml_type(), "barChart");
+        assert_eq!(ChartType::Area.xml_type(), "areaChart");
+        assert_eq!(ChartType::Doughnut.xml_type(), "doughnutChart");
+        assert_eq!(ChartType::Scatter.xml_type(), "scatterChart");
+        assert_eq!(ChartType::Radar.xml_type(), "radarChart");
+        assert_eq!(ChartType::Bubble.xml_type(), "bubbleChart");
+    }
+
+    #[test]
+    fn constructors_and_builders() {
+        assert_eq!(Chart::area().chart_type, ChartType::Area);
+        assert_eq!(Chart::scatter().chart_type, ChartType::Scatter);
+        assert_eq!(Chart::pie().chart_type, ChartType::Pie);
+
+        let chart = Chart::column()
+            .with_x_axis(ChartAxis::new().with_title("Cats"))
+            .with_y_axis(ChartAxis::new().with_title("Vals").with_range(0.0, 50.0))
+            .with_grouping(BarGrouping::Stacked)
+            .with_size_inches(6.0, 4.0)
+            .with_anchor(ChartAnchor::at("B2").with_size("F20"));
+        assert!(chart.x_axis.is_some() && chart.y_axis.is_some());
+        assert_eq!(chart.bar_grouping, BarGrouping::Stacked);
+        assert_eq!(chart.width, 5486400);
+        let a = chart.anchor.unwrap();
+        assert_eq!(a.from_cell, "B2");
+        assert_eq!(a.to_cell.as_deref(), Some("F20"));
+    }
+
+    #[test]
+    fn axis_range_sets_min_max() {
+        let ax = ChartAxis::new().with_range(1.0, 9.0);
+        assert_eq!(ax.min_val, Some(1.0));
+        assert_eq!(ax.max_val, Some(9.0));
+    }
+
+    #[test]
+    fn series_with_fill_color() {
+        let s = ChartSeries::new("S!$B$1:$B$3")
+            .with_name("Rev")
+            .with_categories("S!$A$1:$A$3")
+            .with_fill_color("FF0000");
+        assert_eq!(s.fill_color.as_deref(), Some("FF0000"));
+        assert_eq!(s.name.as_deref(), Some("Rev"));
+    }
+
+    #[test]
+    fn legend_builder() {
+        let l = ChartLegend::new().with_position("t").with_visible(false);
+        assert_eq!(l.position, "t");
+        assert!(!l.visible);
+    }
+}

@@ -364,3 +364,59 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn table_style_presets() {
+        assert!(!TableStyle::blue().style_name().is_empty());
+        assert!(!TableStyle::green().style_name().is_empty());
+        assert!(!TableStyle::red().style_name().is_empty());
+        assert!(!TableStyle::gray().style_name().is_empty());
+    }
+
+    #[test]
+    fn totals_functions_xml() {
+        assert_eq!(TotalsRowFunction::None.xml_name(), None);
+        assert_eq!(TotalsRowFunction::Sum.xml_name(), Some("sum"));
+        assert_eq!(TotalsRowFunction::Average.xml_name(), Some("average"));
+        assert_eq!(TotalsRowFunction::CountNums.xml_name(), Some("countNums"));
+    }
+
+    #[test]
+    fn table_column_builders() {
+        let c = TableColumn::new(1, "Amount")
+            .with_totals_function(TotalsRowFunction::Sum)
+            .with_totals_label("Total")
+            .with_formula("[Amount]*2");
+        assert_eq!(c.id, 1);
+        assert_eq!(c.name, "Amount");
+    }
+
+    #[test]
+    fn table_builders_and_structured_ref() {
+        let t = Table::new(1, "Sales", "A1:C10")
+            .with_style(TableStyle::blue())
+            .with_totals_row()
+            .with_first_column()
+            .with_last_column()
+            .with_column_stripes()
+            .without_auto_filter();
+        assert_eq!(t.name, "Sales");
+        assert!(t.totals_row);
+        assert!(!t.auto_filter, "without_auto_filter clears it");
+
+        let h = Table::with_headers(2, "T2", "A1:B5", &["Name", "Value"]).without_header_row();
+        assert_eq!(h.columns.len(), 2);
+
+        let mut t3 = Table::new(3, "T3", "A1:B3");
+        t3.add_column(TableColumn::new(1, "X"));
+        t3.set_column_totals("X", TotalsRowFunction::Count);
+
+        // structured references wrap the table name.
+        let sref = t.structured_ref(Some("Sales"), None);
+        assert!(sref.contains("Sales"));
+    }
+}

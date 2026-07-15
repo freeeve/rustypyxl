@@ -820,3 +820,112 @@ mod tests {
         assert_eq!(cf.rules.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn type_and_operator_xml_roundtrip() {
+        for t in [
+            ConditionalFormatType::CellIs,
+            ConditionalFormatType::Expression,
+            ConditionalFormatType::ColorScale,
+            ConditionalFormatType::DataBar,
+            ConditionalFormatType::IconSet,
+            ConditionalFormatType::Top10,
+            ConditionalFormatType::ContainsText,
+        ] {
+            let x = t.xml_value();
+            assert_eq!(ConditionalFormatType::from_xml(x), Some(t));
+        }
+        assert_eq!(ConditionalFormatType::from_xml("nonsense"), None);
+
+        for op in [
+            ConditionalOperator::GreaterThan,
+            ConditionalOperator::LessThan,
+            ConditionalOperator::Between,
+            ConditionalOperator::Equal,
+        ] {
+            assert_eq!(ConditionalOperator::from_xml(op.xml_value()), Some(op));
+        }
+    }
+
+    #[test]
+    fn conditional_colors() {
+        assert!(ConditionalColor::rgb("FF0000").rgb.is_some());
+        assert!(ConditionalColor::theme(3).theme.is_some());
+        let _ = (
+            ConditionalColor::red(),
+            ConditionalColor::green(),
+            ConditionalColor::yellow(),
+            ConditionalColor::blue(),
+            ConditionalColor::white(),
+        );
+    }
+
+    #[test]
+    fn color_scales() {
+        let two = ColorScale::two_color(ConditionalColor::red(), ConditionalColor::green());
+        assert!(two.mid_color.is_none());
+        let three = ColorScale::three_color(
+            ConditionalColor::red(),
+            ConditionalColor::yellow(),
+            ConditionalColor::green(),
+        );
+        assert!(three.mid_color.is_some());
+        assert!(ColorScale::red_yellow_green().mid_color.is_some());
+        assert!(ColorScale::green_yellow_red().mid_color.is_some());
+    }
+
+    #[test]
+    fn data_bars_and_icon_sets() {
+        let bar = DataBar::new()
+            .with_color(ConditionalColor::blue())
+            .hide_value()
+            .solid_fill();
+        assert!(!bar.show_value, "hide_value clears show_value");
+        assert!(!bar.gradient, "solid_fill clears gradient");
+
+        let icons = IconSet::new(IconSetStyle::ThreeTrafficLights)
+            .icon_only()
+            .reversed();
+        assert!(icons.reverse && !icons.show_value);
+        assert_eq!(
+            IconSetStyle::from_xml(IconSetStyle::ThreeTrafficLights.xml_type()),
+            Some(IconSetStyle::ThreeTrafficLights)
+        );
+    }
+
+    #[test]
+    fn rule_constructors_and_formatting() {
+        let fmt = ConditionalFormat::new()
+            .with_font_color(ConditionalColor::red())
+            .with_bold(true)
+            .with_fill(ConditionalColor::yellow());
+        let _ = ConditionalRule::of_type(ConditionalFormatType::Expression);
+        let _ = ConditionalRule::cell_is(ConditionalOperator::GreaterThan, "10")
+            .with_format(fmt)
+            .with_priority(1);
+        let _ = ConditionalRule::formula("$A$1>0");
+        let _ = ConditionalRule::with_color_scale(ColorScale::red_yellow_green());
+        let _ = ConditionalRule::with_data_bar(DataBar::new());
+        let _ = ConditionalRule::with_icon_set(IconSet::new(IconSetStyle::ThreeArrows));
+        let _ = ConditionalRule::top(10);
+        let _ = ConditionalRule::bottom(5);
+        let _ = ConditionalRule::contains_text("x");
+        let _ = ConditionalRule::not_contains_text("y");
+        let _ = ConditionalRule::begins_with("a");
+        let _ = ConditionalRule::ends_with("z");
+        let _ = ConditionalRule::time_period("today");
+        let _ = ConditionalRule::above_average();
+        let _ = ConditionalRule::below_average();
+        let _ = ConditionalRule::duplicate_values();
+        let _ = ConditionalRule::unique_values();
+
+        let mut cf = ConditionalFormatting::new("A1:A10");
+        cf.add_rule(ConditionalRule::top(3));
+        cf.add_rule(ConditionalRule::formula("$A1>5"));
+        assert_eq!(cf.rules.len(), 2);
+    }
+}

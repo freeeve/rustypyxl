@@ -413,13 +413,15 @@ fn build_frac_display(frac_digits: &str, frac_phs: &[char]) -> String {
         return String::new();
     }
     let digits: Vec<char> = frac_digits.chars().collect();
-    // Determine the last index to keep: trim trailing '#' whose digit is 0.
+    // Determine the last index to keep: trailing insignificant zeros under a
+    // '#' or '?' placeholder are dropped ('#' -> nothing, '?' -> a space); a '0'
+    // placeholder always keeps its digit and stops the trim.
     let mut last: isize = frac_phs.len() as isize - 1;
     while last >= 0 {
         let i = last as usize;
         let ph = frac_phs[i];
         let d = digits.get(i).copied().unwrap_or('0');
-        if ph == '#' && d == '0' {
+        if (ph == '#' || ph == '?') && d == '0' {
             last -= 1;
         } else {
             break;
@@ -890,5 +892,76 @@ mod tests {
         assert_eq!(format_number(42.5, "General"), "42.5");
         assert_eq!(format_value(&CellValue::from("hi"), "@"), "hi");
         assert_eq!(format_value(&CellValue::from("hi"), "\"<\"@\">\""), "<hi>");
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn all_builtin_codes_resolve_or_none() {
+        // Every defined id renders something; gaps return None.
+        for id in [
+            1u32, 3, 5, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 37, 45, 46, 48,
+        ] {
+            assert!(builtin_format_code(id).is_some(), "id {id}");
+        }
+        assert_eq!(builtin_format_code(50), None);
+    }
+
+    #[test]
+    fn value_variants() {
+        assert_eq!(format_value(&CellValue::Boolean(true), "0"), "TRUE");
+        assert_eq!(format_value(&CellValue::Boolean(false), "0"), "FALSE");
+        assert_eq!(format_value(&CellValue::Empty, "0"), "");
+        assert_eq!(
+            format_value(&CellValue::Date("2023-01-01".into()), "yyyy"),
+            "2023-01-01"
+        );
+        assert_eq!(
+            format_value(&CellValue::Formula("SUM(A1)".into()), "0"),
+            "SUM(A1)"
+        );
+        assert_eq!(format_value(&CellValue::Number(5.0), "0"), "5");
+    }
+
+    #[test]
+    fn general_negatives_and_empty_code() {
+        assert_eq!(format_number(-42.0, "General"), "-42");
+        assert_eq!(format_number(3.5, ""), "3.5");
+        assert_eq!(format_number(1e20, "General"), format!("{}", 1e20f64));
+    }
+
+    #[test]
+    fn zero_section_and_color_brackets() {
+        // color bracket in the negative section is stripped from the output
+        assert_eq!(format_number(-5.0, "0.0;[Red]-0.0"), "-5.0");
+        // explicit zero section
+        assert_eq!(format_number(0.0, "0;;\"--\""), "--");
+    }
+
+    #[test]
+    fn question_mark_padding_and_month_names() {
+        // '?' shows a space for insignificant trailing positions (decimal align)
+        assert_eq!(format_number(1.5, "0.0??"), "1.5  ");
+        // a significant digit under '?' still shows
+        assert_eq!(format_number(1.25, "0.0??"), "1.25 ");
+        assert_eq!(format_number(44941.0, "mmm"), "Jan");
+        assert_eq!(format_number(44941.0, "ddd"), "Sun");
+        assert_eq!(format_number(44941.0, "yy"), "23");
+    }
+
+    #[test]
+    fn elapsed_minutes_and_seconds() {
+        // 1.5 days = 2160 minutes, 129600 seconds
+        assert_eq!(format_number(1.5, "[m]"), "2160");
+        assert_eq!(format_number(1.5, "[s]"), "129600");
+    }
+
+    #[test]
+    fn currency_and_literal_quotes() {
+        assert_eq!(format_number(9.0, "\"$\"0.00"), "$9.00");
+        assert_eq!(format_number(5.0, "0\" units\""), "5 units");
     }
 }

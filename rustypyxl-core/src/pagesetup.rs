@@ -577,3 +577,84 @@ mod tests {
         assert_eq!(PaperSize::A4.code(), 9);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn paper_size_code_roundtrip() {
+        for size in [
+            PaperSize::Letter,
+            PaperSize::Legal,
+            PaperSize::A3,
+            PaperSize::A4,
+            PaperSize::A5,
+            PaperSize::Tabloid,
+        ] {
+            let code = size.code();
+            assert_eq!(PaperSize::from_code(code), size);
+        }
+        // Unknown code falls back to a default.
+        let _ = PaperSize::from_code(9999);
+    }
+
+    #[test]
+    fn page_margins_presets() {
+        let u = PageMargins::uniform(1.0);
+        assert_eq!(u.left, 1.0);
+        assert_eq!(u.right, 1.0);
+        let _ = PageMargins::narrow();
+        let _ = PageMargins::wide();
+    }
+
+    #[test]
+    fn header_footer_sections() {
+        let s = HeaderFooterSection::new()
+            .with_left("L")
+            .with_center("C")
+            .with_right("R");
+        assert_eq!(s.left.as_deref(), Some("L"));
+        assert_eq!(s.center.as_deref(), Some("C"));
+        assert_eq!(s.right.as_deref(), Some("R"));
+
+        // parse_encoded splits an &L..&C..&R.. string back into sections.
+        let parsed = HeaderFooterSection::parse_encoded("&LLeft&CCenter&RRight");
+        assert_eq!(parsed.left.as_deref(), Some("Left"));
+        assert_eq!(parsed.center.as_deref(), Some("Center"));
+        assert_eq!(parsed.right.as_deref(), Some("Right"));
+
+        let hf = HeaderFooter::new()
+            .with_header(HeaderFooterSection::new().with_center("Title"))
+            .with_footer(HeaderFooterSection::new().with_center("Page &P"));
+        assert!(hf.odd_header.is_some() && hf.odd_footer.is_some());
+
+        assert!(codes::font_size(12).contains("12"));
+        assert!(codes::font_name("Arial").contains("Arial"));
+    }
+
+    #[test]
+    fn print_titles() {
+        let t = PrintTitles::default().with_rows("1:1").with_cols("A:A");
+        assert_eq!(t.rows.as_deref(), Some("1:1"));
+        assert_eq!(t.cols.as_deref(), Some("A:A"));
+    }
+
+    #[test]
+    fn page_setup_builders() {
+        let ps = PageSetup::new()
+            .with_paper_size(PaperSize::A4)
+            .with_orientation(Orientation::Landscape)
+            .with_scale(90)
+            .with_margins(PageMargins::narrow())
+            .with_print_area("A1:D20")
+            .print_gridlines()
+            .center_on_page();
+        assert_eq!(ps.orientation, Orientation::Landscape);
+        assert_eq!(ps.scale, 90);
+        assert_eq!(ps.print_area.as_deref(), Some("A1:D20"));
+
+        let fit = PageSetup::new().fit_to_page().fit_to_width(2);
+        assert!(fit.fit_to_width.is_some() || fit.fit_to_height.is_some());
+    }
+}

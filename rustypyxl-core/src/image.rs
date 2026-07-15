@@ -322,3 +322,94 @@ mod tests {
         assert_eq!(ImageFormat::Jpeg.content_type(), "image/jpeg");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn format_extensions_and_content_types() {
+        for (fmt, ext, ct) in [
+            (ImageFormat::Png, "png", "image/png"),
+            (ImageFormat::Jpeg, "jpeg", "image/jpeg"),
+            (ImageFormat::Gif, "gif", "image/gif"),
+            (ImageFormat::Bmp, "bmp", "image/bmp"),
+            (ImageFormat::Tiff, "tiff", "image/tiff"),
+            (ImageFormat::Emf, "emf", "image/x-emf"),
+            (ImageFormat::Wmf, "wmf", "image/x-wmf"),
+        ] {
+            assert_eq!(fmt.extension(), ext);
+            assert_eq!(fmt.content_type(), ct);
+        }
+    }
+
+    #[test]
+    fn format_from_extension_variants() {
+        assert_eq!(ImageFormat::from_extension("JPG"), Some(ImageFormat::Jpeg));
+        assert_eq!(ImageFormat::from_extension("tif"), Some(ImageFormat::Tiff));
+        assert_eq!(ImageFormat::from_extension("PNG"), Some(ImageFormat::Png));
+        assert_eq!(ImageFormat::from_extension("webp"), None);
+    }
+
+    #[test]
+    fn format_from_magic_bytes() {
+        assert_eq!(
+            ImageFormat::from_bytes(&[0x42, 0x4D, 0, 0, 0, 0, 0, 0]),
+            Some(ImageFormat::Bmp)
+        );
+        assert_eq!(
+            ImageFormat::from_bytes(&[0x49, 0x49, 0x2A, 0x00, 0, 0, 0, 0]),
+            Some(ImageFormat::Tiff)
+        );
+        assert_eq!(
+            ImageFormat::from_bytes(&[0x4D, 0x4D, 0x00, 0x2A, 0, 0, 0, 0]),
+            Some(ImageFormat::Tiff)
+        );
+        assert_eq!(ImageFormat::from_bytes(&[0, 1, 2]), None); // too short
+        assert_eq!(ImageFormat::from_bytes(&[0; 8]), None); // unknown
+    }
+
+    #[test]
+    fn anchor_builders() {
+        let one = ImageAnchor::one_cell("B2").with_offset_px(10, 20);
+        assert_eq!(one.anchor_type, ImageAnchorType::OneCell);
+        assert_eq!(one.from_cell, "B2");
+        assert_eq!(one.from_col_offset, 10 * 9525);
+        assert_eq!(one.from_row_offset, 20 * 9525);
+
+        let two = ImageAnchor::two_cell("A1", "D4");
+        assert_eq!(two.anchor_type, ImageAnchorType::TwoCell);
+        assert_eq!(two.to_cell.as_deref(), Some("D4"));
+    }
+
+    #[test]
+    fn image_builders_and_sizing() {
+        let png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let img = Image::from_bytes(png, ImageAnchor::one_cell("A1"))
+            .unwrap()
+            .with_size_inches(2.0, 1.0)
+            .with_alt_text("alt")
+            .with_name("logo");
+        assert_eq!(img.format, ImageFormat::Png);
+        assert_eq!(img.width, 1828800);
+        assert_eq!(img.height, 914400);
+        assert_eq!(img.alt_text.as_deref(), Some("alt"));
+        assert_eq!(img.name.as_deref(), Some("logo"));
+
+        // Unrecognized bytes yield no image.
+        assert!(
+            Image::from_bytes(vec![0, 1, 2, 3, 4, 5, 6, 7], ImageAnchor::one_cell("A1")).is_none()
+        );
+    }
+
+    #[test]
+    fn image_from_file_reads_and_detects() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("rustypyxl_cov_test.png");
+        std::fs::write(&path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let img = Image::from_file(&path, ImageAnchor::one_cell("A1")).unwrap();
+        assert_eq!(img.format, ImageFormat::Png);
+        assert!(img.source_path.is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+}

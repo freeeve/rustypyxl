@@ -292,3 +292,52 @@ mod tests {
         assert_eq!(filter.value, 10.0);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn custom_filter_chains() {
+        let f = CustomFilter::new(FilterOperator::GreaterThan, "10")
+            .and(FilterOperator::LessThan, "100");
+        assert!(f.and);
+        let g = CustomFilter::new(FilterOperator::Equal, "x").or(FilterOperator::Equal, "y");
+        assert!(!g.and);
+    }
+
+    #[test]
+    fn operator_and_dynamic_xml() {
+        assert_eq!(FilterOperator::Equal.xml_value(), "equal");
+        assert_eq!(
+            FilterOperator::GreaterThanOrEqual.xml_value(),
+            "greaterThanOrEqual"
+        );
+        assert_eq!(FilterOperator::NotEqual.xml_value(), "notEqual");
+        assert!(!DynamicFilterType::Today.xml_type().is_empty());
+        assert!(!DynamicFilterType::ThisMonth.xml_type().is_empty());
+        assert!(!DynamicFilterType::YearToDate.xml_type().is_empty());
+    }
+
+    #[test]
+    fn top10_variants() {
+        assert!(Top10Filter::top(5).top);
+        assert!(!Top10Filter::bottom(5).top);
+        assert!(Top10Filter::top_percent(10.0).percent);
+    }
+
+    #[test]
+    fn filter_columns_and_autofilter() {
+        let vals = FilterColumn::values(0, vec!["a".into(), "b".into()]);
+        assert_eq!(vals.column_id, 0);
+        let custom = FilterColumn::custom(1, CustomFilter::new(FilterOperator::GreaterThan, "5"));
+        assert_eq!(custom.column_id, 1);
+
+        let mut af = AutoFilter::new("A1:C10");
+        af.add_filter(vals);
+        af.add_filter(custom);
+        af.sort_by(2, true);
+        assert_eq!(af.columns.len(), 2);
+        assert_eq!(af.range, "A1:C10");
+    }
+}
