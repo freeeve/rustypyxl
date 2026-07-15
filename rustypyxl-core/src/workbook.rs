@@ -81,6 +81,9 @@ pub struct Workbook {
     /// Monotonic source for Worksheet::uid values; never reused so stale
     /// handles can't silently resolve to a different sheet.
     next_sheet_uid: u64,
+    /// Pivot-table parts preserved verbatim from a loaded file so a load/save
+    /// round-trip does not drop them. Not modeled; see [`PivotArtifacts`].
+    pub pivots: PivotArtifacts,
 }
 
 /// (sheet name, sheet id, relationship id, visibility) parsed from workbook.xml.
@@ -105,6 +108,28 @@ type DrawingMedia = HashMap<String, (Vec<u8>, crate::image::ImageFormat)>;
 /// used in each `<c:chart r:id="...">`, holding the chart part's XML.
 type DrawingCharts = HashMap<String, Vec<u8>>;
 
+/// Pivot-table artifacts captured verbatim from a loaded file so they survive a
+/// save. Pivot tables are not modeled; their parts, the workbook `<pivotCaches>`
+/// element, and the relationships tying them together are preserved byte for
+/// byte. Empty for workbooks created from scratch or loaded without pivots.
+#[derive(Clone, Debug, Default)]
+pub struct PivotArtifacts {
+    /// Raw pivot part files as (package path, bytes): everything under
+    /// `xl/pivotCache/` and `xl/pivotTables/`, including their `_rels` parts.
+    pub parts: Vec<(String, Vec<u8>)>,
+    /// The raw `<pivotCaches>…</pivotCaches>` element from workbook.xml, if any.
+    pub workbook_caches_xml: Option<String>,
+    /// workbook.xml.rels entries of type pivotCacheDefinition, as (id, target).
+    pub workbook_rels: Vec<(String, String)>,
+}
+
+impl PivotArtifacts {
+    /// Whether there is anything to preserve.
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty() && self.workbook_caches_xml.is_none() && self.workbook_rels.is_empty()
+    }
+}
+
 /// Everything read from the archive for one sheet before parsing.
 struct SheetParseInput {
     name: String,
@@ -121,6 +146,9 @@ struct SheetParseInput {
     /// Chart parts referenced by the drawing, keyed by the drawing-local
     /// relationship id used in each `<c:chart r:id="...">`.
     drawing_charts: DrawingCharts,
+    /// Pivot-table relationships from this sheet's .rels, as (id, type, target),
+    /// preserved so pivot tables anchored on the sheet survive a save.
+    pivot_rels: Vec<(String, String, String)>,
 }
 
 /// Resolve a relationship target relative to the part that declares it.
@@ -146,6 +174,60 @@ fn resolve_rel_target(base_part: &str, target: &str) -> String {
     parts.join("/")
 }
 
+/// Extract the raw `<tag …>…</tag>` (or self-closing `<tag …/>`) substring from
+/// an XML document, for preserving an element verbatim. Returns None if absent.
+fn extract_xml_element(xml: &[u8], tag: &str) -> Option<String> {
+    let text = std::str::from_utf8(xml).ok()?;
+    let open = format!("<{}", tag);
+    let start = text.find(&open)?;
+    let after = &text[start..];
+    let gt = after.find('>')?;
+    if after[..gt].ends_with('/') {
+        // self-closing element
+        return Some(after[..=gt].to_string());
+    }
+    let close = format!("</{}>", tag);
+    let close_rel = after.find(&close)?;
+    Some(after[..close_rel + close.len()].to_string())
+}
+
+/// Scan a workbook.xml.rels document for pivotCacheDefinition relationships,
+/// returning each as (id, target).
+fn pivot_workbook_rels(rels_xml: &[u8]) -> Vec<(String, String)> {
+    use quick_xml::events::Event;
+    let mut out = Vec::new();
+    let mut reader = quick_xml::Reader::from_reader(rels_xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(e)) | Ok(Event::Start(e))
+                if e.local_name().as_ref() == b"Relationship" =>
+            {
+                let (mut id, mut typ, mut target) = (None, None, None);
+                for attr in e.attributes().flatten() {
+                    let val = attr.unescape_value().ok().map(|v| v.into_owned());
+                    match attr.key.local_name().as_ref() {
+                        b"Id" => id = val,
+                        b"Type" => typ = val,
+                        b"Target" => target = val,
+                        _ => {}
+                    }
+                }
+                if let (Some(id), Some(typ), Some(target)) = (id, typ, target) {
+                    if typ.ends_with("pivotCacheDefinition") {
+                        out.push((id, target));
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 impl Workbook {
     /// Create a new empty workbook.
     pub fn new() -> Self {
@@ -158,6 +240,7 @@ impl Workbook {
             active_sheet: 0,
             date1904: false,
             next_sheet_uid: 1,
+            pivots: PivotArtifacts::default(),
         }
     }
 
@@ -585,6 +668,31 @@ impl Workbook {
         let chart_ids: Vec<u32> = (1..next_chart_id).collect();
         let image_extensions: Vec<&'static str> = image_extensions.into_iter().collect();
 
+        // Renumber preserved pivotCacheDefinition relationships to a distinct id
+        // prefix so they cannot collide with the workbook's regenerated sheet
+        // rel ids, and rewrite the `<pivotCaches>` element to reference the new
+        // ids. Sheet-level pivotTable rels need no such treatment: nothing in
+        // the worksheet XML cites them by id.
+        let mut pivot_caches_xml = self.pivots.workbook_caches_xml.clone();
+        let mut pivot_cache_rels: Vec<(String, String)> = Vec::new();
+        for (i, (old_id, target)) in self.pivots.workbook_rels.iter().enumerate() {
+            let new_id = format!("rIdPivotCache{}", i + 1);
+            if let Some(xml) = pivot_caches_xml.as_mut() {
+                *xml = xml
+                    .replace(
+                        &format!("r:id=\"{}\"", old_id),
+                        &format!("r:id=\"{}\"", new_id),
+                    )
+                    .replace(
+                        &format!("r:id='{}'", old_id),
+                        &format!("r:id=\"{}\"", new_id),
+                    );
+            }
+            pivot_cache_rels.push((new_id, target.clone()));
+        }
+        let pivot_part_paths: Vec<String> =
+            self.pivots.parts.iter().map(|(p, _)| p.clone()).collect();
+
         // Write [Content_Types].xml
         writer::write_content_types(
             zip,
@@ -596,6 +704,7 @@ impl Workbook {
             &chart_ids,
             &drawing_sheet_ids,
             &image_extensions,
+            &pivot_part_paths,
         )?;
 
         // Write _rels/.rels
@@ -618,10 +727,17 @@ impl Workbook {
             &self.named_ranges,
             self.active_sheet,
             self.date1904,
+            pivot_caches_xml.as_deref(),
         )?;
 
         // Write xl/_rels/workbook.xml.rels
-        writer::write_workbook_rels(zip, &options, self.worksheets.len(), has_shared_strings)?;
+        writer::write_workbook_rels(
+            zip,
+            &options,
+            self.worksheets.len(),
+            has_shared_strings,
+            &pivot_cache_rels,
+        )?;
 
         // Write shared strings if we have any
         if has_shared_strings {
@@ -759,7 +875,12 @@ impl Workbook {
             // The sheet .rels part ties comments, external hyperlinks, and
             // tables to the relationship ids used in the worksheet XML.
             let external_links = writer::collect_external_hyperlinks(worksheet);
-            if has_comments || !external_links.is_empty() || !table_ids.is_empty() || has_drawing {
+            if has_comments
+                || !external_links.is_empty()
+                || !table_ids.is_empty()
+                || has_drawing
+                || !worksheet.pivot_rels.is_empty()
+            {
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
                 let rels_options: zip::write::FileOptions<
                     'static,
@@ -799,9 +920,25 @@ impl Workbook {
                         sheet_id
                     ));
                 }
+                // Preserved pivotTable relationships (verbatim id/type/target).
+                for (id, rel_type, target) in &worksheet.pivot_rels {
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"{}\" Type=\"{}\" Target=\"{}\"/>\n",
+                        id,
+                        writer::escape_xml(rel_type),
+                        writer::escape_xml(target)
+                    ));
+                }
                 rels_content.push_str("</Relationships>");
                 zip.write_all(rels_content.as_bytes())?;
             }
+        }
+
+        // Write the preserved pivot parts verbatim (pivotCache*, pivotTables*,
+        // and their _rels), so a loaded file's pivot tables are not dropped.
+        for (path, bytes) in &self.pivots.parts {
+            zip.start_file(path, options.clone())?;
+            zip.write_all(bytes)?;
         }
 
         Ok(())
@@ -815,6 +952,11 @@ impl Workbook {
             Self::read_zip_file_to_vec(archive, "xl/_rels/workbook.xml.rels").ok();
         let shared_strings_xml = Self::read_zip_file_to_vec(archive, "xl/sharedStrings.xml").ok();
         let styles_xml = Self::read_zip_file_to_vec(archive, "xl/styles.xml").ok();
+
+        // Capture pivot-table parts verbatim so they survive a save; they are
+        // preserved, not modeled.
+        self.pivots =
+            Self::capture_pivot_artifacts(archive, &workbook_xml, workbook_rels_xml.as_deref());
 
         // Parse workbook.xml to get sheet names, IDs, relationship IDs,
         // visibility, and the active tab
@@ -888,6 +1030,13 @@ impl Workbook {
             let (drawing_xml, drawing_media, drawing_charts) =
                 Self::read_sheet_drawing(archive, &sheet_path, &rels);
 
+            // Pivot-table relationships on this sheet, preserved verbatim.
+            let pivot_rels: Vec<(String, String, String)> = rels
+                .iter()
+                .filter(|(_, r)| r.rel_type.ends_with("/pivotTable"))
+                .map(|(id, r)| (id.clone(), r.rel_type.clone(), r.target.clone()))
+                .collect();
+
             sheet_data.push(SheetParseInput {
                 name: sheet_name.clone(),
                 visibility: *visibility,
@@ -898,6 +1047,7 @@ impl Workbook {
                 drawing_xml,
                 drawing_media,
                 drawing_charts,
+                pivot_rels,
             });
         }
 
@@ -954,6 +1104,8 @@ impl Workbook {
                 );
             }
 
+            worksheet.pivot_rels = input.pivot_rels.clone();
+
             Ok((input.name.clone(), worksheet))
         };
 
@@ -1003,6 +1155,38 @@ impl Workbook {
         let mut buf = Vec::with_capacity((declared_size as usize).min(MAX_PREALLOC));
         file.read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Capture the pivot-table parts of a workbook verbatim: every file under
+    /// `xl/pivotCache/` and `xl/pivotTables/` (including their `_rels`), the
+    /// workbook `<pivotCaches>` element, and the workbook-level
+    /// pivotCacheDefinition relationships. These are preserved, not modeled, so
+    /// a load/save round-trip does not drop pivot tables.
+    fn capture_pivot_artifacts<R: Read + Seek>(
+        archive: &mut ZipArchive<R>,
+        workbook_xml: &[u8],
+        workbook_rels_xml: Option<&[u8]>,
+    ) -> PivotArtifacts {
+        let mut artifacts = PivotArtifacts::default();
+
+        let names: Vec<String> = archive
+            .file_names()
+            .filter(|n| n.starts_with("xl/pivotCache/") || n.starts_with("xl/pivotTables/"))
+            .map(|s| s.to_string())
+            .collect();
+        for name in names {
+            if let Ok(bytes) = Self::read_zip_file_to_vec(archive, &name) {
+                artifacts.parts.push((name, bytes));
+            }
+        }
+
+        if !artifacts.parts.is_empty() {
+            artifacts.workbook_caches_xml = extract_xml_element(workbook_xml, "pivotCaches");
+            if let Some(rels) = workbook_rels_xml {
+                artifacts.workbook_rels = pivot_workbook_rels(rels);
+            }
+        }
+        artifacts
     }
 
     /// Read a sheet's drawing part along with the media its picture anchors

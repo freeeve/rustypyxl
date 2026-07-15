@@ -230,6 +230,10 @@ pub struct Worksheet {
     pub charts: Vec<crate::chart::Chart>,
     /// Images embedded on this worksheet.
     pub images: Vec<crate::image::Image>,
+    /// Pivot-table relationships preserved from a loaded file as
+    /// (relationship id, type URI, target), so pivot tables anchored on this
+    /// sheet survive a save. Not modeled; preserved verbatim.
+    pub pivot_rels: Vec<(String, String, String)>,
     /// Page setup and print settings.
     pub page_setup: Option<PageSetup>,
     /// Freeze panes anchor cell (e.g. "B2"); rows above and columns left of it stay frozen.
@@ -260,6 +264,7 @@ impl Worksheet {
             tables: Vec::new(),
             charts: Vec::new(),
             images: Vec::new(),
+            pivot_rels: Vec::new(),
             page_setup: None,
             freeze_panes: None,
             visibility: SheetVisibility::default(),

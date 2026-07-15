@@ -346,6 +346,7 @@ pub fn write_content_types<W: Write + Seek>(
     chart_ids: &[u32],
     drawing_sheet_ids: &[u32],
     image_extensions: &[&str],
+    pivot_part_paths: &[String],
 ) -> Result<()> {
     zip.start_file("[Content_Types].xml", options.clone())?;
 
@@ -484,6 +485,27 @@ pub fn write_content_types<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
     }
 
+    // Preserved pivot parts. Derive each part's content type from its path;
+    // .rels parts use the already-declared default and are skipped here.
+    for path in pivot_part_paths {
+        let content_type = if path.ends_with(".rels") {
+            continue;
+        } else if path.contains("pivotCacheDefinition") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"
+        } else if path.contains("pivotCacheRecords") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml"
+        } else if path.contains("pivotTable") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"
+        } else {
+            continue;
+        };
+        let part_name = format!("/{}", path);
+        let mut override_elem = BytesStart::new("Override");
+        override_elem.push_attribute(("PartName", part_name.as_str()));
+        override_elem.push_attribute(("ContentType", content_type));
+        writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
+    }
+
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("Types")))?;
 
     let result = writer.into_inner().into_inner();
@@ -530,6 +552,7 @@ pub fn write_doc_props<W: Write + Seek>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_workbook_xml<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
@@ -537,6 +560,7 @@ pub fn write_workbook_xml<W: Write + Seek>(
     named_ranges: &[crate::workbook::NamedRange],
     active_tab: usize,
     date1904: bool,
+    pivot_caches_xml: Option<&str>,
 ) -> Result<()> {
     zip.start_file("xl/workbook.xml", options.clone())?;
 
@@ -613,6 +637,11 @@ pub fn write_workbook_xml<W: Write + Seek>(
         writer.write_event(quick_xml::events::Event::End(BytesEnd::new("definedNames")))?;
     }
 
+    // pivotCaches (preserved verbatim) belongs after definedNames in the schema.
+    if let Some(caches) = pivot_caches_xml {
+        writer.get_mut().write_all(caches.as_bytes())?;
+    }
+
     writer.write_event(quick_xml::events::Event::End(BytesEnd::new("workbook")))?;
 
     let result = writer.into_inner().into_inner();
@@ -625,6 +654,7 @@ pub fn write_workbook_rels<W: Write + Seek>(
     options: &FileOptions<'static, ExtendedFileOptions>,
     sheet_count: usize,
     has_shared_strings: bool,
+    pivot_cache_rels: &[(String, String)],
 ) -> Result<()> {
     zip.start_file("xl/_rels/workbook.xml.rels", options.clone())?;
 
@@ -649,7 +679,19 @@ pub fn write_workbook_rels<W: Write + Seek>(
     }
 
     content.push_str(r#"<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>"#);
+"#);
+
+    // Preserved pivotCacheDefinition relationships (renumbered ids).
+    for (id, target) in pivot_cache_rels {
+        content.push_str(&format!(
+            r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="{}"/>
+"#,
+            id,
+            escape_xml(target)
+        ));
+    }
+
+    content.push_str("</Relationships>");
 
     zip.write_all(content.as_bytes())?;
     Ok(())
