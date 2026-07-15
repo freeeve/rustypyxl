@@ -74,6 +74,19 @@ impl PyWorksheet {
         Ok((1, 1, 1, 1))
     }
 
+    /// Run a closure against the immutable core worksheet, returning its result.
+    fn with_sheet_ref<R, F: FnOnce(&Worksheet) -> R>(&self, py: Python<'_>, f: F) -> PyResult<R> {
+        if let Some(ref wb) = self.workbook {
+            let this = wb.borrow(py);
+            let idx = self.resolve_index(&this)?;
+            Ok(f(&this.inner.worksheets[idx]))
+        } else {
+            Err(PyValueError::new_err(
+                "Worksheet is not attached to a workbook",
+            ))
+        }
+    }
+
     /// Run a closure against the mutable core worksheet.
     fn with_sheet_mut<F: FnOnce(&mut Worksheet)>(&self, py: Python<'_>, f: F) -> PyResult<()> {
         if let Some(ref wb) = self.workbook {
@@ -595,6 +608,70 @@ impl PyWorksheet {
     /// Auto-fit every column that has content.
     fn auto_fit_all(&self, py: Python<'_>) -> PyResult<()> {
         self.with_sheet_mut(py, |ws| ws.auto_fit_all())
+    }
+
+    /// Add an Excel table (ListObject) over a cell range. `name` is the table
+    /// name, `ref` its range (e.g. "A1:C10"). `style` is a table style name
+    /// like "TableStyleMedium9". `headers` names the columns (defaults to the
+    /// values in the header row). The remaining flags toggle the table's
+    /// display options.
+    #[pyo3(signature = (name, r#ref, style=None, headers=None, totals_row=false, header_row=true, first_column=false, last_column=false, row_stripes=true, column_stripes=false, auto_filter=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_table(
+        &self,
+        name: &str,
+        r#ref: &str,
+        style: Option<String>,
+        headers: Option<Vec<String>>,
+        totals_row: bool,
+        header_row: bool,
+        first_column: bool,
+        last_column: bool,
+        row_stripes: bool,
+        column_stripes: bool,
+        auto_filter: bool,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::table::{Table, TableStyle};
+
+        let id = self.with_sheet_ref(py, |ws| ws.tables.len() as u32 + 1)?;
+        let mut table = match &headers {
+            Some(h) => {
+                let refs: Vec<&str> = h.iter().map(|s| s.as_str()).collect();
+                Table::with_headers(id, name, r#ref, &refs)
+            }
+            None => Table::new(id, name, r#ref),
+        };
+        table.header_row = header_row;
+        table.totals_row = totals_row;
+        table.show_first_column = first_column;
+        table.show_last_column = last_column;
+        table.show_row_stripes = row_stripes;
+        table.show_column_stripes = column_stripes;
+        table.auto_filter = auto_filter;
+        if let Some(s) = style {
+            table.style = TableStyle::Custom(s);
+        }
+        self.with_sheet_mut(py, |ws| ws.add_table(table))
+    }
+
+    /// The tables on this sheet as a list of dicts with keys name, ref, and
+    /// style.
+    #[getter]
+    fn tables(&self, py: Python<'_>) -> PyResult<PyObject> {
+        use pyo3::types::{PyDict, PyList};
+        let list = PyList::empty(py);
+        self.with_sheet_ref(py, |ws| -> PyResult<()> {
+            for t in &ws.tables {
+                let d = PyDict::new(py);
+                d.set_item("name", &t.name)?;
+                d.set_item("ref", &t.range)?;
+                d.set_item("style", t.style.style_name())?;
+                list.append(d)?;
+            }
+            Ok(())
+        })??;
+        Ok(list.into_any().unbind())
     }
 
     /// Column dimensions, indexed by column letter:
