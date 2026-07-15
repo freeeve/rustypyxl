@@ -657,6 +657,30 @@ impl PyWorksheet {
         self.with_sheet_mut(py, |ws| ws.add_table(table))
     }
 
+    /// Add a conditional-formatting rule over a cell range. `rule` is a dict
+    /// describing the rule; supported forms:
+    ///   {"type":"cellIs","operator":"greaterThan","formula":"5","fill":"FF0000"}
+    ///   {"type":"expression","formula":"$A1>0","font_color":"FF0000","bold":true}
+    ///   {"type":"colorScale","preset":"red_yellow_green"}
+    ///   {"type":"dataBar","color":"638EC6"}
+    ///   {"type":"top","rank":10,"fill":"FFFF00"}
+    ///   {"type":"containsText","text":"x","fill":"FF0000"}
+    ///   {"type":"duplicateValues"} / "uniqueValues" / "aboveAverage" / "belowAverage"
+    /// Format keys fill, font_color, and bold apply where a rule supports a
+    /// differential format.
+    fn add_conditional_formatting(
+        &self,
+        cells: &str,
+        rule: &Bound<'_, PyDict>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::conditional::ConditionalFormatting;
+        let built = build_conditional_rule(rule)?;
+        let mut cf = ConditionalFormatting::new(cells);
+        cf.add_rule(built);
+        self.with_sheet_mut(py, |ws| ws.add_conditional_formatting(cf))
+    }
+
     /// Add a data-validation rule over a cell range (e.g. "A1:A10"). `type` is
     /// one of whole, decimal, list, date, time, textLength, custom. `formula1`
     /// (and `formula2` for between/notBetween) supply the constraint -- for a
@@ -937,6 +961,111 @@ impl PyCellRangeIterator {
     fn __clear__(&mut self) {
         self.workbook = None;
     }
+}
+
+/// Build a conditional-formatting rule from a Python dict describing it.
+fn build_conditional_rule(
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<rustypyxl_core::conditional::ConditionalRule> {
+    use rustypyxl_core::conditional::{
+        ColorScale, ConditionalColor, ConditionalFormat, ConditionalOperator, ConditionalRule,
+        DataBar,
+    };
+
+    let get_str = |key: &str| -> PyResult<Option<String>> {
+        match dict.get_item(key)? {
+            Some(v) => Ok(Some(v.extract()?)),
+            None => Ok(None),
+        }
+    };
+    let rule_type = get_str("type")?
+        .ok_or_else(|| PyValueError::new_err("conditional rule requires a 'type' key"))?;
+
+    // The differential format shared by most rule kinds.
+    let format = {
+        let mut f = ConditionalFormat::new();
+        let mut any = false;
+        if let Some(c) = get_str("font_color")? {
+            f = f.with_font_color(ConditionalColor::rgb(c));
+            any = true;
+        }
+        if let Some(c) = get_str("fill")? {
+            f = f.with_fill(ConditionalColor::rgb(c));
+            any = true;
+        }
+        if let Some(b) = dict.get_item("bold")? {
+            f = f.with_bold(b.extract()?);
+            any = true;
+        }
+        if any {
+            Some(f)
+        } else {
+            None
+        }
+    };
+
+    let mut rule = match rule_type.as_str() {
+        "cellIs" => {
+            let op_str = get_str("operator")?
+                .ok_or_else(|| PyValueError::new_err("cellIs requires 'operator'"))?;
+            let op = ConditionalOperator::from_xml(&op_str)
+                .ok_or_else(|| PyValueError::new_err(format!("unknown operator {op_str:?}")))?;
+            let value = get_str("formula")?.unwrap_or_default();
+            ConditionalRule::cell_is(op, &value)
+        }
+        "expression" | "formula" => {
+            let f = get_str("formula")?
+                .ok_or_else(|| PyValueError::new_err("expression requires 'formula'"))?;
+            ConditionalRule::formula(&f)
+        }
+        "colorScale" => {
+            let scale = match get_str("preset")?.as_deref() {
+                Some("green_yellow_red") => ColorScale::green_yellow_red(),
+                _ => ColorScale::red_yellow_green(),
+            };
+            ConditionalRule::with_color_scale(scale)
+        }
+        "dataBar" => {
+            let mut bar = DataBar::new();
+            if let Some(c) = get_str("color")? {
+                bar = bar.with_color(ConditionalColor::rgb(c));
+            }
+            ConditionalRule::with_data_bar(bar)
+        }
+        "top" => ConditionalRule::top(rank(dict)?),
+        "bottom" => ConditionalRule::bottom(rank(dict)?),
+        "containsText" => ConditionalRule::contains_text(&text_of(dict)?),
+        "beginsWith" => ConditionalRule::begins_with(&text_of(dict)?),
+        "endsWith" => ConditionalRule::ends_with(&text_of(dict)?),
+        "duplicateValues" => ConditionalRule::duplicate_values(),
+        "uniqueValues" => ConditionalRule::unique_values(),
+        "aboveAverage" => ConditionalRule::above_average(),
+        "belowAverage" => ConditionalRule::below_average(),
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unsupported conditional rule type {other:?}"
+            )))
+        }
+    };
+    if let Some(f) = format {
+        rule = rule.with_format(f);
+    }
+    Ok(rule)
+}
+
+/// Read the integer "rank" key of a top/bottom rule dict (default 10).
+fn rank(dict: &Bound<'_, PyDict>) -> PyResult<u32> {
+    match dict.get_item("rank")? {
+        Some(v) => v.extract(),
+        None => Ok(10),
+    }
+}
+
+/// Read the required "text" key of a text rule dict.
+fn text_of(dict: &Bound<'_, PyDict>) -> PyResult<String> {
+    dict.get_item("text")?
+        .ok_or_else(|| PyValueError::new_err("text rule requires a 'text' key"))?
+        .extract()
 }
 
 /// Build a chart series from a values reference, an optional name, and an
