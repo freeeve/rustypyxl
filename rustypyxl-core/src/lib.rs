@@ -35,6 +35,7 @@ pub mod error;
 pub mod formula;
 pub mod image;
 pub mod numfmt;
+pub mod pivot;
 pub mod rich_text;
 pub mod style;
 pub mod utils;

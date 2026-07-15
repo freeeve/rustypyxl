@@ -153,7 +153,7 @@ struct SheetParseInput {
 
 /// Resolve a relationship target relative to the part that declares it.
 /// `base_part` is a full package path like "xl/worksheets/sheet1.xml".
-fn resolve_rel_target(base_part: &str, target: &str) -> String {
+pub(crate) fn resolve_rel_target(base_part: &str, target: &str) -> String {
     if let Some(stripped) = target.strip_prefix('/') {
         return stripped.to_string();
     }
@@ -172,6 +172,34 @@ fn resolve_rel_target(base_part: &str, target: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// Normalize a user-supplied aggregation name to its OOXML subtotal token.
+fn normalize_subtotal(agg: &str) -> String {
+    match agg.to_ascii_lowercase().as_str() {
+        "sum" => "sum",
+        "count" | "counta" => "count",
+        "countnums" | "count_nums" => "countNums",
+        "average" | "avg" | "mean" => "average",
+        "max" => "max",
+        "min" => "min",
+        "product" => "product",
+        "stddev" | "std" => "stdDev",
+        "stddevp" => "stdDevp",
+        "var" => "var",
+        "varp" => "varp",
+        _ => "sum",
+    }
+    .to_string()
+}
+
+/// Capitalize the first letter for a data-field display label ("sum" -> "Sum").
+fn cap_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Convert a stored cell value to a formula value (formulas are handled by the
@@ -379,6 +407,152 @@ impl Workbook {
             }
         }
         Err(RustypyxlError::WorksheetNotFound(name.to_string()))
+    }
+
+    /// The pivot tables in this workbook, parsed read-only from the preserved
+    /// pivot parts (source range, cache fields, and the row/column/data/page
+    /// field placements). Empty when the workbook has no pivot tables. Building
+    /// or editing pivot tables is not supported; they are preserved verbatim on
+    /// save regardless of what this returns.
+    pub fn pivot_tables(&self) -> Vec<crate::pivot::PivotTableInfo> {
+        crate::pivot::parse_pivot_tables(&self.pivots)
+    }
+
+    /// Create a pivot table from a source data range and add it to a target
+    /// sheet. `source_ref` is a range like "A1:C100" whose first row holds the
+    /// field headers; `rows`, `columns`, and `values` name fields from that
+    /// header (values pair a field with an aggregation such as "sum", "count",
+    /// or "average"). The pivot is written on save; Excel rebuilds its cache
+    /// from the source when the file is opened.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pivot_table(
+        &mut self,
+        source_sheet: &str,
+        source_ref: &str,
+        target_sheet: &str,
+        anchor: &str,
+        rows: &[String],
+        columns: &[String],
+        values: &[(String, String)],
+        name: Option<&str>,
+    ) -> Result<()> {
+        // Resolve the source range and read its header row into field names.
+        let ((r1, c1), (_r2, c2)) = crate::utils::parse_range(source_ref)?;
+        let src = self.get_sheet_by_name(source_sheet)?;
+        let mut field_names: Vec<String> = Vec::new();
+        for col in c1..=c2 {
+            let header = match src.get_cell_value(r1, col) {
+                Some(CellValue::String(s)) => s.to_string(),
+                Some(CellValue::Number(n)) => format!("{}", n),
+                Some(CellValue::Boolean(b)) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+                _ => format!("Column{}", col - c1 + 1),
+            };
+            field_names.push(header);
+        }
+
+        // Map a field name to its 0-based index within the source columns.
+        let index_of = |wanted: &str| -> Result<i32> {
+            field_names
+                .iter()
+                .position(|f| f == wanted)
+                .map(|p| p as i32)
+                .ok_or_else(|| {
+                    RustypyxlError::Custom(format!(
+                        "pivot field '{}' is not a header in {}",
+                        wanted, source_ref
+                    ))
+                })
+        };
+
+        let row_indices: Vec<i32> = rows.iter().map(|r| index_of(r)).collect::<Result<_>>()?;
+        let mut col_indices: Vec<i32> =
+            columns.iter().map(|c| index_of(c)).collect::<Result<_>>()?;
+        let data_fields: Vec<(usize, String, String)> = values
+            .iter()
+            .map(|(field, agg)| {
+                let idx = index_of(field)? as usize;
+                let subtotal = normalize_subtotal(agg);
+                Ok((
+                    idx,
+                    format!("{} of {}", cap_first(&subtotal), field),
+                    subtotal,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        // The data-values placeholder goes on the column axis when there are
+        // data fields (Excel's default layout).
+        if !data_fields.is_empty() {
+            col_indices.push(-2);
+        }
+
+        if !self.sheet_names.iter().any(|n| n == target_sheet) {
+            return Err(RustypyxlError::WorksheetNotFound(target_sheet.to_string()));
+        }
+
+        // Allocate part numbers past any existing pivot parts.
+        let existing = |needle: &str| -> u32 {
+            self.pivots
+                .parts
+                .iter()
+                .filter(|(p, _)| p.contains(needle) && p.ends_with(".xml"))
+                .count() as u32
+        };
+        let cache_num = existing("pivotCacheDefinition") + 1;
+        let table_num = existing("pivotTable") + 1;
+        let cache_id = self.pivots.workbook_rels.len() as u32;
+        let cache_rel_id = format!("rIdPvtCacheNew{}", cache_num);
+        let sheet_rel_id = format!("rIdPivotTable{}", table_num);
+
+        // A location big enough to be valid; Excel recomputes it on refresh.
+        let (arow, acol) = crate::utils::parse_coordinate(anchor)?;
+        let first_data_col = row_indices.len().max(1) as u32;
+        let end_col = acol + first_data_col + (col_indices.len().max(1) as u32);
+        let location_ref = format!(
+            "{}:{}",
+            anchor,
+            crate::utils::coordinate_from_row_col(arow + 15, end_col)
+        );
+
+        let pivot_name = name
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("PivotTable{}", table_num));
+
+        let built = crate::pivot::build_pivot(crate::pivot::PivotBuildRequest {
+            cache_id,
+            cache_num,
+            table_num,
+            name: &pivot_name,
+            source_sheet,
+            source_ref,
+            location_ref: &location_ref,
+            field_names: &field_names,
+            row_indices: &row_indices,
+            col_indices: &col_indices,
+            data_fields: &data_fields,
+            cache_rel_id: &cache_rel_id,
+            sheet_rel_id: &sheet_rel_id,
+        });
+
+        // Inject into the preserved-pivot structures so the existing save path
+        // emits the new parts, the workbook <pivotCaches>, and the rels.
+        self.pivots.parts.extend(built.parts);
+        self.pivots.workbook_rels.push(built.workbook_rel);
+        match self.pivots.workbook_caches_xml.as_mut() {
+            Some(xml) => {
+                *xml = xml.replace(
+                    "</pivotCaches>",
+                    &format!("{}</pivotCaches>", built.caches_child),
+                );
+            }
+            None => {
+                self.pivots.workbook_caches_xml =
+                    Some(format!("<pivotCaches>{}</pivotCaches>", built.caches_child));
+            }
+        }
+        self.get_sheet_by_name_mut(target_sheet)?
+            .pivot_rels
+            .push(built.sheet_rel);
+        Ok(())
     }
 
     /// Evaluate a formula string in the context of a sheet, resolving cell and

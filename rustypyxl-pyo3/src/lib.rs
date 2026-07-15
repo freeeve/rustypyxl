@@ -17,7 +17,7 @@ use style::{
     PyAlignment, PyBorder, PyColor, PyFont, PyGradientFill, PyGradientStop, PyPatternFill,
     PyProtection, PySide,
 };
-use workbook::PyWorkbook;
+use workbook::{PyPivotTable, PyWorkbook};
 use worksheet::{PyCellRangeIterator, PyWorksheet};
 
 /// Load a workbook from a file path, bytes, or file-like object.
@@ -89,6 +89,7 @@ fn datetime_to_serial(value: &Bound<'_, PyAny>) -> PyResult<f64> {
 fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core classes
     m.add_class::<PyWorkbook>()?;
+    m.add_class::<PyPivotTable>()?;
     m.add_class::<PyWorksheet>()?;
     m.add_class::<PyCell>()?;
     m.add_class::<PyCellRangeIterator>()?;

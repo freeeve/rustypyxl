@@ -475,6 +475,52 @@ impl PyWorkbook {
         Ok(formula_value_to_python(value, py))
     }
 
+    /// Create a pivot table from a source range and add it to a target sheet.
+    ///
+    /// `source_ref` is a range like "A1:C100" whose first row holds the field
+    /// headers. `rows` and `columns` name fields for those areas; `values`
+    /// is a list of (field, aggregation) pairs (aggregation e.g. "sum",
+    /// "count", "average"). The pivot is written on save and Excel rebuilds its
+    /// cache from the source on open.
+    #[pyo3(signature = (source_sheet, source_ref, target_sheet, anchor, rows=Vec::new(), columns=Vec::new(), values=Vec::new(), name=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pivot_table(
+        &mut self,
+        source_sheet: &str,
+        source_ref: &str,
+        target_sheet: &str,
+        anchor: &str,
+        rows: Vec<String>,
+        columns: Vec<String>,
+        values: Vec<(String, String)>,
+        name: Option<&str>,
+    ) -> PyResult<()> {
+        self.inner
+            .add_pivot_table(
+                source_sheet,
+                source_ref,
+                target_sheet,
+                anchor,
+                &rows,
+                &columns,
+                &values,
+                name,
+            )
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// The pivot tables in this workbook, read-only (source range, cache
+    /// fields, and row/column/data/page field placements). Pivot tables are
+    /// preserved on save but not editable through this API.
+    #[getter]
+    pub fn pivot_tables(&self) -> Vec<PyPivotTable> {
+        self.inner
+            .pivot_tables()
+            .into_iter()
+            .map(PyPivotTable::from_info)
+            .collect()
+    }
+
     /// Rich-text runs of a cell as a list of dicts (text + font attributes), or
     /// None if the cell is not rich text.
     pub fn get_cell_rich_text(
@@ -1485,6 +1531,87 @@ fn iso_string_to_python(py: Python<'_>, s: &str) -> Option<PyObject> {
 }
 
 /// Convert a CellValue to a Python object.
+/// A read-only view of a pivot table (openpyxl-level read support).
+#[pyclass(name = "PivotTable", frozen)]
+pub struct PyPivotTable {
+    /// Pivot table name.
+    #[pyo3(get)]
+    pub name: String,
+    /// The cache id it draws from, if declared.
+    #[pyo3(get)]
+    pub cache_id: Option<u32>,
+    /// The range the pivot occupies on its sheet.
+    #[pyo3(get)]
+    pub location: Option<String>,
+    /// Source data sheet name.
+    #[pyo3(get)]
+    pub source_sheet: Option<String>,
+    /// Source data range.
+    #[pyo3(get)]
+    pub source_ref: Option<String>,
+    /// The cache field names, in source-column order.
+    #[pyo3(get)]
+    pub fields: Vec<String>,
+    /// Row-area field names.
+    #[pyo3(get)]
+    pub row_fields: Vec<String>,
+    /// Column-area field names.
+    #[pyo3(get)]
+    pub col_fields: Vec<String>,
+    /// Report-filter field names.
+    #[pyo3(get)]
+    pub page_fields: Vec<String>,
+    /// (display name, source field, subtotal) for each data field.
+    data_fields: Vec<(String, String, String)>,
+}
+
+impl PyPivotTable {
+    fn from_info(info: rustypyxl_core::pivot::PivotTableInfo) -> Self {
+        PyPivotTable {
+            name: info.name,
+            cache_id: info.cache_id,
+            location: info.location,
+            source_sheet: info.source_sheet,
+            source_ref: info.source_ref,
+            fields: info.cache_fields,
+            row_fields: info.row_fields,
+            col_fields: info.col_fields,
+            page_fields: info.page_fields,
+            data_fields: info
+                .data_fields
+                .into_iter()
+                .map(|d| (d.name, d.source_field, d.subtotal))
+                .collect(),
+        }
+    }
+}
+
+#[pymethods]
+impl PyPivotTable {
+    /// Data (values) fields as a list of dicts with keys name, source_field,
+    /// and subtotal (the aggregation, e.g. "sum").
+    #[getter]
+    fn data_fields(&self, py: Python<'_>) -> PyResult<PyObject> {
+        use pyo3::types::{PyDict, PyList};
+        let list = PyList::empty(py);
+        for (name, source_field, subtotal) in &self.data_fields {
+            let d = PyDict::new(py);
+            d.set_item("name", name)?;
+            d.set_item("source_field", source_field)?;
+            d.set_item("subtotal", subtotal)?;
+            list.append(d)?;
+        }
+        Ok(list.into_any().unbind())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PivotTable(name={:?}, source={:?}!{:?})",
+            self.name, self.source_sheet, self.source_ref
+        )
+    }
+}
+
 pub(crate) fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObject {
     match value {
         CellValue::Empty => py.None(),
