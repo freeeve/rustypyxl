@@ -2,11 +2,12 @@
 //!
 //! This module provides structures for creating and manipulating charts in Excel files.
 //!
-//! **Status: write path.** A [`Chart`] added to a worksheet is serialized on save
+//! **Status: read + write.** A [`Chart`] added to a worksheet is serialized on save
 //! (chart part, drawing, and anchor), so it opens in Excel with the series, labels,
-//! title, legend, and axes intact. Charts are not yet read back when loading a file.
-//! Supported types round-trip through the writer: bar, column, line, area, pie,
-//! doughnut, and scatter; other types fall back to a bar chart.
+//! title, legend, and axes intact; and charts present in a loaded file are read back
+//! into this model, so they survive a load/save round-trip. Supported types: bar,
+//! column, line, area, pie, doughnut, and scatter; other types fall back to a bar
+//! chart on write. Axis min/max and per-series colors are written but not read back.
 
 use std::collections::HashMap;
 

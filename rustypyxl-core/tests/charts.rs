@@ -2,7 +2,7 @@
 //! drawing that anchors it, the relationships tying them together, and the
 //! content-type overrides all appear and are well-formed XML.
 
-use rustypyxl::chart::{Chart, ChartLegend, ChartSeries};
+use rustypyxl::chart::{Chart, ChartLegend, ChartSeries, ChartType};
 use rustypyxl::{CellValue, Workbook};
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
@@ -130,4 +130,72 @@ fn charts_across_sheets_get_unique_ids() {
     assert!(read_part(&bytes, "xl/drawings/drawing2.xml").is_some());
     let dr2 = read_part(&bytes, "xl/drawings/_rels/drawing2.xml.rels").unwrap();
     assert!(dr2.contains("../charts/chart2.xml"));
+}
+
+#[test]
+fn chart_survives_load_save_round_trip() {
+    let mut wb = Workbook::new();
+    wb.create_sheet(Some("Data".to_string())).unwrap();
+    let mut chart = Chart::column().with_title("Sales");
+    chart.add_series(
+        ChartSeries::new("Data!$B$1:$B$3")
+            .with_name("Revenue")
+            .with_categories("Data!$A$1:$A$3"),
+    );
+    chart = chart.with_legend(ChartLegend::new().with_position("b"));
+    chart = chart.with_anchor(rustypyxl::chart::ChartAnchor::at("D2"));
+    wb.get_sheet_by_name_mut("Data").unwrap().add_chart(chart);
+
+    let bytes = wb.save_to_bytes().unwrap();
+    let reloaded = Workbook::load_from_bytes(&bytes).unwrap();
+    let ws = reloaded.get_sheet_by_name("Data").unwrap();
+
+    assert_eq!(ws.charts.len(), 1, "chart read back on load");
+    let got = &ws.charts[0];
+    assert_eq!(got.chart_type, ChartType::Column);
+    assert_eq!(got.series.len(), 1);
+    assert_eq!(got.series[0].values, "Data!$B$1:$B$3");
+    assert_eq!(got.series[0].categories.as_deref(), Some("Data!$A$1:$A$3"));
+    assert_eq!(got.series[0].name.as_deref(), Some("Revenue"));
+    assert_eq!(
+        got.title.as_ref().and_then(|t| t.text.as_deref()),
+        Some("Sales")
+    );
+    assert_eq!(got.legend.as_ref().map(|l| l.position.as_str()), Some("b"));
+    assert_eq!(
+        got.anchor.as_ref().map(|a| a.from_cell.as_str()),
+        Some("D2")
+    );
+
+    // Re-saving the reloaded workbook still carries the chart.
+    let bytes2 = reloaded.save_to_bytes().unwrap();
+    assert!(read_part(&bytes2, "xl/charts/chart1.xml")
+        .unwrap()
+        .contains("<c:barChart>"));
+}
+
+#[test]
+fn round_trips_line_pie_and_scatter_types() {
+    for (make, label) in [
+        (Chart::line as fn() -> Chart, ChartType::Line),
+        (Chart::pie as fn() -> Chart, ChartType::Pie),
+        (Chart::scatter as fn() -> Chart, ChartType::Scatter),
+    ] {
+        let mut wb = Workbook::new();
+        wb.create_sheet(Some("S".to_string())).unwrap();
+        let mut chart = make();
+        chart.add_series(ChartSeries::new("S!$B$1:$B$3").with_categories("S!$A$1:$A$3"));
+        wb.get_sheet_by_name_mut("S").unwrap().add_chart(chart);
+
+        let bytes = wb.save_to_bytes().unwrap();
+        let reloaded = Workbook::load_from_bytes(&bytes).unwrap();
+        let ws = reloaded.get_sheet_by_name("S").unwrap();
+        assert_eq!(ws.charts.len(), 1, "{label:?} chart read back");
+        assert_eq!(ws.charts[0].chart_type, label);
+        assert_eq!(ws.charts[0].series[0].values, "S!$B$1:$B$3");
+        assert_eq!(
+            ws.charts[0].series[0].categories.as_deref(),
+            Some("S!$A$1:$A$3")
+        );
+    }
 }

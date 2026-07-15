@@ -91,6 +91,33 @@ def test_scatter_chart(tmp_path):
     assert isinstance(chart, ScatterChart)
 
 
+def test_openpyxl_chart_survives_rustypyxl_round_trip(tmp_path):
+    # Author a chart with openpyxl.
+    from openpyxl import Workbook as OpxlWorkbook
+    from openpyxl.chart import BarChart, Reference
+
+    src = str(tmp_path / "src.xlsx")
+    wb = OpxlWorkbook()
+    ws = wb.active
+    ws.title = "Data"
+    for i, v in enumerate([10, 25, 18, 30], start=1):
+        ws.cell(row=i, column=1, value=v)
+    chart = BarChart()
+    chart.title = "Authored"
+    chart.add_data(Reference(ws, min_col=1, min_row=1, max_row=4))
+    ws.add_chart(chart, "C1")
+    wb.save(src)
+
+    # Round-trip it through rustypyxl. Before charts were read on load, this
+    # dropped the chart; now save regenerates it from the loaded model.
+    out = str(tmp_path / "out.xlsx")
+    rustypyxl.load_workbook(src).save(out)
+
+    # openpyxl still finds the chart.
+    charts = openpyxl.load_workbook(out)["Data"]._charts
+    assert len(charts) == 1
+
+
 def test_unknown_chart_type_raises(tmp_path):
     wb = rustypyxl.Workbook()
     ws = wb.create_sheet("S")

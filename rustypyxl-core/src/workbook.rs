@@ -101,6 +101,10 @@ pub(crate) struct SheetRel {
 /// each `<a:blip r:embed="...">`, paired with the detected format.
 type DrawingMedia = HashMap<String, (Vec<u8>, crate::image::ImageFormat)>;
 
+/// Chart parts a drawing references, keyed by the drawing-local relationship id
+/// used in each `<c:chart r:id="...">`, holding the chart part's XML.
+type DrawingCharts = HashMap<String, Vec<u8>>;
+
 /// Everything read from the archive for one sheet before parsing.
 struct SheetParseInput {
     name: String,
@@ -114,6 +118,9 @@ struct SheetParseInput {
     /// Media referenced by the drawing, keyed by the drawing-local relationship
     /// id used in each `<a:blip r:embed="...">`.
     drawing_media: DrawingMedia,
+    /// Chart parts referenced by the drawing, keyed by the drawing-local
+    /// relationship id used in each `<c:chart r:id="...">`.
+    drawing_charts: DrawingCharts,
 }
 
 /// Resolve a relationship target relative to the part that declares it.
@@ -875,9 +882,10 @@ impl Workbook {
                 })
                 .collect();
 
-            // Drawing part plus the media blobs its picture anchors embed, so
-            // images present in a loaded file survive being saved again.
-            let (drawing_xml, drawing_media) =
+            // Drawing part plus the media blobs its picture anchors embed and
+            // the chart parts its graphic frames reference, so images and charts
+            // present in a loaded file survive being saved again.
+            let (drawing_xml, drawing_media, drawing_charts) =
                 Self::read_sheet_drawing(archive, &sheet_path, &rels);
 
             sheet_data.push(SheetParseInput {
@@ -889,6 +897,7 @@ impl Workbook {
                 table_xmls,
                 drawing_xml,
                 drawing_media,
+                drawing_charts,
             });
         }
 
@@ -937,9 +946,10 @@ impl Workbook {
             }
 
             if let Some(drawing_xml) = &input.drawing_xml {
-                Self::parse_drawing_images(
+                Self::parse_drawing(
                     Cursor::new(drawing_xml),
                     &input.drawing_media,
+                    &input.drawing_charts,
                     &mut worksheet,
                 );
             }
@@ -995,21 +1005,22 @@ impl Workbook {
         Ok(buf)
     }
 
-    /// Read a sheet's drawing part and the media its picture anchors embed.
-    /// Returns the drawing XML (if the sheet references one) plus a map from each
-    /// drawing-local image relationship id to its bytes and detected format.
+    /// Read a sheet's drawing part along with the media its picture anchors
+    /// embed and the chart parts its graphic frames reference. Returns the
+    /// drawing XML (if the sheet references one), a map from each drawing-local
+    /// image relationship id to its bytes and format, and a map from each chart
+    /// relationship id to that chart part's XML.
     fn read_sheet_drawing<R: Read + Seek>(
         archive: &mut ZipArchive<R>,
         sheet_path: &str,
         rels: &HashMap<String, SheetRel>,
-    ) -> (Option<Vec<u8>>, DrawingMedia) {
-        let empty = HashMap::new();
+    ) -> (Option<Vec<u8>>, DrawingMedia, DrawingCharts) {
         let Some(dr) = rels.values().find(|r| r.rel_type.ends_with("/drawing")) else {
-            return (None, empty);
+            return (None, HashMap::new(), HashMap::new());
         };
         let drawing_path = resolve_rel_target(sheet_path, &dr.target);
         let Ok(drawing_xml) = Self::read_zip_file_to_vec(archive, &drawing_path) else {
-            return (None, empty);
+            return (None, HashMap::new(), HashMap::new());
         };
 
         let drels_path = match drawing_path.rfind('/') {
@@ -1026,32 +1037,42 @@ impl Workbook {
         };
 
         let mut media = HashMap::new();
+        let mut charts = HashMap::new();
         for (rid, rel) in &drels {
-            if !rel.rel_type.ends_with("/image") || rel.external {
+            if rel.external {
                 continue;
             }
-            let media_path = resolve_rel_target(&drawing_path, &rel.target);
-            let Ok(bytes) = Self::read_zip_file_to_vec(archive, &media_path) else {
-                continue;
-            };
-            let fmt = std::path::Path::new(&media_path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .and_then(crate::image::ImageFormat::from_extension)
-                .or_else(|| crate::image::ImageFormat::from_bytes(&bytes));
-            if let Some(fmt) = fmt {
-                media.insert(rid.clone(), (bytes, fmt));
+            if rel.rel_type.ends_with("/image") {
+                let media_path = resolve_rel_target(&drawing_path, &rel.target);
+                let Ok(bytes) = Self::read_zip_file_to_vec(archive, &media_path) else {
+                    continue;
+                };
+                let fmt = std::path::Path::new(&media_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(crate::image::ImageFormat::from_extension)
+                    .or_else(|| crate::image::ImageFormat::from_bytes(&bytes));
+                if let Some(fmt) = fmt {
+                    media.insert(rid.clone(), (bytes, fmt));
+                }
+            } else if rel.rel_type.ends_with("/chart") {
+                let chart_path = resolve_rel_target(&drawing_path, &rel.target);
+                if let Ok(bytes) = Self::read_zip_file_to_vec(archive, &chart_path) {
+                    charts.insert(rid.clone(), bytes);
+                }
             }
         }
-        (Some(drawing_xml), media)
+        (Some(drawing_xml), media, charts)
     }
 
-    /// Parse `<xdr:pic>` anchors out of a drawing part and attach them to the
-    /// worksheet as images, using the pre-read media blobs. Chart frames
-    /// (`<xdr:graphicFrame>`) are ignored -- charts are not read back on load.
-    fn parse_drawing_images<R: BufRead>(
+    /// Parse a drawing part's anchors and attach them to the worksheet:
+    /// `<xdr:pic>` anchors become images (using the pre-read media blobs) and
+    /// `<xdr:graphicFrame>` anchors that reference a chart become charts (using
+    /// the pre-read chart parts).
+    fn parse_drawing<R: BufRead>(
         reader: R,
         media: &DrawingMedia,
+        charts: &DrawingCharts,
         worksheet: &mut Worksheet,
     ) {
         use quick_xml::events::Event;
@@ -1077,6 +1098,7 @@ impl Workbook {
             embed: Option<String>,
             name: Option<String>,
             descr: Option<String>,
+            chart_embed: Option<String>,
         }
 
         // Which numeric leaf the next Text belongs to.
@@ -1189,6 +1211,17 @@ impl Workbook {
                                 }
                             }
                         }
+                        b"chart" => {
+                            // <c:chart r:id="..."> inside a graphicFrame
+                            if let Some(a) = cur.as_mut() {
+                                for attr in e.attributes().flatten() {
+                                    if attr.key.local_name().as_ref() == b"id" {
+                                        a.chart_embed =
+                                            attr.unescape_value().ok().map(|v| v.into_owned());
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1240,6 +1273,8 @@ impl Workbook {
                             if let Some(a) = cur.take() {
                                 if let Some(image) = build_image(&a, media) {
                                     worksheet.images.push(image);
+                                } else if let Some(chart) = build_chart(&a, charts) {
+                                    worksheet.charts.push(chart);
                                 }
                             }
                         }
@@ -1312,6 +1347,196 @@ impl Workbook {
                 name: a.name.clone(),
             })
         }
+
+        // Parse the chart part a graphic frame references and stamp its anchor.
+        fn build_chart(a: &Accum, charts: &DrawingCharts) -> Option<crate::chart::Chart> {
+            use crate::chart::ChartAnchor;
+            let embed = a.chart_embed.as_ref()?;
+            let xml = charts.get(embed)?;
+            let mut chart = Workbook::parse_chart_xml(Cursor::new(xml))?;
+
+            let from_cell = crate::utils::coordinate_from_row_col(a.from_row + 1, a.from_col + 1);
+            let to_cell = if a.anchor_type_two || a.has_to {
+                Some(crate::utils::coordinate_from_row_col(
+                    a.to_row + 1,
+                    a.to_col + 1,
+                ))
+            } else {
+                None
+            };
+            chart.anchor = Some(ChartAnchor {
+                from_cell,
+                from_col_offset: a.from_col_off,
+                from_row_offset: a.from_row_off,
+                to_cell,
+                to_col_offset: a.to_col_off,
+                to_row_offset: a.to_row_off,
+            });
+            if a.ext_cx > 0 || a.ext_cy > 0 {
+                chart.width = a.ext_cx;
+                chart.height = a.ext_cy;
+            }
+            Some(chart)
+        }
+    }
+
+    /// Parse a chart part (`xl/charts/chartN.xml`) into a [`Chart`], covering the
+    /// types rustypyxl writes: bar/column, line, area, pie, doughnut, scatter,
+    /// with their series references, title, and legend.
+    fn parse_chart_xml<R: BufRead>(reader: R) -> Option<crate::chart::Chart> {
+        use crate::chart::{
+            BarDirection, BarGrouping, Chart, ChartLegend, ChartSeries, ChartTitle, ChartType,
+        };
+        use quick_xml::events::Event;
+
+        // Which reference the current <c:f> / <c:v> text belongs to.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Ctx {
+            None,
+            Tx,
+            Cat,
+            Val,
+            XVal,
+            YVal,
+        }
+
+        let mut reader = quick_xml::Reader::from_reader(reader);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        let mut chart_type: Option<ChartType> = None;
+        let mut is_bar = false;
+        let mut bar_dir_horizontal = false;
+        let mut grouping = BarGrouping::Clustered;
+        let mut title: Option<String> = None;
+        let mut legend_pos: Option<String> = None;
+
+        let mut series: Vec<ChartSeries> = Vec::new();
+        let mut cur_name: Option<String> = None;
+        let mut cur_cats: Option<String> = None;
+        let mut cur_vals: Option<String> = None;
+        let mut in_ser = false;
+
+        let mut ctx = Ctx::None;
+        let mut in_f = false;
+        let mut in_v = false;
+        let mut in_title = false;
+        let mut in_a_t = false;
+
+        let attr_val = |e: &quick_xml::events::BytesStart| -> Option<String> {
+            for attr in e.attributes().flatten() {
+                if attr.key.local_name().as_ref() == b"val" {
+                    return attr.unescape_value().ok().map(|v| v.into_owned());
+                }
+            }
+            None
+        };
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let local = e.local_name();
+                    match local.as_ref() {
+                        b"barChart" => {
+                            is_bar = true;
+                            chart_type = Some(ChartType::Column);
+                        }
+                        b"lineChart" => chart_type = Some(ChartType::Line),
+                        b"areaChart" => chart_type = Some(ChartType::Area),
+                        b"pieChart" => chart_type = Some(ChartType::Pie),
+                        b"doughnutChart" => chart_type = Some(ChartType::Doughnut),
+                        b"scatterChart" | b"bubbleChart" => chart_type = Some(ChartType::Scatter),
+                        b"barDir" => {
+                            bar_dir_horizontal = attr_val(&e).as_deref() == Some("bar");
+                        }
+                        b"grouping" => {
+                            grouping = match attr_val(&e).as_deref() {
+                                Some("stacked") => BarGrouping::Stacked,
+                                Some("percentStacked") => BarGrouping::PercentStacked,
+                                _ => BarGrouping::Clustered,
+                            };
+                        }
+                        b"legend" => legend_pos = Some("r".to_string()),
+                        b"legendPos" => legend_pos = attr_val(&e),
+                        b"ser" => {
+                            in_ser = true;
+                            cur_name = None;
+                            cur_cats = None;
+                            cur_vals = None;
+                        }
+                        b"tx" => ctx = Ctx::Tx,
+                        b"cat" => ctx = Ctx::Cat,
+                        b"val" => ctx = Ctx::Val,
+                        b"xVal" => ctx = Ctx::XVal,
+                        b"yVal" => ctx = Ctx::YVal,
+                        b"f" => in_f = true,
+                        b"v" => in_v = true,
+                        b"title" => in_title = true,
+                        b"t" if in_title => in_a_t = true,
+                        _ => {}
+                    }
+                }
+                Ok(Event::Text(t)) => {
+                    let text = t.unescape().ok().map(|v| v.into_owned());
+                    if let Some(text) = text {
+                        if in_a_t && in_title && title.is_none() {
+                            title = Some(text);
+                        } else if in_ser && in_f {
+                            match ctx {
+                                Ctx::Cat | Ctx::XVal => cur_cats = Some(text),
+                                Ctx::Val | Ctx::YVal => cur_vals = Some(text),
+                                Ctx::Tx => cur_name = Some(text),
+                                Ctx::None => {}
+                            }
+                        } else if in_ser && in_v && ctx == Ctx::Tx {
+                            cur_name = Some(text);
+                        }
+                    }
+                }
+                Ok(Event::End(e)) => match e.local_name().as_ref() {
+                    b"f" => in_f = false,
+                    b"v" => in_v = false,
+                    b"t" => in_a_t = false,
+                    b"title" => in_title = false,
+                    b"tx" | b"cat" | b"val" | b"xVal" | b"yVal" => ctx = Ctx::None,
+                    b"ser" => {
+                        if let Some(values) = cur_vals.take() {
+                            let mut s = ChartSeries::new(values);
+                            s.name = cur_name.take();
+                            s.categories = cur_cats.take();
+                            series.push(s);
+                        }
+                        in_ser = false;
+                    }
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        let mut ctype = chart_type?;
+        if is_bar {
+            ctype = if bar_dir_horizontal {
+                ChartType::Bar
+            } else {
+                ChartType::Column
+            };
+        }
+
+        let mut chart = Chart::new(ctype.clone());
+        chart.bar_direction = if matches!(ctype, ChartType::Bar) {
+            BarDirection::Bar
+        } else {
+            BarDirection::Col
+        };
+        chart.bar_grouping = grouping;
+        chart.series = series;
+        chart.title = title.map(ChartTitle::new);
+        chart.legend = legend_pos.map(|pos| ChartLegend::new().with_position(pos));
+        Some(chart)
     }
 
     /// Parses workbook.xml and returns sheet info (name, sheetId, rId,
