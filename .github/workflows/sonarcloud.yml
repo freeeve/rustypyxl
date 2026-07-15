@@ -6,6 +6,14 @@ on:
       - main
   pull_request:
     types: [opened, synchronize, reopened]
+  # Keep SONAR_TOKEN exercised: SonarQube Cloud auto-removes a no-expiry token
+  # after 60 days of inactivity. Run on the 1st and 15th so even a skipped
+  # scheduled run stays well inside that window (a strictly-monthly run would
+  # sit right at the 60-day edge if one month were dropped).
+  schedule:
+    - cron: "0 6 1,15 * *"
+  # Allow a manual re-run from the Actions tab without pushing.
+  workflow_dispatch:
 
 jobs:
   sonarcloud:
