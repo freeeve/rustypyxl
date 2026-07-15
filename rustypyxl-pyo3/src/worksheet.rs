@@ -906,6 +906,19 @@ impl PyWorksheet {
         Ok(list.into_any().unbind())
     }
 
+    /// The AutoFilter proxy: `ws.auto_filter.ref = "A1:C10"`.
+    #[getter]
+    fn auto_filter(&self, py: Python<'_>) -> PyResult<crate::dimensions::PyAutoFilter> {
+        let wb = self
+            .workbook
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("Worksheet is not attached to a workbook"))?;
+        Ok(crate::dimensions::PyAutoFilter {
+            workbook: wb.clone_ref(py),
+            uid: self.uid,
+        })
+    }
+
     /// Column dimensions, indexed by column letter:
     /// `ws.column_dimensions['A'].width = 20`.
     #[getter]

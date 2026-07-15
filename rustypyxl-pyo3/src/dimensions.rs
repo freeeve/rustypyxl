@@ -68,6 +68,36 @@ impl PyColumnDimension {
     }
 }
 
+/// The `ws.auto_filter` proxy: `ws.auto_filter.ref = "A1:C10"` enables the
+/// filter over a range; setting it to None clears it.
+#[pyclass(name = "AutoFilter")]
+pub struct PyAutoFilter {
+    pub(crate) workbook: Py<PyWorkbook>,
+    pub(crate) uid: u64,
+}
+
+#[pymethods]
+impl PyAutoFilter {
+    #[getter(r#ref)]
+    fn get_ref(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        let this = self.workbook.borrow(py);
+        let idx = sheet_index(&this, self.uid)?;
+        Ok(this.inner.worksheets[idx]
+            .auto_filter
+            .as_ref()
+            .map(|af| af.range.clone()))
+    }
+
+    #[setter(r#ref)]
+    fn set_ref(&self, py: Python<'_>, value: Option<String>) -> PyResult<()> {
+        use rustypyxl_core::autofilter::AutoFilter;
+        let mut this = self.workbook.borrow_mut(py);
+        let idx = sheet_index(&this, self.uid)?;
+        this.inner.worksheets[idx].auto_filter = value.map(AutoFilter::new);
+        Ok(())
+    }
+}
+
 /// The mapping returned by `ws.row_dimensions`; index by 1-based row number.
 #[pyclass(name = "RowDimensions")]
 pub struct PyRowDimensions {

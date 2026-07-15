@@ -96,6 +96,7 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<dimensions::PyColumnDimension>()?;
     m.add_class::<dimensions::PyRowDimensions>()?;
     m.add_class::<dimensions::PyRowDimension>()?;
+    m.add_class::<dimensions::PyAutoFilter>()?;
     m.add_class::<PyCell>()?;
     m.add_class::<PyCellRangeIterator>()?;
 
