@@ -461,6 +461,7 @@ impl PyWorksheet {
     /// for series that don't carry their own. `legend` is a position
     /// (r/l/t/b/tr) or None to hide it.
     #[pyo3(signature = (chart_type, series, anchor, title=None, categories=None, legend="r"))]
+    #[allow(clippy::too_many_arguments)]
     fn add_chart(
         &self,
         chart_type: &str,
@@ -481,9 +482,11 @@ impl PyWorksheet {
             "pie" => ChartType::Pie,
             "doughnut" => ChartType::Doughnut,
             "scatter" | "xy" => ChartType::Scatter,
-            other => return Err(PyValueError::new_err(format!(
+            other => {
+                return Err(PyValueError::new_err(format!(
                 "unknown chart_type {other:?}; expected bar/column/line/area/pie/doughnut/scatter"
-            ))),
+            )))
+            }
         };
 
         let mut chart = match ctype {
@@ -526,6 +529,53 @@ impl PyWorksheet {
         }
 
         self.with_sheet_mut(py, |ws| ws.add_chart(chart))
+    }
+
+    /// Embed an image anchored at `anchor` (e.g. "B2"). It is written into the
+    /// saved workbook and opens in Excel.
+    ///
+    /// `image` is a filesystem path or the raw image bytes; the format (PNG,
+    /// JPEG, GIF, BMP, TIFF) is detected from the extension or magic bytes.
+    /// Pass `to` for a two-cell anchor that resizes with the cells, or `width`
+    /// and `height` (pixels) to set an explicit size.
+    #[pyo3(signature = (image, anchor, to=None, width=None, height=None, name=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_image(
+        &self,
+        image: &Bound<'_, PyAny>,
+        anchor: &str,
+        to: Option<&str>,
+        width: Option<u32>,
+        height: Option<u32>,
+        name: Option<&str>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::image::{Image, ImageAnchor};
+
+        let img_anchor = match to {
+            Some(to_cell) => ImageAnchor::two_cell(anchor, to_cell),
+            None => ImageAnchor::one_cell(anchor),
+        };
+
+        // A str/os.PathLike is a path; bytes is the raw image.
+        let mut img = if let Ok(data) = image.extract::<Vec<u8>>() {
+            Image::from_bytes(data, img_anchor)
+                .ok_or_else(|| PyValueError::new_err("unrecognized image format"))?
+        } else if let Ok(path) = image.extract::<std::path::PathBuf>() {
+            Image::from_file(&path, img_anchor)
+                .map_err(|e| PyValueError::new_err(format!("could not read image: {e}")))?
+        } else {
+            return Err(PyValueError::new_err("image must be a file path or bytes"));
+        };
+
+        if let (Some(w), Some(h)) = (width, height) {
+            img = img.with_size_px(w, h);
+        }
+        if let Some(n) = name {
+            img = img.with_name(n);
+        }
+
+        self.with_sheet_mut(py, |ws| ws.add_image(img))
     }
 
     /// Get the freeze-panes anchor cell, if any.

@@ -185,6 +185,15 @@ class Worksheet:
         categories: str | None = None,
         legend: str | None = "r",
     ) -> None: ...
+    def add_image(
+        self,
+        image: str | os.PathLike[str] | bytes,
+        anchor: str,
+        to: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        name: str | None = None,
+    ) -> None: ...
 
 class Cell:
     def __init__(self, row: int, column: int) -> None: ...

@@ -2,9 +2,11 @@
 //!
 //! This module provides structures for inserting and managing images in Excel files.
 //!
-//! **Status: partial.** These types load and model image data in memory, but the writer
-//! does not yet embed images into the saved workbook. Not yet exposed through the Python
-//! bindings.
+//! **Status: write path + round-trip.** An [`Image`] added to a worksheet is embedded on
+//! save (media part, drawing anchor, and relationships), and images already present in a
+//! loaded file are preserved when it is saved again. PNG, JPEG, GIF, BMP, and TIFF are
+//! detected from magic bytes or extension. Charts and images on one sheet share a single
+//! drawing part.
 
 use std::path::PathBuf;
 

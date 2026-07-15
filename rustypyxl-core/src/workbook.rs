@@ -97,6 +97,10 @@ pub(crate) struct SheetRel {
     pub external: bool,
 }
 
+/// Media a drawing embeds, keyed by the drawing-local relationship id used in
+/// each `<a:blip r:embed="...">`, paired with the detected format.
+type DrawingMedia = HashMap<String, (Vec<u8>, crate::image::ImageFormat)>;
+
 /// Everything read from the archive for one sheet before parsing.
 struct SheetParseInput {
     name: String,
@@ -105,6 +109,11 @@ struct SheetParseInput {
     comments_xml: Option<Vec<u8>>,
     rels: HashMap<String, SheetRel>,
     table_xmls: Vec<Vec<u8>>,
+    /// The sheet's drawing part XML, if it references one.
+    drawing_xml: Option<Vec<u8>>,
+    /// Media referenced by the drawing, keyed by the drawing-local relationship
+    /// id used in each `<a:blip r:embed="...">`.
+    drawing_media: DrawingMedia,
 }
 
 /// Resolve a relationship target relative to the part that declares it.
@@ -529,14 +538,19 @@ impl Workbook {
         }
         let table_count = (next_table_id - 1) as usize;
 
-        // Assign each chart a workbook-unique id (part path xl/charts/chart{id}.xml).
-        // A sheet with any charts also gets one drawing part, drawing{sheet_id}.xml,
-        // that anchors them.
+        // Assign each chart a workbook-unique id (part path xl/charts/chart{id}.xml)
+        // and each image a workbook-unique media id (xl/media/image{id}.ext). A
+        // sheet with any charts or images gets one drawing part,
+        // drawing{sheet_id}.xml, whose anchors reference them.
         let mut chart_assignments: Vec<Vec<u32>> = Vec::with_capacity(self.worksheets.len());
+        let mut image_assignments: Vec<Vec<u32>> = Vec::with_capacity(self.worksheets.len());
         let mut next_chart_id: u32 = 1;
+        let mut next_media_id: u32 = 1;
         let mut drawing_sheet_ids: Vec<u32> = Vec::new();
+        let mut image_extensions: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
         for (idx, worksheet) in self.worksheets.iter().enumerate() {
-            let ids: Vec<u32> = worksheet
+            let chart_ids: Vec<u32> = worksheet
                 .charts
                 .iter()
                 .map(|_| {
@@ -545,12 +559,24 @@ impl Workbook {
                     id
                 })
                 .collect();
-            if !ids.is_empty() {
+            let media_ids: Vec<u32> = worksheet
+                .images
+                .iter()
+                .map(|img| {
+                    image_extensions.insert(img.format.extension());
+                    let id = next_media_id;
+                    next_media_id += 1;
+                    id
+                })
+                .collect();
+            if !chart_ids.is_empty() || !media_ids.is_empty() {
                 drawing_sheet_ids.push((idx + 1) as u32);
             }
-            chart_assignments.push(ids);
+            chart_assignments.push(chart_ids);
+            image_assignments.push(media_ids);
         }
         let chart_ids: Vec<u32> = (1..next_chart_id).collect();
+        let image_extensions: Vec<&'static str> = image_extensions.into_iter().collect();
 
         // Write [Content_Types].xml
         writer::write_content_types(
@@ -562,6 +588,7 @@ impl Workbook {
             table_count,
             &chart_ids,
             &drawing_sheet_ids,
+            &image_extensions,
         )?;
 
         // Write _rels/.rels
@@ -639,10 +666,12 @@ impl Workbook {
                 .map(|id| format!("rIdTable{}", id))
                 .collect();
             let chart_ids = &chart_assignments[idx];
-            let drawing_rel_id = if chart_ids.is_empty() {
-                None
-            } else {
+            let media_ids = &image_assignments[idx];
+            let has_drawing = !chart_ids.is_empty() || !media_ids.is_empty();
+            let drawing_rel_id = if has_drawing {
                 Some("rIdDrawing")
+            } else {
+                None
             };
 
             writer::write_worksheet_xml(
@@ -662,29 +691,53 @@ impl Workbook {
                 writer::write_table_xml(zip, &options, table, *table_id)?;
             }
 
-            // Chart parts and the drawing that anchors them on this sheet.
-            if !chart_ids.is_empty() {
+            // Chart parts, embedded media, and the shared drawing that anchors
+            // them on this sheet.
+            if has_drawing {
                 for (chart, chart_id) in worksheet.charts.iter().zip(chart_ids) {
                     let chart_path = format!("xl/charts/chart{}.xml", chart_id);
                     zip.start_file(&chart_path, options.clone())?;
                     zip.write_all(crate::chart_writer::chart_xml(chart).as_bytes())?;
                 }
+                for (image, media_id) in worksheet.images.iter().zip(media_ids) {
+                    let media_path =
+                        format!("xl/media/image{}.{}", media_id, image.format.extension());
+                    zip.start_file(&media_path, options.clone())?;
+                    zip.write_all(&image.data)?;
+                }
+
+                let charts_with_ids: Vec<(&crate::chart::Chart, u32)> = worksheet
+                    .charts
+                    .iter()
+                    .zip(chart_ids.iter().copied())
+                    .collect();
+                let images_with_ids: Vec<(&crate::image::Image, u32)> = worksheet
+                    .images
+                    .iter()
+                    .zip(media_ids.iter().copied())
+                    .collect();
+                let (drawing_xml, drawing_rels) =
+                    crate::drawing_writer::drawing_for_sheet(&charts_with_ids, &images_with_ids);
 
                 let drawing_path = format!("xl/drawings/drawing{}.xml", sheet_id);
                 zip.start_file(&drawing_path, options.clone())?;
-                zip.write_all(crate::chart_writer::drawing_xml(&worksheet.charts).as_bytes())?;
+                zip.write_all(drawing_xml.as_bytes())?;
 
-                // drawing .rels maps each anchor's rId{i+1} to a chart part.
+                // drawing .rels binds each anchor's rId to its chart or media part.
                 let drawing_rels_path = format!("xl/drawings/_rels/drawing{}.xml.rels", sheet_id);
                 zip.start_file(&drawing_rels_path, options.clone())?;
                 let mut drels = String::from(
                     "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
                 );
-                for (i, chart_id) in chart_ids.iter().enumerate() {
+                for rel in &drawing_rels {
+                    let rel_type = if rel.is_chart {
+                        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+                    } else {
+                        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+                    };
                     drels.push_str(&format!(
-                        "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" Target=\"../charts/chart{}.xml\"/>\n",
-                        i + 1,
-                        chart_id
+                        "<Relationship Id=\"{}\" Type=\"{}\" Target=\"{}\"/>\n",
+                        rel.rel_id, rel_type, rel.target
                     ));
                 }
                 drels.push_str("</Relationships>");
@@ -699,11 +752,7 @@ impl Workbook {
             // The sheet .rels part ties comments, external hyperlinks, and
             // tables to the relationship ids used in the worksheet XML.
             let external_links = writer::collect_external_hyperlinks(worksheet);
-            if has_comments
-                || !external_links.is_empty()
-                || !table_ids.is_empty()
-                || !chart_ids.is_empty()
-            {
+            if has_comments || !external_links.is_empty() || !table_ids.is_empty() || has_drawing {
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
                 let rels_options: zip::write::FileOptions<
                     'static,
@@ -737,7 +786,7 @@ impl Workbook {
                         table_id, table_id
                     ));
                 }
-                if !chart_ids.is_empty() {
+                if has_drawing {
                     rels_content.push_str(&format!(
                         "<Relationship Id=\"rIdDrawing\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"../drawings/drawing{}.xml\"/>\n",
                         sheet_id
@@ -826,6 +875,11 @@ impl Workbook {
                 })
                 .collect();
 
+            // Drawing part plus the media blobs its picture anchors embed, so
+            // images present in a loaded file survive being saved again.
+            let (drawing_xml, drawing_media) =
+                Self::read_sheet_drawing(archive, &sheet_path, &rels);
+
             sheet_data.push(SheetParseInput {
                 name: sheet_name.clone(),
                 visibility: *visibility,
@@ -833,6 +887,8 @@ impl Workbook {
                 comments_xml,
                 rels,
                 table_xmls,
+                drawing_xml,
+                drawing_media,
             });
         }
 
@@ -878,6 +934,14 @@ impl Workbook {
                 if let Ok(table) = Self::parse_table_xml(Cursor::new(table_xml)) {
                     worksheet.tables.push(table);
                 }
+            }
+
+            if let Some(drawing_xml) = &input.drawing_xml {
+                Self::parse_drawing_images(
+                    Cursor::new(drawing_xml),
+                    &input.drawing_media,
+                    &mut worksheet,
+                );
             }
 
             Ok((input.name.clone(), worksheet))
@@ -929,6 +993,325 @@ impl Workbook {
         let mut buf = Vec::with_capacity((declared_size as usize).min(MAX_PREALLOC));
         file.read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Read a sheet's drawing part and the media its picture anchors embed.
+    /// Returns the drawing XML (if the sheet references one) plus a map from each
+    /// drawing-local image relationship id to its bytes and detected format.
+    fn read_sheet_drawing<R: Read + Seek>(
+        archive: &mut ZipArchive<R>,
+        sheet_path: &str,
+        rels: &HashMap<String, SheetRel>,
+    ) -> (Option<Vec<u8>>, DrawingMedia) {
+        let empty = HashMap::new();
+        let Some(dr) = rels.values().find(|r| r.rel_type.ends_with("/drawing")) else {
+            return (None, empty);
+        };
+        let drawing_path = resolve_rel_target(sheet_path, &dr.target);
+        let Ok(drawing_xml) = Self::read_zip_file_to_vec(archive, &drawing_path) else {
+            return (None, empty);
+        };
+
+        let drels_path = match drawing_path.rfind('/') {
+            Some(idx) => format!(
+                "{}/_rels/{}.rels",
+                &drawing_path[..idx],
+                &drawing_path[idx + 1..]
+            ),
+            None => format!("_rels/{}.rels", drawing_path),
+        };
+        let drels = match Self::read_zip_file_to_vec(archive, &drels_path) {
+            Ok(xml) => Self::parse_sheet_rels(Cursor::new(&xml)).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
+
+        let mut media = HashMap::new();
+        for (rid, rel) in &drels {
+            if !rel.rel_type.ends_with("/image") || rel.external {
+                continue;
+            }
+            let media_path = resolve_rel_target(&drawing_path, &rel.target);
+            let Ok(bytes) = Self::read_zip_file_to_vec(archive, &media_path) else {
+                continue;
+            };
+            let fmt = std::path::Path::new(&media_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(crate::image::ImageFormat::from_extension)
+                .or_else(|| crate::image::ImageFormat::from_bytes(&bytes));
+            if let Some(fmt) = fmt {
+                media.insert(rid.clone(), (bytes, fmt));
+            }
+        }
+        (Some(drawing_xml), media)
+    }
+
+    /// Parse `<xdr:pic>` anchors out of a drawing part and attach them to the
+    /// worksheet as images, using the pre-read media blobs. Chart frames
+    /// (`<xdr:graphicFrame>`) are ignored -- charts are not read back on load.
+    fn parse_drawing_images<R: BufRead>(
+        reader: R,
+        media: &DrawingMedia,
+        worksheet: &mut Worksheet,
+    ) {
+        use quick_xml::events::Event;
+
+        #[derive(Default)]
+        struct Accum {
+            anchor_type_two: bool,
+            anchor_type_abs: bool,
+            from_col: u32,
+            from_col_off: u32,
+            from_row: u32,
+            from_row_off: u32,
+            to_col: u32,
+            to_col_off: u32,
+            to_row: u32,
+            to_row_off: u32,
+            has_to: bool,
+            abs_x: u32,
+            abs_y: u32,
+            ext_cx: u32,
+            ext_cy: u32,
+            is_pic: bool,
+            embed: Option<String>,
+            name: Option<String>,
+            descr: Option<String>,
+        }
+
+        // Which numeric leaf the next Text belongs to.
+        enum Field {
+            None,
+            Col,
+            ColOff,
+            Row,
+            RowOff,
+        }
+
+        let mut reader = quick_xml::Reader::from_reader(reader);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        let mut cur: Option<Accum> = None;
+        let mut in_from = false;
+        let mut in_to = false;
+        let mut field = Field::None;
+
+        // Read cx/cy (ext) or x/y (pos) attributes into (u32, u32).
+        let read_pair = |e: &quick_xml::events::BytesStart, a: &[u8], b: &[u8]| -> (u32, u32) {
+            let (mut x, mut y) = (0u32, 0u32);
+            for attr in e.attributes().flatten() {
+                let key = attr.key.local_name();
+                let val = attr
+                    .unescape_value()
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0);
+                if key.as_ref() == a {
+                    x = val;
+                } else if key.as_ref() == b {
+                    y = val;
+                }
+            }
+            (x, y)
+        };
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let local = e.local_name();
+                    match local.as_ref() {
+                        b"oneCellAnchor" => cur = Some(Accum::default()),
+                        b"twoCellAnchor" => {
+                            cur = Some(Accum {
+                                anchor_type_two: true,
+                                ..Accum::default()
+                            })
+                        }
+                        b"absoluteAnchor" => {
+                            cur = Some(Accum {
+                                anchor_type_abs: true,
+                                ..Accum::default()
+                            })
+                        }
+                        b"from" => in_from = true,
+                        b"to" => {
+                            in_to = true;
+                            if let Some(a) = cur.as_mut() {
+                                a.has_to = true;
+                            }
+                        }
+                        b"col" => field = Field::Col,
+                        b"colOff" => field = Field::ColOff,
+                        b"row" => field = Field::Row,
+                        b"rowOff" => field = Field::RowOff,
+                        b"ext" => {
+                            if let Some(a) = cur.as_mut() {
+                                if a.ext_cx == 0 && a.ext_cy == 0 {
+                                    let (cx, cy) = read_pair(&e, b"cx", b"cy");
+                                    a.ext_cx = cx;
+                                    a.ext_cy = cy;
+                                }
+                            }
+                        }
+                        b"pos" => {
+                            if let Some(a) = cur.as_mut() {
+                                let (x, y) = read_pair(&e, b"x", b"y");
+                                a.abs_x = x;
+                                a.abs_y = y;
+                            }
+                        }
+                        b"pic" => {
+                            if let Some(a) = cur.as_mut() {
+                                a.is_pic = true;
+                            }
+                        }
+                        b"cNvPr" => {
+                            if let Some(a) = cur.as_mut() {
+                                for attr in e.attributes().flatten() {
+                                    let key = attr.key.local_name();
+                                    let val = attr.unescape_value().ok().map(|v| v.into_owned());
+                                    match key.as_ref() {
+                                        b"name" => a.name = val,
+                                        b"descr" => a.descr = val,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        b"blip" => {
+                            if let Some(a) = cur.as_mut() {
+                                for attr in e.attributes().flatten() {
+                                    if attr.key.local_name().as_ref() == b"embed" {
+                                        a.embed =
+                                            attr.unescape_value().ok().map(|v| v.into_owned());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Text(t)) => {
+                    if let Some(a) = cur.as_mut() {
+                        let value = t
+                            .unescape()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let (col, col_off, row, row_off) = if in_to {
+                            (
+                                &mut a.to_col,
+                                &mut a.to_col_off,
+                                &mut a.to_row,
+                                &mut a.to_row_off,
+                            )
+                        } else if in_from {
+                            (
+                                &mut a.from_col,
+                                &mut a.from_col_off,
+                                &mut a.from_row,
+                                &mut a.from_row_off,
+                            )
+                        } else {
+                            (
+                                &mut a.to_col,
+                                &mut a.to_col_off,
+                                &mut a.to_row,
+                                &mut a.to_row_off,
+                            )
+                        };
+                        match field {
+                            Field::Col => *col = value,
+                            Field::ColOff => *col_off = value,
+                            Field::Row => *row = value,
+                            Field::RowOff => *row_off = value,
+                            Field::None => {}
+                        }
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let local = e.local_name();
+                    match local.as_ref() {
+                        b"from" => in_from = false,
+                        b"to" => in_to = false,
+                        b"col" | b"colOff" | b"row" | b"rowOff" => field = Field::None,
+                        b"oneCellAnchor" | b"twoCellAnchor" | b"absoluteAnchor" => {
+                            if let Some(a) = cur.take() {
+                                if let Some(image) = build_image(&a, media) {
+                                    worksheet.images.push(image);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        // Local closure-like builder kept as a function to avoid borrow tangles.
+        fn build_image(a: &Accum, media: &DrawingMedia) -> Option<crate::image::Image> {
+            use crate::image::{Image, ImageAnchor, ImageAnchorType};
+            if !a.is_pic {
+                return None;
+            }
+            let embed = a.embed.as_ref()?;
+            let (bytes, format) = media.get(embed)?;
+
+            let from_cell = crate::utils::coordinate_from_row_col(a.from_row + 1, a.from_col + 1);
+            let anchor_type = if a.anchor_type_abs {
+                ImageAnchorType::Absolute
+            } else if a.anchor_type_two || a.has_to {
+                ImageAnchorType::TwoCell
+            } else {
+                ImageAnchorType::OneCell
+            };
+            let to_cell = if matches!(anchor_type, ImageAnchorType::TwoCell) {
+                Some(crate::utils::coordinate_from_row_col(
+                    a.to_row + 1,
+                    a.to_col + 1,
+                ))
+            } else {
+                None
+            };
+            let (from_col_offset, from_row_offset) = if a.anchor_type_abs {
+                (a.abs_x, a.abs_y)
+            } else {
+                (a.from_col_off, a.from_row_off)
+            };
+
+            let anchor = ImageAnchor {
+                anchor_type,
+                from_cell,
+                from_col_offset,
+                from_row_offset,
+                to_cell,
+                to_col_offset: a.to_col_off,
+                to_row_offset: a.to_row_off,
+            };
+
+            let (width, height) = if a.ext_cx > 0 || a.ext_cy > 0 {
+                (a.ext_cx, a.ext_cy)
+            } else {
+                (914400, 914400)
+            };
+
+            Some(Image {
+                data: bytes.clone(),
+                format: format.clone(),
+                source_path: None,
+                anchor,
+                width,
+                height,
+                alt_text: a.descr.clone(),
+                description: None,
+                name: a.name.clone(),
+            })
+        }
     }
 
     /// Parses workbook.xml and returns sheet info (name, sheetId, rId,

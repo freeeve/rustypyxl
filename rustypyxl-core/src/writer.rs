@@ -335,6 +335,7 @@ fn write_cell_direct(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_content_types<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: &FileOptions<'static, ExtendedFileOptions>,
@@ -344,6 +345,7 @@ pub fn write_content_types<W: Write + Seek>(
     table_count: usize,
     chart_ids: &[u32],
     drawing_sheet_ids: &[u32],
+    image_extensions: &[&str],
 ) -> Result<()> {
     zip.start_file("[Content_Types].xml", options.clone())?;
 
@@ -378,6 +380,25 @@ pub fn write_content_types<W: Write + Seek>(
             "application/vnd.openxmlformats-officedocument.vmlDrawing",
         ));
         writer.write_event(quick_xml::events::Event::Empty(default3))?;
+    }
+
+    // Embedded images are stored by extension in xl/media; each distinct
+    // extension needs a Default content-type mapping.
+    for ext in image_extensions {
+        let content_type = match *ext {
+            "png" => "image/png",
+            "jpeg" | "jpg" => "image/jpeg",
+            "gif" => "image/gif",
+            "bmp" => "image/bmp",
+            "tiff" | "tif" => "image/tiff",
+            "emf" => "image/x-emf",
+            "wmf" => "image/x-wmf",
+            _ => continue,
+        };
+        let mut default_img = BytesStart::new("Default");
+        default_img.push_attribute(("Extension", *ext));
+        default_img.push_attribute(("ContentType", content_type));
+        writer.write_event(quick_xml::events::Event::Empty(default_img))?;
     }
 
     // Overrides

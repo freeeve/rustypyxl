@@ -228,6 +228,8 @@ pub struct Worksheet {
     pub tables: Vec<Table>,
     /// Charts anchored on this worksheet.
     pub charts: Vec<crate::chart::Chart>,
+    /// Images embedded on this worksheet.
+    pub images: Vec<crate::image::Image>,
     /// Page setup and print settings.
     pub page_setup: Option<PageSetup>,
     /// Freeze panes anchor cell (e.g. "B2"); rows above and columns left of it stay frozen.
@@ -257,6 +259,7 @@ impl Worksheet {
             conditional_formatting: Vec::new(),
             tables: Vec::new(),
             charts: Vec::new(),
+            images: Vec::new(),
             page_setup: None,
             freeze_panes: None,
             visibility: SheetVisibility::default(),
@@ -287,6 +290,11 @@ impl Worksheet {
     /// Add a chart anchored on this worksheet.
     pub fn add_chart(&mut self, chart: crate::chart::Chart) {
         self.charts.push(chart);
+    }
+
+    /// Add an image embedded on this worksheet.
+    pub fn add_image(&mut self, image: crate::image::Image) {
+        self.images.push(image);
     }
 
     /// Set page setup.

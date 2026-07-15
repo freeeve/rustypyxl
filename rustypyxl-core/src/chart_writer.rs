@@ -14,7 +14,6 @@ const X_VAL_AX_ID: &str = "111111112";
 const C_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const A_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-const XDR_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
 
 /// `<c:tx>` for a series name: a reference when it looks like one (`Sheet!$A$1`),
 /// otherwise a literal string value.
@@ -228,78 +227,4 @@ pub fn chart_xml(chart: &Chart) -> String {
         plot = plot,
         legend = legend_xml(chart)
     )
-}
-
-/// Parse an `A1`-style cell into 0-based (col, row) for drawing anchors.
-fn anchor_cell(cell: &str) -> (u32, u32) {
-    match crate::utils::parse_coordinate(cell) {
-        Ok((row, col)) => (col.saturating_sub(1), row.saturating_sub(1)),
-        Err(_) => (0, 0),
-    }
-}
-
-/// One `<xdr:*Anchor>` framing a chart that references `rId{rel_idx}`.
-fn chart_anchor(chart: &Chart, rel_idx: usize) -> String {
-    let default = crate::chart::ChartAnchor::at("A1");
-    let a = chart.anchor.as_ref().unwrap_or(&default);
-    let (from_col, from_row) = anchor_cell(&a.from_cell);
-
-    let frame = format!(
-        concat!(
-            r#"<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr>"#,
-            r#"<xdr:cNvPr id="{id}" name="Chart {n}"/><xdr:cNvGraphicFramePr/>"#,
-            r#"</xdr:nvGraphicFramePr>"#,
-            r#"<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>"#,
-            r#"<a:graphic><a:graphicData uri="{c}">"#,
-            r#"<c:chart xmlns:c="{c}" xmlns:r="{r}" r:id="rId{rel}"/>"#,
-            r#"</a:graphicData></a:graphic></xdr:graphicFrame>"#
-        ),
-        id = rel_idx + 1,
-        n = rel_idx,
-        c = C_NS,
-        r = R_NS,
-        rel = rel_idx
-    );
-
-    let from = format!(
-        r#"<xdr:from><xdr:col>{}</xdr:col><xdr:colOff>{}</xdr:colOff><xdr:row>{}</xdr:row><xdr:rowOff>{}</xdr:rowOff></xdr:from>"#,
-        from_col, a.from_col_offset, from_row, a.from_row_offset
-    );
-
-    match &a.to_cell {
-        Some(to) => {
-            let (to_col, to_row) = anchor_cell(to);
-            format!(
-                r#"<xdr:twoCellAnchor>{from}<xdr:to><xdr:col>{tc}</xdr:col><xdr:colOff>{tco}</xdr:colOff><xdr:row>{tr}</xdr:row><xdr:rowOff>{tro}</xdr:rowOff></xdr:to>{frame}<xdr:clientData/></xdr:twoCellAnchor>"#,
-                from = from,
-                tc = to_col,
-                tco = a.to_col_offset,
-                tr = to_row,
-                tro = a.to_row_offset,
-                frame = frame
-            )
-        }
-        None => format!(
-            r#"<xdr:oneCellAnchor>{from}<xdr:ext cx="{cx}" cy="{cy}"/>{frame}<xdr:clientData/></xdr:oneCellAnchor>"#,
-            from = from,
-            cx = chart.width,
-            cy = chart.height,
-            frame = frame
-        ),
-    }
-}
-
-/// The `xl/drawings/drawingM.xml` content anchoring a sheet's charts. Each chart
-/// is referenced by `rId{i+1}` (matching the drawing's .rels part).
-pub fn drawing_xml(charts: &[Chart]) -> String {
-    let mut body = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="{xdr}" xmlns:a="{a}">"#,
-        xdr = XDR_NS,
-        a = A_NS
-    );
-    for (i, chart) in charts.iter().enumerate() {
-        body.push_str(&chart_anchor(chart, i + 1));
-    }
-    body.push_str("</xdr:wsDr>");
-    body
 }
