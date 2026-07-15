@@ -657,6 +657,138 @@ impl PyWorksheet {
         self.with_sheet_mut(py, |ws| ws.add_table(table))
     }
 
+    /// Configure page setup for printing. `orientation` is "portrait" or
+    /// "landscape"; `paper_size` a name like "A4" or "Letter"; `scale` a
+    /// percentage; `fit_to_width`/`fit_to_height` the number of pages to fit to;
+    /// `print_gridlines` and `center` toggle those options. Only the arguments
+    /// you pass are changed.
+    #[pyo3(signature = (orientation=None, paper_size=None, scale=None, fit_to_width=None, fit_to_height=None, print_gridlines=None, center=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_page_setup(
+        &self,
+        orientation: Option<&str>,
+        paper_size: Option<&str>,
+        scale: Option<u32>,
+        fit_to_width: Option<u32>,
+        fit_to_height: Option<u32>,
+        print_gridlines: Option<bool>,
+        center: Option<bool>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::pagesetup::Orientation;
+        let orient = match orientation {
+            Some("landscape") => Some(Orientation::Landscape),
+            Some("portrait") => Some(Orientation::Portrait),
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "orientation must be 'portrait' or 'landscape', got {other:?}"
+                )))
+            }
+            None => None,
+        };
+        let paper = match paper_size {
+            Some(name) => Some(parse_paper_size(name)?),
+            None => None,
+        };
+        self.with_sheet_mut(py, |ws| {
+            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            if let Some(o) = orient {
+                ps.orientation = o;
+            }
+            if let Some(p) = paper {
+                ps.paper_size = p;
+            }
+            if let Some(s) = scale {
+                ps.scale = s;
+            }
+            if fit_to_width.is_some() {
+                ps.fit_to_width = fit_to_width;
+            }
+            if fit_to_height.is_some() {
+                ps.fit_to_height = fit_to_height;
+            }
+            if let Some(g) = print_gridlines {
+                ps.print_gridlines = g;
+            }
+            if let Some(c) = center {
+                ps.center_horizontally = c;
+                ps.center_vertically = c;
+            }
+        })
+    }
+
+    /// Set the page margins (in inches).
+    #[pyo3(signature = (left=0.7, right=0.7, top=0.75, bottom=0.75, header=0.3, footer=0.3))]
+    fn set_page_margins(
+        &self,
+        left: f64,
+        right: f64,
+        top: f64,
+        bottom: f64,
+        header: f64,
+        footer: f64,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::pagesetup::PageMargins;
+        self.with_sheet_mut(py, |ws| {
+            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            ps.margins = PageMargins {
+                left,
+                right,
+                top,
+                bottom,
+                header,
+                footer,
+            };
+        })
+    }
+
+    /// Set header/footer text. Each section (left/center/right) may carry Excel
+    /// header codes like "&P" (page) or "&F" (file name).
+    #[pyo3(signature = (header_left=None, header_center=None, header_right=None, footer_left=None, footer_center=None, footer_right=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_header_footer(
+        &self,
+        header_left: Option<String>,
+        header_center: Option<String>,
+        header_right: Option<String>,
+        footer_left: Option<String>,
+        footer_center: Option<String>,
+        footer_right: Option<String>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::pagesetup::HeaderFooterSection;
+        self.with_sheet_mut(py, |ws| {
+            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            let mut header = HeaderFooterSection::new();
+            header.left = header_left;
+            header.center = header_center;
+            header.right = header_right;
+            let mut footer = HeaderFooterSection::new();
+            footer.left = footer_left;
+            footer.center = footer_center;
+            footer.right = footer_right;
+            ps.header_footer.odd_header = Some(header);
+            ps.header_footer.odd_footer = Some(footer);
+        })
+    }
+
+    /// The print area range (e.g. "A1:D20"), or None.
+    #[getter]
+    fn print_area(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        self.with_sheet_ref(py, |ws| {
+            ws.page_setup.as_ref().and_then(|ps| ps.print_area.clone())
+        })
+    }
+
+    /// Set the print area range.
+    #[setter]
+    fn set_print_area(&self, py: Python<'_>, area: Option<String>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| {
+            ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new).print_area = area;
+        })
+    }
+
     /// Add a conditional-formatting rule over a cell range. `rule` is a dict
     /// describing the rule; supported forms:
     ///   {"type":"cellIs","operator":"greaterThan","formula":"5","fill":"FF0000"}
@@ -961,6 +1093,28 @@ impl PyCellRangeIterator {
     fn __clear__(&mut self) {
         self.workbook = None;
     }
+}
+
+/// Map a paper-size name to the core PaperSize.
+fn parse_paper_size(name: &str) -> PyResult<rustypyxl_core::pagesetup::PaperSize> {
+    use rustypyxl_core::pagesetup::PaperSize;
+    let size = match name.to_ascii_uppercase().as_str() {
+        "LETTER" => PaperSize::Letter,
+        "LEGAL" => PaperSize::Legal,
+        "EXECUTIVE" => PaperSize::Executive,
+        "A3" => PaperSize::A3,
+        "A4" => PaperSize::A4,
+        "A5" => PaperSize::A5,
+        "B4" => PaperSize::B4,
+        "B5" => PaperSize::B5,
+        "TABLOID" => PaperSize::Tabloid,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown paper size {name:?}"
+            )))
+        }
+    };
+    Ok(size)
 }
 
 /// Build a conditional-formatting rule from a Python dict describing it.

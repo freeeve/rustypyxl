@@ -202,6 +202,35 @@ class Worksheet:
     def tables(self) -> list[dict[str, str]]: ...
     @property
     def data_validations(self) -> list[dict[str, Any]]: ...
+    print_area: str | None
+    def set_page_setup(
+        self,
+        orientation: str | None = None,
+        paper_size: str | None = None,
+        scale: int | None = None,
+        fit_to_width: int | None = None,
+        fit_to_height: int | None = None,
+        print_gridlines: bool | None = None,
+        center: bool | None = None,
+    ) -> None: ...
+    def set_page_margins(
+        self,
+        left: float = 0.7,
+        right: float = 0.7,
+        top: float = 0.75,
+        bottom: float = 0.75,
+        header: float = 0.3,
+        footer: float = 0.3,
+    ) -> None: ...
+    def set_header_footer(
+        self,
+        header_left: str | None = None,
+        header_center: str | None = None,
+        header_right: str | None = None,
+        footer_left: str | None = None,
+        footer_center: str | None = None,
+        footer_right: str | None = None,
+    ) -> None: ...
     def add_conditional_formatting(self, cells: str, rule: dict[str, Any]) -> None: ...
     def add_data_validation(
         self,
