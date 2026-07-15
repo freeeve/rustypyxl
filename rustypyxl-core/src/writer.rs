@@ -342,6 +342,8 @@ pub fn write_content_types<W: Write + Seek>(
     has_shared_strings: bool,
     comment_sheet_ids: &[u32],
     table_count: usize,
+    chart_ids: &[u32],
+    drawing_sheet_ids: &[u32],
 ) -> Result<()> {
     zip.start_file("[Content_Types].xml", options.clone())?;
 
@@ -435,6 +437,28 @@ pub fn write_content_types<W: Write + Seek>(
         override_elem.push_attribute((
             "ContentType",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml",
+        ));
+        writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
+    }
+
+    for drawing_id in drawing_sheet_ids {
+        let part_name = format!("/xl/drawings/drawing{}.xml", drawing_id);
+        let mut override_elem = BytesStart::new("Override");
+        override_elem.push_attribute(("PartName", part_name.as_str()));
+        override_elem.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.drawing+xml",
+        ));
+        writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
+    }
+
+    for chart_id in chart_ids {
+        let part_name = format!("/xl/charts/chart{}.xml", chart_id);
+        let mut override_elem = BytesStart::new("Override");
+        override_elem.push_attribute(("PartName", part_name.as_str()));
+        override_elem.push_attribute((
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
         ));
         writer.write_event(quick_xml::events::Event::Empty(override_elem))?;
     }
@@ -1093,6 +1117,7 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     dxfs: &[ConditionalFormat],
     has_comments: bool,
     style_overrides: &HashMap<u64, u32>,
+    drawing_rel_id: Option<&str>,
 ) -> Result<()> {
     let path = format!("xl/worksheets/sheet{}.xml", sheet_id);
     zip.start_file(&path, options.clone())?;
@@ -1571,6 +1596,13 @@ pub fn write_worksheet_xml<W: Write + Seek>(
     // pageSetup
     if let Some(ref ps) = worksheet.page_setup {
         write_page_setup(&mut writer, ps)?;
+    }
+
+    // drawing anchors the part holding this sheet's charts/images
+    if let Some(rel) = drawing_rel_id {
+        let mut drawing = BytesStart::new("drawing");
+        drawing.push_attribute(("r:id", rel));
+        writer.write_event(quick_xml::events::Event::Empty(drawing))?;
     }
 
     // legacyDrawing anchors the VML part Excel needs to display comments

@@ -2,7 +2,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
 use pyo3::Py;
 use rustypyxl_core::{column_to_letter, parse_coordinate, CellValue, Worksheet};
 
@@ -451,6 +451,83 @@ impl PyWorksheet {
         self.with_sheet_mut(py, |ws| ws.delete_columns(idx, amount.unwrap_or(1)))
     }
 
+    /// Add a chart anchored at `anchor` (e.g. "E1"). It is written on save and
+    /// opens in Excel with the given series, labels, title and legend.
+    ///
+    /// `chart_type` is one of bar, column, line, area, pie, doughnut, scatter.
+    /// `series` is a value reference like "Sheet1!$B$1:$B$10", or a list whose
+    /// items are such strings or dicts with keys values/name/categories/
+    /// fill_color. `categories` supplies a default category (x-axis) reference
+    /// for series that don't carry their own. `legend` is a position
+    /// (r/l/t/b/tr) or None to hide it.
+    #[pyo3(signature = (chart_type, series, anchor, title=None, categories=None, legend="r"))]
+    fn add_chart(
+        &self,
+        chart_type: &str,
+        series: &Bound<'_, PyAny>,
+        anchor: &str,
+        title: Option<&str>,
+        categories: Option<&str>,
+        legend: Option<&str>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::chart::{Chart, ChartAnchor, ChartLegend, ChartType};
+
+        let ctype = match chart_type.to_ascii_lowercase().as_str() {
+            "bar" => ChartType::Bar,
+            "column" | "col" => ChartType::Column,
+            "line" => ChartType::Line,
+            "area" => ChartType::Area,
+            "pie" => ChartType::Pie,
+            "doughnut" => ChartType::Doughnut,
+            "scatter" | "xy" => ChartType::Scatter,
+            other => return Err(PyValueError::new_err(format!(
+                "unknown chart_type {other:?}; expected bar/column/line/area/pie/doughnut/scatter"
+            ))),
+        };
+
+        let mut chart = match ctype {
+            ChartType::Bar => Chart::bar(),
+            ChartType::Column => Chart::column(),
+            ChartType::Line => Chart::line(),
+            ChartType::Area => Chart::area(),
+            ChartType::Pie => Chart::pie(),
+            ChartType::Scatter => Chart::scatter(),
+            _ => Chart::new(ctype),
+        };
+
+        if let Some(t) = title {
+            chart = chart.with_title(t);
+        }
+        chart = match legend {
+            Some(pos) => chart.with_legend(ChartLegend::new().with_position(pos)),
+            None => chart.with_legend(ChartLegend::new().with_visible(false)),
+        };
+        chart = chart.with_anchor(ChartAnchor::at(anchor));
+
+        // series may be a single reference string, a single dict, or a list of
+        // refs/dicts.
+        if let Ok(single) = series.extract::<String>() {
+            chart.add_series(build_series(&single, None, categories)?);
+        } else if let Ok(list) = series.downcast::<PyList>() {
+            for item in list.iter() {
+                chart.add_series(parse_series_item(&item, categories)?);
+            }
+        } else if series.downcast::<PyDict>().is_ok() {
+            chart.add_series(parse_series_item(series, categories)?);
+        } else {
+            return Err(PyValueError::new_err(
+                "series must be a reference string, a dict, or a list of strings/dicts",
+            ));
+        }
+
+        if chart.series.is_empty() {
+            return Err(PyValueError::new_err("a chart needs at least one series"));
+        }
+
+        self.with_sheet_mut(py, |ws| ws.add_chart(chart))
+    }
+
     /// Get the freeze-panes anchor cell, if any.
     #[getter]
     fn freeze_panes(&self, py: Python<'_>) -> PyResult<Option<String>> {
@@ -608,4 +685,66 @@ impl PyCellRangeIterator {
     fn __clear__(&mut self) {
         self.workbook = None;
     }
+}
+
+/// Build a chart series from a values reference, an optional name, and an
+/// optional categories reference (falling back to the chart-wide default).
+fn build_series(
+    values: &str,
+    name: Option<&str>,
+    default_categories: Option<&str>,
+) -> PyResult<rustypyxl_core::chart::ChartSeries> {
+    use rustypyxl_core::chart::ChartSeries;
+    let mut s = ChartSeries::new(values);
+    if let Some(n) = name {
+        s = s.with_name(n);
+    }
+    if let Some(c) = default_categories {
+        s = s.with_categories(c);
+    }
+    Ok(s)
+}
+
+/// Parse one item of the `series` argument: either a reference string or a dict
+/// with keys values (required), name, categories, fill_color.
+fn parse_series_item(
+    item: &Bound<'_, PyAny>,
+    default_categories: Option<&str>,
+) -> PyResult<rustypyxl_core::chart::ChartSeries> {
+    if let Ok(values) = item.extract::<String>() {
+        return build_series(&values, None, default_categories);
+    }
+
+    let dict = item
+        .downcast::<PyDict>()
+        .map_err(|_| PyValueError::new_err("each series must be a reference string or a dict"))?;
+
+    let values: String = dict
+        .get_item("values")?
+        .ok_or_else(|| PyValueError::new_err("series dict requires a 'values' key"))?
+        .extract()?;
+    let name: Option<String> = match dict.get_item("name")? {
+        Some(v) => Some(v.extract()?),
+        None => None,
+    };
+    let categories: Option<String> = match dict.get_item("categories")? {
+        Some(v) => Some(v.extract()?),
+        None => default_categories.map(|s| s.to_string()),
+    };
+    let fill_color: Option<String> = match dict.get_item("fill_color")? {
+        Some(v) => Some(v.extract()?),
+        None => None,
+    };
+
+    let mut s = rustypyxl_core::chart::ChartSeries::new(values);
+    if let Some(n) = name {
+        s = s.with_name(n);
+    }
+    if let Some(c) = categories {
+        s = s.with_categories(c);
+    }
+    if let Some(fc) = fill_color {
+        s = s.with_fill_color(fc);
+    }
+    Ok(s)
 }

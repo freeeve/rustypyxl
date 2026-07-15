@@ -226,6 +226,8 @@ pub struct Worksheet {
     pub conditional_formatting: Vec<ConditionalFormatting>,
     /// Excel Tables (ListObjects).
     pub tables: Vec<Table>,
+    /// Charts anchored on this worksheet.
+    pub charts: Vec<crate::chart::Chart>,
     /// Page setup and print settings.
     pub page_setup: Option<PageSetup>,
     /// Freeze panes anchor cell (e.g. "B2"); rows above and columns left of it stay frozen.
@@ -254,6 +256,7 @@ impl Worksheet {
             auto_filter: None,
             conditional_formatting: Vec::new(),
             tables: Vec::new(),
+            charts: Vec::new(),
             page_setup: None,
             freeze_panes: None,
             visibility: SheetVisibility::default(),
@@ -279,6 +282,11 @@ impl Worksheet {
     /// Add an Excel Table.
     pub fn add_table(&mut self, table: Table) {
         self.tables.push(table);
+    }
+
+    /// Add a chart anchored on this worksheet.
+    pub fn add_chart(&mut self, chart: crate::chart::Chart) {
+        self.charts.push(chart);
     }
 
     /// Set page setup.

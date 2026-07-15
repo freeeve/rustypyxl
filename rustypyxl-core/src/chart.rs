@@ -2,9 +2,11 @@
 //!
 //! This module provides structures for creating and manipulating charts in Excel files.
 //!
-//! **Status: partial.** These types model chart data in memory, but the writer does
-//! not yet serialize charts into the saved workbook. Building a [`Chart`] has no effect
-//! on output until writer support lands. Not yet exposed through the Python bindings.
+//! **Status: write path.** A [`Chart`] added to a worksheet is serialized on save
+//! (chart part, drawing, and anchor), so it opens in Excel with the series, labels,
+//! title, legend, and axes intact. Charts are not yet read back when loading a file.
+//! Supported types round-trip through the writer: bar, column, line, area, pie,
+//! doughnut, and scatter; other types fall back to a bar chart.
 
 use std::collections::HashMap;
 

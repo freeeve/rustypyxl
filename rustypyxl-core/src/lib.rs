@@ -28,6 +28,7 @@
 
 pub mod cell;
 pub mod chart;
+pub mod chart_writer;
 pub mod conditional;
 pub mod error;
 pub mod image;

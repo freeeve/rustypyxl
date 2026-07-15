@@ -529,6 +529,29 @@ impl Workbook {
         }
         let table_count = (next_table_id - 1) as usize;
 
+        // Assign each chart a workbook-unique id (part path xl/charts/chart{id}.xml).
+        // A sheet with any charts also gets one drawing part, drawing{sheet_id}.xml,
+        // that anchors them.
+        let mut chart_assignments: Vec<Vec<u32>> = Vec::with_capacity(self.worksheets.len());
+        let mut next_chart_id: u32 = 1;
+        let mut drawing_sheet_ids: Vec<u32> = Vec::new();
+        for (idx, worksheet) in self.worksheets.iter().enumerate() {
+            let ids: Vec<u32> = worksheet
+                .charts
+                .iter()
+                .map(|_| {
+                    let id = next_chart_id;
+                    next_chart_id += 1;
+                    id
+                })
+                .collect();
+            if !ids.is_empty() {
+                drawing_sheet_ids.push((idx + 1) as u32);
+            }
+            chart_assignments.push(ids);
+        }
+        let chart_ids: Vec<u32> = (1..next_chart_id).collect();
+
         // Write [Content_Types].xml
         writer::write_content_types(
             zip,
@@ -537,6 +560,8 @@ impl Workbook {
             has_shared_strings,
             &comment_sheet_ids,
             table_count,
+            &chart_ids,
+            &drawing_sheet_ids,
         )?;
 
         // Write _rels/.rels
@@ -613,6 +638,12 @@ impl Workbook {
                 .iter()
                 .map(|id| format!("rIdTable{}", id))
                 .collect();
+            let chart_ids = &chart_assignments[idx];
+            let drawing_rel_id = if chart_ids.is_empty() {
+                None
+            } else {
+                Some("rIdDrawing")
+            };
 
             writer::write_worksheet_xml(
                 zip,
@@ -624,10 +655,40 @@ impl Workbook {
                 &dxfs,
                 has_comments,
                 &style_overrides[idx],
+                drawing_rel_id,
             )?;
 
             for (table, table_id) in worksheet.tables.iter().zip(table_ids) {
                 writer::write_table_xml(zip, &options, table, *table_id)?;
+            }
+
+            // Chart parts and the drawing that anchors them on this sheet.
+            if !chart_ids.is_empty() {
+                for (chart, chart_id) in worksheet.charts.iter().zip(chart_ids) {
+                    let chart_path = format!("xl/charts/chart{}.xml", chart_id);
+                    zip.start_file(&chart_path, options.clone())?;
+                    zip.write_all(crate::chart_writer::chart_xml(chart).as_bytes())?;
+                }
+
+                let drawing_path = format!("xl/drawings/drawing{}.xml", sheet_id);
+                zip.start_file(&drawing_path, options.clone())?;
+                zip.write_all(crate::chart_writer::drawing_xml(&worksheet.charts).as_bytes())?;
+
+                // drawing .rels maps each anchor's rId{i+1} to a chart part.
+                let drawing_rels_path = format!("xl/drawings/_rels/drawing{}.xml.rels", sheet_id);
+                zip.start_file(&drawing_rels_path, options.clone())?;
+                let mut drels = String::from(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
+                );
+                for (i, chart_id) in chart_ids.iter().enumerate() {
+                    drels.push_str(&format!(
+                        "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" Target=\"../charts/chart{}.xml\"/>\n",
+                        i + 1,
+                        chart_id
+                    ));
+                }
+                drels.push_str("</Relationships>");
+                zip.write_all(drels.as_bytes())?;
             }
 
             if has_comments {
@@ -638,7 +699,11 @@ impl Workbook {
             // The sheet .rels part ties comments, external hyperlinks, and
             // tables to the relationship ids used in the worksheet XML.
             let external_links = writer::collect_external_hyperlinks(worksheet);
-            if has_comments || !external_links.is_empty() || !table_ids.is_empty() {
+            if has_comments
+                || !external_links.is_empty()
+                || !table_ids.is_empty()
+                || !chart_ids.is_empty()
+            {
                 let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_id);
                 let rels_options: zip::write::FileOptions<
                     'static,
@@ -670,6 +735,12 @@ impl Workbook {
                     rels_content.push_str(&format!(
                         "<Relationship Id=\"rIdTable{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"../tables/table{}.xml\"/>\n",
                         table_id, table_id
+                    ));
+                }
+                if !chart_ids.is_empty() {
+                    rels_content.push_str(&format!(
+                        "<Relationship Id=\"rIdDrawing\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"../drawings/drawing{}.xml\"/>\n",
+                        sheet_id
                     ));
                 }
                 rels_content.push_str("</Relationships>");
