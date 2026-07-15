@@ -200,6 +200,23 @@ class Worksheet:
     def row_dimensions(self) -> RowDimensions: ...
     @property
     def tables(self) -> list[dict[str, str]]: ...
+    @property
+    def data_validations(self) -> list[dict[str, Any]]: ...
+    def add_data_validation(
+        self,
+        cells: str,
+        type: str,
+        formula1: str | None = None,
+        formula2: str | None = None,
+        operator: str | None = None,
+        allow_blank: bool = True,
+        show_error: bool = True,
+        error_title: str | None = None,
+        error: str | None = None,
+        show_input: bool = True,
+        prompt_title: str | None = None,
+        prompt: str | None = None,
+    ) -> None: ...
     def add_table(
         self,
         name: str,

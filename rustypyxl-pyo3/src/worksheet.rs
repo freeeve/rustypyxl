@@ -4,7 +4,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::Py;
-use rustypyxl_core::{column_to_letter, parse_coordinate, CellValue, Worksheet};
+use rustypyxl_core::{
+    column_to_letter, coordinate_from_row_col, parse_coordinate, CellValue, Worksheet,
+};
 
 use crate::cell::PyCell;
 use crate::workbook::{cell_value_to_python, python_to_cell_value, PyWorkbook};
@@ -653,6 +655,80 @@ impl PyWorksheet {
             table.style = TableStyle::Custom(s);
         }
         self.with_sheet_mut(py, |ws| ws.add_table(table))
+    }
+
+    /// Add a data-validation rule over a cell range (e.g. "A1:A10"). `type` is
+    /// one of whole, decimal, list, date, time, textLength, custom. `formula1`
+    /// (and `formula2` for between/notBetween) supply the constraint -- for a
+    /// list, `formula1` is like '"A,B,C"' or a range. `operator` is between,
+    /// notBetween, equal, notEqual, greaterThan, lessThan, greaterThanOrEqual,
+    /// or lessThanOrEqual.
+    #[pyo3(signature = (cells, r#type, formula1=None, formula2=None, operator=None, allow_blank=true, show_error=true, error_title=None, error=None, show_input=true, prompt_title=None, prompt=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_data_validation(
+        &self,
+        cells: &str,
+        r#type: &str,
+        formula1: Option<String>,
+        formula2: Option<String>,
+        operator: Option<String>,
+        allow_blank: bool,
+        show_error: bool,
+        error_title: Option<String>,
+        error: Option<String>,
+        show_input: bool,
+        prompt_title: Option<String>,
+        prompt: Option<String>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        use rustypyxl_core::DataValidation;
+
+        // Key the rule at the range's top-left cell; sqref carries the full range.
+        let first = cells.split(':').next().unwrap_or(cells);
+        let (row, col) =
+            parse_coordinate(first).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        let dv = DataValidation {
+            validation_type: r#type.to_string(),
+            operator,
+            formula1,
+            formula2,
+            error_style: None,
+            allow_blank,
+            show_error,
+            error_title,
+            error_message: error,
+            show_input,
+            prompt_title,
+            prompt_message: prompt,
+            sqref: Some(cells.to_string()),
+        };
+        self.with_sheet_mut(py, |ws| ws.add_data_validation(row, col, dv))
+    }
+
+    /// The data-validation rules on this sheet as a list of dicts with keys
+    /// sqref, type, operator, formula1, and formula2.
+    #[getter]
+    fn data_validations(&self, py: Python<'_>) -> PyResult<PyObject> {
+        use pyo3::types::{PyDict, PyList};
+        let list = PyList::empty(py);
+        self.with_sheet_ref(py, |ws| -> PyResult<()> {
+            for ((row, col), dv) in &ws.data_validations {
+                let d = PyDict::new(py);
+                let sqref = dv
+                    .sqref
+                    .clone()
+                    .unwrap_or_else(|| coordinate_from_row_col(*row, *col));
+                d.set_item("sqref", sqref)?;
+                d.set_item("type", &dv.validation_type)?;
+                d.set_item("operator", dv.operator.clone())?;
+                d.set_item("formula1", dv.formula1.clone())?;
+                d.set_item("formula2", dv.formula2.clone())?;
+                list.append(d)?;
+            }
+            Ok(())
+        })??;
+        Ok(list.into_any().unbind())
     }
 
     /// The tables on this sheet as a list of dicts with keys name, ref, and
