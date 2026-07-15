@@ -585,6 +585,20 @@ fn serial_to_parts(serial: f64) -> DateParts {
     }
 }
 
+/// Excel serial date to (year, month, day), for the formula engine's date
+/// functions. Honors the 1900 date system.
+pub(crate) fn serial_to_ymd(serial: f64) -> (i64, u32, u32) {
+    let p = serial_to_parts(serial);
+    (p.year, p.month, p.day)
+}
+
+/// (year, month, day) to an Excel serial date (1900 date system, including the
+/// fictitious 1900-02-29 for dates on or after 1900-03-01).
+pub(crate) fn ymd_to_serial(year: i64, month: u32, day: u32) -> f64 {
+    let days = days_from_civil(year, month, day) - days_from_civil(1899, 12, 31);
+    (if days >= 60 { days + 1 } else { days }) as f64
+}
+
 const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];

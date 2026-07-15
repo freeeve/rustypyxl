@@ -87,6 +87,48 @@ fn circular_reference_is_ref_error_not_a_hang() {
 }
 
 #[test]
+fn calculate_all_writes_cached_values() {
+    let mut wb = wb_with_data(); // A1=10, A2=20, A3=30
+    wb.set_cell_value_in_sheet("S", 1, 2, CellValue::Formula("SUM(A1:A3)".to_string()))
+        .unwrap(); // B1
+    wb.set_cell_value_in_sheet("S", 2, 2, CellValue::Formula("B1*2".to_string()))
+        .unwrap(); // B2 depends on B1
+    wb.set_cell_value_in_sheet("S", 3, 2, CellValue::Formula("1/0".to_string()))
+        .unwrap(); // B3 error
+
+    let count = wb.calculate_all();
+    assert_eq!(count, 3);
+
+    let ws = wb.get_sheet_by_name("S").unwrap();
+    // The cached result is stored on each formula cell.
+    assert_eq!(
+        ws.get_cell(1, 2).unwrap().cached_formula_value.as_deref(),
+        Some("60")
+    );
+    assert_eq!(
+        ws.get_cell(2, 2).unwrap().cached_formula_value.as_deref(),
+        Some("120")
+    );
+    let b3 = ws.get_cell(3, 2).unwrap();
+    assert_eq!(b3.cached_formula_value.as_deref(), Some("#DIV/0!"));
+    assert_eq!(b3.data_type, Some("e"));
+
+    // The cached values survive a save/load round-trip.
+    let out = wb.save_to_bytes().unwrap();
+    let reloaded = Workbook::load_from_bytes(&out).unwrap();
+    assert_eq!(
+        reloaded
+            .get_sheet_by_name("S")
+            .unwrap()
+            .get_cell(1, 2)
+            .unwrap()
+            .cached_formula_value
+            .as_deref(),
+        Some("60")
+    );
+}
+
+#[test]
 fn unknown_sheet_and_function_are_errors() {
     let wb = wb_with_data();
     assert!(wb.evaluate_formula("S", "=Missing!A1").unwrap().is_error());

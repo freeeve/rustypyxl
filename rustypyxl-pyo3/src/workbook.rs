@@ -475,6 +475,13 @@ impl PyWorkbook {
         Ok(formula_value_to_python(value, py))
     }
 
+    /// Evaluate every formula cell and store its computed result as the cell's
+    /// cached value, so a saved file shows results without Excel recalculating.
+    /// Returns the number of formula cells calculated.
+    pub fn calculate_all(&mut self) -> usize {
+        self.inner.calculate_all()
+    }
+
     /// Create a pivot table from a source range and add it to a target sheet.
     ///
     /// `source_ref` is a range like "A1:C100" whose first row holds the field

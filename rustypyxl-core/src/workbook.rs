@@ -409,6 +409,59 @@ impl Workbook {
         Err(RustypyxlError::WorksheetNotFound(name.to_string()))
     }
 
+    /// Evaluate every formula cell in the workbook and store each result as the
+    /// cell's cached value, so viewers that do not recalculate (and a saved
+    /// file) show computed results. References are resolved against current
+    /// values, evaluating dependent formula cells recursively; circular
+    /// references store `#REF!`. Returns the number of formula cells calculated.
+    pub fn calculate_all(&mut self) -> usize {
+        use crate::formula::FormulaValue;
+        use crate::worksheet::decode_cell_key;
+
+        // Phase 1: gather every formula cell (sheet index, key, formula text).
+        let mut targets: Vec<(usize, u64, String)> = Vec::new();
+        for (sidx, ws) in self.worksheets.iter().enumerate() {
+            for (key, cell) in &ws.cells {
+                if let CellValue::Formula(f) = &cell.value {
+                    targets.push((sidx, *key, f.clone()));
+                }
+            }
+        }
+
+        // Phase 2: evaluate each (read-only borrow of self through the resolver).
+        let mut results: Vec<(usize, u64, FormulaValue)> = Vec::with_capacity(targets.len());
+        for (sidx, key, formula) in &targets {
+            let (row, col) = decode_cell_key(*key);
+            let mut resolver = WorkbookResolver {
+                wb: self,
+                current_sheet: *sidx,
+                visited: std::collections::HashSet::new(),
+                depth: 0,
+            };
+            // Seed the current cell so a self-reference is caught as circular.
+            resolver.visited.insert((*sidx, row, col));
+            let value = crate::formula::evaluate(formula, &mut resolver);
+            results.push((*sidx, *key, value));
+        }
+
+        // Phase 3: write the cached results back.
+        let count = results.len();
+        for (sidx, key, value) in results {
+            if let Some(cell) = self.worksheets[sidx].cells.get_mut(&key) {
+                let (cached, data_type): (String, Option<&'static str>) = match value {
+                    FormulaValue::Number(n) => (format!("{}", n), None),
+                    FormulaValue::Text(s) => (s, Some("str")),
+                    FormulaValue::Bool(b) => (if b { "1" } else { "0" }.to_string(), Some("b")),
+                    FormulaValue::Error(e) => (e, Some("e")),
+                    FormulaValue::Empty => ("0".to_string(), None),
+                };
+                cell.cached_formula_value = Some(cached);
+                cell.data_type = data_type;
+            }
+        }
+        count
+    }
+
     /// The pivot tables in this workbook, parsed read-only from the preserved
     /// pivot parts (source range, cache fields, and the row/column/data/page
     /// field placements). Empty when the workbook has no pivot tables. Building

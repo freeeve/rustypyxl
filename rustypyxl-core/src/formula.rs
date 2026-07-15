@@ -1,13 +1,21 @@
 //! A small formula evaluation engine: tokenizer, precedence parser, and
 //! evaluator for the common subset of Excel formulas.
 //!
-//! **Scope (v1).** Arithmetic (`+ - * / ^`), string concat (`&`), comparisons
+//! **Scope.** Arithmetic (`+ - * / ^`), string concat (`&`), comparisons
 //! (`= <> < > <= >=`), unary minus and trailing `%`, numbers, quoted strings,
 //! booleans, cell references (`A1`, `$A$1`), same-sheet ranges (`A1:B10`),
-//! sheet-qualified references (`Sheet!A1`, `'My Sheet'!A1`), and a starter set
-//! of functions: SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, PRODUCT, ROUND, ABS,
-//! SQRT, INT, MOD, POWER, SUMIF, COUNTIF, IF, AND, OR, NOT, CONCATENATE, LEN,
-//! LEFT, RIGHT, MID, UPPER, LOWER, TRIM, TRUE, FALSE.
+//! sheet-qualified references (`Sheet!A1`, `'My Sheet'!A1`), and these
+//! functions:
+//! - aggregate: SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, PRODUCT, MEDIAN, STDEV,
+//!   STDEVP, VAR, VARP, LARGE, SMALL, SUMIF, COUNTIF, SUMPRODUCT
+//! - math: ROUND, ROUNDUP, ROUNDDOWN, TRUNC, INT, CEILING, FLOOR, ABS, SIGN,
+//!   SQRT, MOD, POWER, EXP, LN, LOG, LOG10, PI
+//! - logical: IF, IFERROR, IFNA, AND, OR, NOT, XOR, TRUE, FALSE
+//! - text: CONCATENATE, LEN, LEFT, RIGHT, MID, UPPER, LOWER, TRIM, PROPER, REPT,
+//!   SUBSTITUTE, REPLACE, FIND, SEARCH, VALUE, TEXT, EXACT
+//! - lookup: VLOOKUP, HLOOKUP, INDEX, MATCH, CHOOSE
+//! - information: ISBLANK, ISNUMBER, ISTEXT, ISLOGICAL, ISERROR, ISNA
+//! - date: DATE, YEAR, MONTH, DAY
 //!
 //! Anything outside this subset resolves to an Excel-style error value
 //! (`#NAME?` for an unknown function, `#VALUE!` for a type error, `#DIV/0!`,
@@ -847,6 +855,70 @@ fn eval_function(name: &str, args: &[Expr], resolver: &mut dyn CellResolver) -> 
         },
         "LEFT" | "RIGHT" => text_take(name, args, resolver),
         "MID" => mid(args, resolver),
+        // --- expanded math ---
+        "ROUNDUP" => round_dir(args, resolver, true),
+        "ROUNDDOWN" => round_dir(args, resolver, false),
+        "TRUNC" => trunc_fn(args, resolver),
+        "CEILING" => ceil_floor(args, resolver, true),
+        "FLOOR" => ceil_floor(args, resolver, false),
+        "SIGN" => unary_num(args, resolver, |n| {
+            if n > 0.0 {
+                1.0
+            } else if n < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        }),
+        "EXP" => unary_num(args, resolver, f64::exp),
+        "LN" => unary_num(args, resolver, f64::ln),
+        "LOG10" => unary_num(args, resolver, f64::log10),
+        "LOG" => log_fn(args, resolver),
+        "PI" => FormulaValue::Number(std::f64::consts::PI),
+        "SUMPRODUCT" => sumproduct(args, resolver),
+        // --- statistics ---
+        "MEDIAN" => median(args, resolver),
+        "STDEV" => stdev(args, resolver, true),
+        "STDEVP" => stdev(args, resolver, false),
+        "VAR" => var(args, resolver, true),
+        "VARP" => var(args, resolver, false),
+        "LARGE" => large_small(args, resolver, true),
+        "SMALL" => large_small(args, resolver, false),
+        // --- logical ---
+        "IFERROR" | "IFNA" => iferror(args, resolver, name == "IFNA"),
+        "XOR" => xor_fn(args, resolver),
+        // --- text ---
+        "TEXT" => text_fn(args, resolver),
+        "SUBSTITUTE" => substitute(args, resolver),
+        "REPLACE" => replace_fn(args, resolver),
+        "FIND" => find_fn(args, resolver, true),
+        "SEARCH" => find_fn(args, resolver, false),
+        "VALUE" => value_fn(args, resolver),
+        "REPT" => rept(args, resolver),
+        "PROPER" => proper(args, resolver),
+        "EXACT" => exact(args, resolver),
+        // --- lookup ---
+        "CHOOSE" => choose(args, resolver),
+        "VLOOKUP" => lookup_fn(args, resolver, true),
+        "HLOOKUP" => lookup_fn(args, resolver, false),
+        "INDEX" => index_fn(args, resolver),
+        "MATCH" => match_fn(args, resolver),
+        // --- information ---
+        "ISBLANK" => is_fn(args, resolver, |v| matches!(v, FormulaValue::Empty)),
+        "ISNUMBER" => is_fn(args, resolver, |v| matches!(v, FormulaValue::Number(_))),
+        "ISTEXT" => is_fn(args, resolver, |v| matches!(v, FormulaValue::Text(_))),
+        "ISLOGICAL" => is_fn(args, resolver, |v| matches!(v, FormulaValue::Bool(_))),
+        "ISERROR" => is_fn(args, resolver, |v| v.is_error()),
+        "ISNA" => is_fn(
+            args,
+            resolver,
+            |v| matches!(v, FormulaValue::Error(e) if e == "#N/A"),
+        ),
+        // --- date ---
+        "DATE" => date_fn(args, resolver),
+        "YEAR" => date_part(args, resolver, DatePart::Year),
+        "MONTH" => date_part(args, resolver, DatePart::Month),
+        "DAY" => date_part(args, resolver, DatePart::Day),
         "TRUE" => FormulaValue::Bool(true),
         "FALSE" => FormulaValue::Bool(false),
         _ => FormulaValue::Error("#NAME?".to_string()),
@@ -1034,6 +1106,665 @@ fn criteria_matches(value: &FormulaValue, criteria: &str) -> bool {
     }
 }
 
+// ---------- expanded function helpers ----------
+
+/// Evaluate an argument as a matrix: (values row-major, rows, cols).
+fn eval_matrix(expr: &Expr, resolver: &mut dyn CellResolver) -> (Vec<FormulaValue>, usize, usize) {
+    match expr {
+        Expr::Range {
+            sheet,
+            r1,
+            c1,
+            r2,
+            c2,
+        } => {
+            let nrows = (*r2 - *r1 + 1) as usize;
+            let ncols = (*c2 - *c1 + 1) as usize;
+            let mut vals = Vec::with_capacity(nrows * ncols);
+            for row in *r1..=*r2 {
+                for col in *c1..=*c2 {
+                    vals.push(resolver.resolve(sheet.as_deref(), row, col));
+                }
+            }
+            (vals, nrows, ncols)
+        }
+        _ => (vec![eval_expr(expr, resolver)], 1, 1),
+    }
+}
+
+/// ROUNDUP/ROUNDDOWN: round away from / toward zero to `digits` places.
+fn round_dir(args: &[Expr], resolver: &mut dyn CellResolver, up: bool) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let n = match num_of(&args[0], resolver) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let digits = match num_of(&args[1], resolver) {
+        Ok(v) => v as i32,
+        Err(e) => return e,
+    };
+    let factor = 10f64.powi(digits);
+    let scaled = n * factor;
+    let rounded = if up {
+        scaled.abs().ceil() * scaled.signum()
+    } else {
+        scaled.trunc()
+    };
+    FormulaValue::Number(rounded / factor)
+}
+
+fn trunc_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.is_empty() || args.len() > 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let n = match num_of(&args[0], resolver) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let digits = if args.len() == 2 {
+        match num_of(&args[1], resolver) {
+            Ok(v) => v as i32,
+            Err(e) => return e,
+        }
+    } else {
+        0
+    };
+    let factor = 10f64.powi(digits);
+    FormulaValue::Number((n * factor).trunc() / factor)
+}
+
+/// CEILING/FLOOR: round to the nearest multiple of `significance`.
+fn ceil_floor(args: &[Expr], resolver: &mut dyn CellResolver, up: bool) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let n = match num_of(&args[0], resolver) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let sig = match num_of(&args[1], resolver) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if sig == 0.0 {
+        return FormulaValue::Number(0.0);
+    }
+    let q = n / sig;
+    let rounded = if up { q.ceil() } else { q.floor() };
+    FormulaValue::Number(rounded * sig)
+}
+
+fn log_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.is_empty() || args.len() > 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let n = match num_of(&args[0], resolver) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let base = if args.len() == 2 {
+        match num_of(&args[1], resolver) {
+            Ok(v) => v,
+            Err(e) => return e,
+        }
+    } else {
+        10.0
+    };
+    FormulaValue::Number(n.log(base))
+}
+
+fn sumproduct(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.is_empty() {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let arrays: Vec<Vec<FormulaValue>> = args.iter().map(|a| eval_matrix(a, resolver).0).collect();
+    let len = arrays[0].len();
+    if arrays.iter().any(|a| a.len() != len) {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let mut total = 0.0;
+    for i in 0..len {
+        let mut product = 1.0;
+        for arr in &arrays {
+            product *= arr[i].to_number().unwrap_or(0.0);
+        }
+        total += product;
+    }
+    FormulaValue::Number(total)
+}
+
+fn median(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    let mut nums = match collect_numbers(args, resolver) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    if nums.is_empty() {
+        return FormulaValue::Error("#NUM!".to_string());
+    }
+    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = nums.len() / 2;
+    let med = if nums.len() % 2 == 0 {
+        (nums[mid - 1] + nums[mid]) / 2.0
+    } else {
+        nums[mid]
+    };
+    FormulaValue::Number(med)
+}
+
+fn stdev(args: &[Expr], resolver: &mut dyn CellResolver, sample: bool) -> FormulaValue {
+    match variance(args, resolver, sample) {
+        Ok(v) => FormulaValue::Number(v.sqrt()),
+        Err(e) => e,
+    }
+}
+
+fn var(args: &[Expr], resolver: &mut dyn CellResolver, sample: bool) -> FormulaValue {
+    match variance(args, resolver, sample) {
+        Ok(v) => FormulaValue::Number(v),
+        Err(e) => e,
+    }
+}
+
+fn variance(
+    args: &[Expr],
+    resolver: &mut dyn CellResolver,
+    sample: bool,
+) -> Result<f64, FormulaValue> {
+    let nums = collect_numbers(args, resolver)?;
+    let n = nums.len();
+    if n == 0 || (sample && n < 2) {
+        return Err(FormulaValue::Error("#DIV/0!".to_string()));
+    }
+    let mean = nums.iter().sum::<f64>() / n as f64;
+    let ss: f64 = nums.iter().map(|x| (x - mean).powi(2)).sum();
+    Ok(ss / (if sample { n - 1 } else { n } as f64))
+}
+
+/// LARGE/SMALL: the k-th largest or smallest value in a range.
+fn large_small(args: &[Expr], resolver: &mut dyn CellResolver, largest: bool) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let mut nums = match collect_numbers(&args[..1], resolver) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let k = match num_of(&args[1], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    if k < 1 || k > nums.len() {
+        return FormulaValue::Error("#NUM!".to_string());
+    }
+    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = if largest { nums.len() - k } else { k - 1 };
+    FormulaValue::Number(nums[idx])
+}
+
+/// IFERROR/IFNA: substitute a fallback when the first argument errors.
+fn iferror(args: &[Expr], resolver: &mut dyn CellResolver, na_only: bool) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let v = eval_expr(&args[0], resolver);
+    let trip = match &v {
+        FormulaValue::Error(e) => !na_only || e == "#N/A",
+        _ => false,
+    };
+    if trip {
+        eval_expr(&args[1], resolver)
+    } else {
+        v
+    }
+}
+
+fn xor_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    let mut trues = 0usize;
+    let mut any = false;
+    for arg in args {
+        for v in eval_arg_values(arg, resolver) {
+            if matches!(v, FormulaValue::Empty | FormulaValue::Text(_)) {
+                continue;
+            }
+            any = true;
+            match v.to_bool() {
+                Ok(true) => trues += 1,
+                Ok(false) => {}
+                Err(e) => return e,
+            }
+        }
+    }
+    if !any {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    FormulaValue::Bool(trues % 2 == 1)
+}
+
+/// TEXT(value, format_code): render a number under an Excel number format.
+fn text_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let value = eval_expr(&args[0], resolver);
+    let code = match eval_expr(&args[1], resolver).to_text() {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    match value.to_number() {
+        Ok(n) => FormulaValue::Text(crate::numfmt::format_number(n, &code)),
+        // non-numeric text passes through
+        Err(_) => match value.to_text() {
+            Ok(t) => FormulaValue::Text(t),
+            Err(e) => e,
+        },
+    }
+}
+
+fn substitute(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() < 3 || args.len() > 4 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let text = match str_arg(&args[0], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let old = match str_arg(&args[1], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let new = match str_arg(&args[2], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    if old.is_empty() {
+        return FormulaValue::Text(text);
+    }
+    if args.len() == 4 {
+        let instance = match num_of(&args[3], resolver) {
+            Ok(v) => v as usize,
+            Err(e) => return e,
+        };
+        let mut count = 0;
+        let mut result = String::new();
+        let mut rest = text.as_str();
+        while let Some(pos) = rest.find(&old) {
+            count += 1;
+            if count == instance {
+                result.push_str(&rest[..pos]);
+                result.push_str(&new);
+                result.push_str(&rest[pos + old.len()..]);
+                return FormulaValue::Text(result);
+            }
+            result.push_str(&rest[..pos + old.len()]);
+            rest = &rest[pos + old.len()..];
+        }
+        result.push_str(rest);
+        FormulaValue::Text(result)
+    } else {
+        FormulaValue::Text(text.replace(&old, &new))
+    }
+}
+
+fn replace_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() != 4 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let text = match str_arg(&args[0], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let start = match num_of(&args[1], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    let len = match num_of(&args[2], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    let new = match str_arg(&args[3], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    if start < 1 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let s = (start - 1).min(chars.len());
+    let e = (s + len).min(chars.len());
+    let mut out: String = chars[..s].iter().collect();
+    out.push_str(&new);
+    out.extend(chars[e..].iter());
+    FormulaValue::Text(out)
+}
+
+/// FIND (case-sensitive) / SEARCH (case-insensitive): 1-based position.
+fn find_fn(args: &[Expr], resolver: &mut dyn CellResolver, case_sensitive: bool) -> FormulaValue {
+    if args.len() < 2 || args.len() > 3 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let needle = match str_arg(&args[0], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let hay = match str_arg(&args[1], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let start = if args.len() == 3 {
+        match num_of(&args[2], resolver) {
+            Ok(v) => (v as usize).max(1),
+            Err(e) => return e,
+        }
+    } else {
+        1
+    };
+    let (hay_s, needle_s) = if case_sensitive {
+        (hay.clone(), needle.clone())
+    } else {
+        (hay.to_lowercase(), needle.to_lowercase())
+    };
+    let hay_chars: Vec<char> = hay_s.chars().collect();
+    let from = (start - 1).min(hay_chars.len());
+    let tail: String = hay_chars[from..].iter().collect();
+    match tail.find(&needle_s) {
+        Some(byte_pos) => {
+            let char_pos = tail[..byte_pos].chars().count();
+            FormulaValue::Number((from + char_pos + 1) as f64)
+        }
+        None => FormulaValue::Error("#VALUE!".to_string()),
+    }
+}
+
+fn value_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    match single_arg(args, resolver) {
+        Ok(v) => match v.to_number() {
+            Ok(n) => FormulaValue::Number(n),
+            Err(_) => FormulaValue::Error("#VALUE!".to_string()),
+        },
+        Err(e) => e,
+    }
+}
+
+fn rept(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let text = match str_arg(&args[0], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let n = match num_of(&args[1], resolver) {
+        Ok(v) => v.max(0.0) as usize,
+        Err(e) => return e,
+    };
+    FormulaValue::Text(text.repeat(n))
+}
+
+fn proper(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    let text = match single_arg(args, resolver).and_then(|v| v.to_text()) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut prev_alpha = false;
+    for ch in text.chars() {
+        if ch.is_alphabetic() {
+            if prev_alpha {
+                out.extend(ch.to_lowercase());
+            } else {
+                out.extend(ch.to_uppercase());
+            }
+            prev_alpha = true;
+        } else {
+            out.push(ch);
+            prev_alpha = false;
+        }
+    }
+    FormulaValue::Text(out)
+}
+
+fn exact(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() != 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let a = match str_arg(&args[0], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let b = match str_arg(&args[1], resolver) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    FormulaValue::Bool(a == b)
+}
+
+fn choose(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() < 2 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let idx = match num_of(&args[0], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    if idx < 1 || idx >= args.len() {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    eval_expr(&args[idx], resolver)
+}
+
+/// VLOOKUP (vertical) / HLOOKUP (horizontal).
+fn lookup_fn(args: &[Expr], resolver: &mut dyn CellResolver, vertical: bool) -> FormulaValue {
+    if args.len() < 3 || args.len() > 4 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let key = eval_expr(&args[0], resolver);
+    let (vals, nrows, ncols) = eval_matrix(&args[1], resolver);
+    let index = match num_of(&args[2], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    let approximate = if args.len() == 4 {
+        eval_expr(&args[3], resolver).to_bool().unwrap_or(true)
+    } else {
+        true
+    };
+
+    let (line_count, cross_count) = if vertical {
+        (nrows, ncols)
+    } else {
+        (ncols, nrows)
+    };
+    if index < 1 || index > cross_count {
+        return FormulaValue::Error("#REF!".to_string());
+    }
+    let at = |line: usize, cross: usize| -> &FormulaValue {
+        let (r, c) = if vertical {
+            (line, cross)
+        } else {
+            (cross, line)
+        };
+        &vals[r * ncols + c]
+    };
+
+    let mut best: Option<usize> = None;
+    for line in 0..line_count {
+        let candidate = at(line, 0);
+        match lookup_cmp(candidate, &key) {
+            Some(std::cmp::Ordering::Equal) => {
+                best = Some(line);
+                break;
+            }
+            Some(std::cmp::Ordering::Less) if approximate => best = Some(line),
+            _ => {}
+        }
+    }
+    match best {
+        Some(line) => at(line, index - 1).clone(),
+        None => FormulaValue::Error("#N/A".to_string()),
+    }
+}
+
+fn index_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() < 2 || args.len() > 3 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let (vals, nrows, ncols) = eval_matrix(&args[0], resolver);
+    let row_num = match num_of(&args[1], resolver) {
+        Ok(v) => v as usize,
+        Err(e) => return e,
+    };
+    let col_num = if args.len() == 3 {
+        match num_of(&args[2], resolver) {
+            Ok(v) => v as usize,
+            Err(e) => return e,
+        }
+    } else {
+        0
+    };
+
+    // A single-row or single-column range indexed by one number.
+    if args.len() == 2 {
+        let flat_idx = if nrows == 1 {
+            col_num_default(row_num, ncols)
+        } else if ncols == 1 {
+            row_num
+        } else {
+            return FormulaValue::Error("#REF!".to_string());
+        };
+        return vals
+            .get(flat_idx.wrapping_sub(1))
+            .cloned()
+            .unwrap_or(FormulaValue::Error("#REF!".to_string()));
+    }
+    if row_num < 1 || row_num > nrows || col_num < 1 || col_num > ncols {
+        return FormulaValue::Error("#REF!".to_string());
+    }
+    vals[(row_num - 1) * ncols + (col_num - 1)].clone()
+}
+
+fn col_num_default(n: usize, _ncols: usize) -> usize {
+    n
+}
+
+fn match_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() < 2 || args.len() > 3 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let key = eval_expr(&args[0], resolver);
+    let (vals, _, _) = eval_matrix(&args[1], resolver);
+    let match_type = if args.len() == 3 {
+        match num_of(&args[2], resolver) {
+            Ok(v) => v as i32,
+            Err(e) => return e,
+        }
+    } else {
+        1
+    };
+
+    if match_type == 0 {
+        for (i, v) in vals.iter().enumerate() {
+            if lookup_cmp(v, &key) == Some(std::cmp::Ordering::Equal) {
+                return FormulaValue::Number((i + 1) as f64);
+            }
+        }
+        return FormulaValue::Error("#N/A".to_string());
+    }
+    // Approximate: type 1 wants the largest value <= key (ascending data);
+    // type -1 the smallest value >= key (descending data).
+    let mut best: Option<usize> = None;
+    for (i, v) in vals.iter().enumerate() {
+        match lookup_cmp(v, &key) {
+            Some(std::cmp::Ordering::Equal) => return FormulaValue::Number((i + 1) as f64),
+            Some(std::cmp::Ordering::Less) if match_type >= 1 => best = Some(i),
+            Some(std::cmp::Ordering::Greater) if match_type < 0 => best = Some(i),
+            _ => {}
+        }
+    }
+    match best {
+        Some(i) => FormulaValue::Number((i + 1) as f64),
+        None => FormulaValue::Error("#N/A".to_string()),
+    }
+}
+
+/// Compare a candidate cell value to a lookup key (numbers numerically, text
+/// case-insensitively), returning None for incomparable types.
+fn lookup_cmp(candidate: &FormulaValue, key: &FormulaValue) -> Option<std::cmp::Ordering> {
+    match (candidate, key) {
+        (FormulaValue::Number(a), FormulaValue::Number(b)) => a.partial_cmp(b),
+        (FormulaValue::Text(_), FormulaValue::Text(_))
+        | (FormulaValue::Text(_), FormulaValue::Number(_))
+        | (FormulaValue::Number(_), FormulaValue::Text(_)) => {
+            let a = candidate.to_text().ok()?.to_ascii_uppercase();
+            let b = key.to_text().ok()?.to_ascii_uppercase();
+            Some(a.cmp(&b))
+        }
+        (FormulaValue::Bool(a), FormulaValue::Bool(b)) => Some(a.cmp(b)),
+        _ => None,
+    }
+}
+
+/// Generic IS* predicate over a single argument.
+fn is_fn<F: Fn(&FormulaValue) -> bool>(
+    args: &[Expr],
+    resolver: &mut dyn CellResolver,
+    pred: F,
+) -> FormulaValue {
+    match single_arg(args, resolver) {
+        Ok(v) => FormulaValue::Bool(pred(&v)),
+        Err(e) => e,
+    }
+}
+
+/// Which component a date function extracts.
+enum DatePart {
+    Year,
+    Month,
+    Day,
+}
+
+fn date_fn(args: &[Expr], resolver: &mut dyn CellResolver) -> FormulaValue {
+    if args.len() != 3 {
+        return FormulaValue::Error("#VALUE!".to_string());
+    }
+    let y = match num_of(&args[0], resolver) {
+        Ok(v) => v as i64,
+        Err(e) => return e,
+    };
+    let m = match num_of(&args[1], resolver) {
+        Ok(v) => v as u32,
+        Err(e) => return e,
+    };
+    let d = match num_of(&args[2], resolver) {
+        Ok(v) => v as u32,
+        Err(e) => return e,
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return FormulaValue::Error("#NUM!".to_string());
+    }
+    FormulaValue::Number(crate::numfmt::ymd_to_serial(y, m, d))
+}
+
+fn date_part(args: &[Expr], resolver: &mut dyn CellResolver, part: DatePart) -> FormulaValue {
+    let serial = match single_arg(args, resolver).and_then(|v| v.to_number()) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let (y, m, d) = crate::numfmt::serial_to_ymd(serial);
+    let value = match part {
+        DatePart::Year => y as f64,
+        DatePart::Month => m as f64,
+        DatePart::Day => d as f64,
+    };
+    FormulaValue::Number(value)
+}
+
+/// Evaluate a single argument to text (a common pattern in text functions).
+fn str_arg(expr: &Expr, resolver: &mut dyn CellResolver) -> Result<String, FormulaValue> {
+    eval_expr(expr, resolver).to_text()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,5 +1931,125 @@ mod tests {
         assert_eq!(ev("=1+", &mut r), FormulaValue::Error("#VALUE!".into()));
         assert_eq!(ev("=(1+2", &mut r), FormulaValue::Error("#VALUE!".into()));
         assert!(ev("=\"a\"+1", &mut r).is_error());
+    }
+
+    #[test]
+    fn expanded_math() {
+        let mut r = MapResolver::new();
+        assert_eq!(ev("=ROUNDUP(2.1,0)", &mut r), FormulaValue::Number(3.0));
+        assert_eq!(ev("=ROUNDDOWN(2.9,0)", &mut r), FormulaValue::Number(2.0));
+        assert_eq!(ev("=TRUNC(3.7)", &mut r), FormulaValue::Number(3.0));
+        assert_eq!(ev("=CEILING(7,5)", &mut r), FormulaValue::Number(10.0));
+        assert_eq!(ev("=FLOOR(7,5)", &mut r), FormulaValue::Number(5.0));
+        assert_eq!(ev("=SIGN(-8)", &mut r), FormulaValue::Number(-1.0));
+        match ev("=LOG(1000,10)", &mut r) {
+            FormulaValue::Number(n) => assert!((n - 3.0).abs() < 1e-9, "got {n}"),
+            other => panic!("expected number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expanded_stats() {
+        let mut r = MapResolver::new();
+        r.set("A1", FormulaValue::Number(1.0))
+            .set("A2", FormulaValue::Number(2.0))
+            .set("A3", FormulaValue::Number(3.0))
+            .set("A4", FormulaValue::Number(4.0));
+        assert_eq!(ev("=MEDIAN(A1:A4)", &mut r), FormulaValue::Number(2.5));
+        assert_eq!(ev("=LARGE(A1:A4,1)", &mut r), FormulaValue::Number(4.0));
+        assert_eq!(ev("=SMALL(A1:A4,2)", &mut r), FormulaValue::Number(2.0));
+        assert_eq!(ev("=VARP(A1:A4)", &mut r), FormulaValue::Number(1.25));
+        assert_eq!(
+            ev("=SUMPRODUCT(A1:A2,A3:A4)", &mut r),
+            FormulaValue::Number(1.0 * 3.0 + 2.0 * 4.0)
+        );
+    }
+
+    #[test]
+    fn expanded_logical_and_info() {
+        let mut r = MapResolver::new();
+        r.set("A1", FormulaValue::Number(5.0));
+        assert_eq!(ev("=IFERROR(1/0,99)", &mut r), FormulaValue::Number(99.0));
+        assert_eq!(ev("=IFERROR(10,99)", &mut r), FormulaValue::Number(10.0));
+        assert_eq!(
+            ev("=XOR(TRUE,FALSE,TRUE)", &mut r),
+            FormulaValue::Bool(false)
+        );
+        assert_eq!(ev("=ISNUMBER(A1)", &mut r), FormulaValue::Bool(true));
+        assert_eq!(ev("=ISBLANK(Z9)", &mut r), FormulaValue::Bool(true));
+        assert_eq!(ev("=ISERROR(1/0)", &mut r), FormulaValue::Bool(true));
+    }
+
+    #[test]
+    fn expanded_text() {
+        let mut r = MapResolver::new();
+        assert_eq!(
+            ev("=TEXT(0.125,\"0.0%\")", &mut r),
+            FormulaValue::Text("12.5%".into())
+        );
+        assert_eq!(
+            ev("=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")", &mut r),
+            FormulaValue::Text("a+b+c".into())
+        );
+        assert_eq!(
+            ev("=FIND(\"b\",\"abc\")", &mut r),
+            FormulaValue::Number(2.0)
+        );
+        assert_eq!(
+            ev("=SEARCH(\"B\",\"abc\")", &mut r),
+            FormulaValue::Number(2.0)
+        );
+        assert_eq!(
+            ev("=REPT(\"ab\",3)", &mut r),
+            FormulaValue::Text("ababab".into())
+        );
+        assert_eq!(
+            ev("=PROPER(\"hello world\")", &mut r),
+            FormulaValue::Text("Hello World".into())
+        );
+        assert_eq!(ev("=VALUE(\"42\")", &mut r), FormulaValue::Number(42.0));
+        assert_eq!(ev("=EXACT(\"a\",\"A\")", &mut r), FormulaValue::Bool(false));
+    }
+
+    #[test]
+    fn lookup_functions() {
+        let mut r = MapResolver::new();
+        // A1:B3 grid: keys in col A, values in col B
+        r.set("A1", FormulaValue::Number(1.0))
+            .set("B1", FormulaValue::Text("one".into()));
+        r.set("A2", FormulaValue::Number(2.0))
+            .set("B2", FormulaValue::Text("two".into()));
+        r.set("A3", FormulaValue::Number(3.0))
+            .set("B3", FormulaValue::Text("three".into()));
+        assert_eq!(
+            ev("=VLOOKUP(2,A1:B3,2,FALSE)", &mut r),
+            FormulaValue::Text("two".into())
+        );
+        assert_eq!(
+            ev("=INDEX(A1:B3,3,2)", &mut r),
+            FormulaValue::Text("three".into())
+        );
+        assert_eq!(ev("=MATCH(3,A1:A3,0)", &mut r), FormulaValue::Number(3.0));
+        assert_eq!(
+            ev("=CHOOSE(2,\"x\",\"y\",\"z\")", &mut r),
+            FormulaValue::Text("y".into())
+        );
+        assert_eq!(
+            ev("=VLOOKUP(9,A1:B3,2,FALSE)", &mut r),
+            FormulaValue::Error("#N/A".into())
+        );
+    }
+
+    #[test]
+    fn date_functions() {
+        let mut r = MapResolver::new();
+        // 2023-01-15 is serial 44941
+        assert_eq!(
+            ev("=DATE(2023,1,15)", &mut r),
+            FormulaValue::Number(44941.0)
+        );
+        assert_eq!(ev("=YEAR(44941)", &mut r), FormulaValue::Number(2023.0));
+        assert_eq!(ev("=MONTH(44941)", &mut r), FormulaValue::Number(1.0));
+        assert_eq!(ev("=DAY(44941)", &mut r), FormulaValue::Number(15.0));
     }
 }
