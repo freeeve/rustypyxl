@@ -237,24 +237,45 @@ class TestFreezePanes:
 
 
 class TestRowColumnOperations:
-    """Structural row/column edits are not implemented yet and say so."""
+    """Structural row/column edits shift cells with openpyxl semantics."""
 
-    def test_insert_rows_not_implemented(self, workbook_with_sheet):
-        ws = workbook_with_sheet.active
-        with pytest.raises(NotImplementedError):
-            ws.insert_rows(1, 2)
+    def _col(self, ws, n):
+        return [ws.cell(row=r, column=1).value for r in range(1, n + 1)]
 
-    def test_insert_cols_not_implemented(self, workbook_with_sheet):
-        ws = workbook_with_sheet.active
-        with pytest.raises(NotImplementedError):
-            ws.insert_cols(1, 2)
+    def _row(self, ws, n):
+        return [ws.cell(row=1, column=c).value for c in range(1, n + 1)]
 
-    def test_delete_rows_not_implemented(self, workbook_with_sheet):
+    def test_insert_rows_shifts_down(self, workbook_with_sheet):
         ws = workbook_with_sheet.active
-        with pytest.raises(NotImplementedError):
-            ws.delete_rows(1, 2)
+        for r in range(1, 4):
+            ws.cell(row=r, column=1).value = r * 10
+        ws.insert_rows(2)  # one blank row before row 2
+        assert self._col(ws, 4) == [10, None, 20, 30]
 
-    def test_delete_cols_not_implemented(self, workbook_with_sheet):
+    def test_insert_rows_amount(self, workbook_with_sheet):
         ws = workbook_with_sheet.active
-        with pytest.raises(NotImplementedError):
-            ws.delete_cols(1, 2)
+        ws.cell(row=1, column=1).value = "a"
+        ws.cell(row=2, column=1).value = "b"
+        ws.insert_rows(2, 2)  # two blank rows before row 2
+        assert self._col(ws, 4) == ["a", None, None, "b"]
+
+    def test_delete_rows_shifts_up(self, workbook_with_sheet):
+        ws = workbook_with_sheet.active
+        for r in range(1, 5):
+            ws.cell(row=r, column=1).value = r
+        ws.delete_rows(2, 2)  # delete rows 2 and 3
+        assert self._col(ws, 2) == [1, 4]
+
+    def test_insert_cols_shifts_right(self, workbook_with_sheet):
+        ws = workbook_with_sheet.active
+        for c in range(1, 4):
+            ws.cell(row=1, column=c).value = c
+        ws.insert_cols(2, 2)
+        assert self._row(ws, 5) == [1, None, None, 2, 3]
+
+    def test_delete_cols_shifts_left(self, workbook_with_sheet):
+        ws = workbook_with_sheet.active
+        for c in range(1, 4):
+            ws.cell(row=1, column=c).value = c
+        ws.delete_cols(2)  # delete column 2
+        assert self._row(ws, 2) == [1, 3]

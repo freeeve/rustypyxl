@@ -528,6 +528,289 @@ impl Worksheet {
         self.max_row = self.max_row.max(row);
         self.max_column = self.max_column.max(column);
     }
+
+    /// Insert `amount` blank rows before row `idx` (1-based). Cells at or below
+    /// `idx` shift down; merged ranges, data validations, conditional
+    /// formatting, tables, and the autofilter/freeze anchors move with them.
+    /// Formula text is left unchanged, matching openpyxl.
+    pub fn insert_rows(&mut self, idx: u32, amount: u32) {
+        if amount > 0 && idx >= 1 {
+            self.apply_shift(Shift::Insert { at: idx, amount }, true);
+        }
+    }
+
+    /// Delete `amount` rows starting at row `idx` (1-based).
+    pub fn delete_rows(&mut self, idx: u32, amount: u32) {
+        if amount > 0 && idx >= 1 {
+            self.apply_shift(Shift::Delete { at: idx, amount }, true);
+        }
+    }
+
+    /// Insert `amount` blank columns before column `idx` (1-based).
+    pub fn insert_columns(&mut self, idx: u32, amount: u32) {
+        if amount > 0 && idx >= 1 {
+            self.apply_shift(Shift::Insert { at: idx, amount }, false);
+        }
+    }
+
+    /// Delete `amount` columns starting at column `idx` (1-based).
+    pub fn delete_columns(&mut self, idx: u32, amount: u32) {
+        if amount > 0 && idx >= 1 {
+            self.apply_shift(Shift::Delete { at: idx, amount }, false);
+        }
+    }
+
+    /// Apply a row or column insert/delete to every position-bearing part of
+    /// the sheet. `is_row` selects the axis.
+    fn apply_shift(&mut self, shift: Shift, is_row: bool) {
+        let map_pos = |row: u32, col: u32| -> Option<(u32, u32)> {
+            if is_row {
+                shift.map(row).map(|r| (r, col))
+            } else {
+                shift.map(col).map(|c| (row, c))
+            }
+        };
+
+        // Cells (with their per-cell styles/hyperlinks/comments): rebuild the
+        // map with shifted keys, dropping any cell in a deleted band.
+        let mut new_cells = CellMap::default();
+        new_cells.reserve(self.cells.len());
+        for (key, data) in self.cells.drain() {
+            let (row, col) = decode_cell_key(key);
+            if let Some((r, c)) = map_pos(row, col) {
+                new_cells.insert(cell_key(r, c), data);
+            }
+        }
+        self.cells = new_cells;
+
+        // Row heights / column widths: shift keys on the affected axis only.
+        if is_row {
+            self.row_dimensions = shift_dim_keys(&self.row_dimensions, shift);
+        } else {
+            self.column_dimensions = shift_dim_keys(&self.column_dimensions, shift);
+        }
+
+        // Merged ranges: move/grow/shrink; drop if collapsed to nothing or to a
+        // single cell (no longer a merge).
+        self.merged_cells
+            .retain_mut(|(s, e)| match shift_merge(s, e, shift, is_row) {
+                Some((ns, ne)) => {
+                    *s = ns;
+                    *e = ne;
+                    true
+                }
+                None => false,
+            });
+
+        // Data validations: shift the keying cell and each rule's sqref.
+        let mut new_dv = HashMap::new();
+        for ((row, col), mut dv) in std::mem::take(&mut self.data_validations) {
+            if let Some(pos) = map_pos(row, col) {
+                if let Some(ref sq) = dv.sqref {
+                    dv.sqref = shift_sqref(sq, shift, is_row);
+                }
+                new_dv.insert(pos, dv);
+            }
+        }
+        self.data_validations = new_dv;
+
+        // Range-bearing features.
+        self.conditional_formatting.retain_mut(|cf| {
+            match shift_range_str(&cf.range, shift, is_row) {
+                Some(r) => {
+                    cf.range = r;
+                    true
+                }
+                None => false,
+            }
+        });
+        self.tables
+            .retain_mut(|t| match shift_range_str(&t.range, shift, is_row) {
+                Some(r) => {
+                    t.range = r;
+                    true
+                }
+                None => false,
+            });
+        if let Some(af) = self.auto_filter.as_mut() {
+            if let Some(r) = shift_range_str(&af.range, shift, is_row) {
+                af.range = r;
+            }
+        }
+        if let Some(anchor) = self.freeze_panes.take() {
+            self.freeze_panes = shift_coord_str(&anchor, shift, is_row);
+        }
+
+        self.recompute_dimensions();
+    }
+
+    /// Recompute max_row/max_column by scanning the (already shifted) cell map.
+    fn recompute_dimensions(&mut self) {
+        let (mut max_row, mut max_col) = (0, 0);
+        for &key in self.cells.keys() {
+            let (r, c) = decode_cell_key(key);
+            max_row = max_row.max(r);
+            max_col = max_col.max(c);
+        }
+        self.max_row = max_row;
+        self.max_column = max_col;
+    }
+}
+
+/// A row or column insert/delete on one axis; positions are 1-based.
+#[derive(Clone, Copy)]
+enum Shift {
+    Insert { at: u32, amount: u32 },
+    Delete { at: u32, amount: u32 },
+}
+
+impl Shift {
+    /// New position of a single cell/dimension, or None if it was deleted.
+    fn map(self, p: u32) -> Option<u32> {
+        match self {
+            Shift::Insert { at, amount } => Some(if p >= at { p + amount } else { p }),
+            Shift::Delete { at, amount } => {
+                if p < at {
+                    Some(p)
+                } else if p < at + amount {
+                    None
+                } else {
+                    Some(p - amount)
+                }
+            }
+        }
+    }
+
+    /// New start endpoint of a range; a delete clamps up to the first surviving
+    /// position so a range straddling the gap shrinks rather than vanishes.
+    fn map_start(self, a: u32) -> u32 {
+        match self {
+            Shift::Insert { at, amount } => {
+                if a >= at {
+                    a + amount
+                } else {
+                    a
+                }
+            }
+            Shift::Delete { at, amount } => {
+                if a < at {
+                    a
+                } else if a < at + amount {
+                    at
+                } else {
+                    a - amount
+                }
+            }
+        }
+    }
+
+    /// New end endpoint of a range; a delete clamps down to the last surviving
+    /// position before the gap.
+    fn map_end(self, b: u32) -> u32 {
+        match self {
+            Shift::Insert { at, amount } => {
+                if b >= at {
+                    b + amount
+                } else {
+                    b
+                }
+            }
+            Shift::Delete { at, amount } => {
+                if b < at {
+                    b
+                } else if b < at + amount {
+                    at.saturating_sub(1)
+                } else {
+                    b - amount
+                }
+            }
+        }
+    }
+}
+
+/// Shift an `"A1"` coordinate on one axis; None if the cell was deleted.
+fn shift_coord_str(coord: &str, shift: Shift, is_row: bool) -> Option<String> {
+    let (row, col) = crate::utils::parse_coordinate(coord).ok()?;
+    let (nr, nc) = if is_row {
+        (shift.map(row)?, col)
+    } else {
+        (row, shift.map(col)?)
+    };
+    Some(crate::utils::coordinate_from_row_col(nr, nc))
+}
+
+/// Shift a merged range's `(start, end)` coordinates; None if it collapses to
+/// nothing or to a single cell (no longer a merge).
+fn shift_merge(s: &str, e: &str, shift: Shift, is_row: bool) -> Option<(String, String)> {
+    let (r1, c1) = crate::utils::parse_coordinate(s).ok()?;
+    let (r2, c2) = crate::utils::parse_coordinate(e).ok()?;
+    let (nr1, nc1, nr2, nc2) = if is_row {
+        (shift.map_start(r1), c1, shift.map_end(r2), c2)
+    } else {
+        (r1, shift.map_start(c1), r2, shift.map_end(c2))
+    };
+    if nr1 > nr2 || nc1 > nc2 || (nr1 == nr2 && nc1 == nc2) {
+        return None;
+    }
+    Some((
+        crate::utils::coordinate_from_row_col(nr1, nc1),
+        crate::utils::coordinate_from_row_col(nr2, nc2),
+    ))
+}
+
+/// Shift a range string `"A1:B2"` (or a bare `"A1"`) on one axis; None if the
+/// range was entirely deleted. A range that collapses to one cell is returned
+/// as a bare coordinate.
+fn shift_range_str(range: &str, shift: Shift, is_row: bool) -> Option<String> {
+    let (s, e) = match range.split_once(':') {
+        Some((a, b)) => (a.trim(), b.trim()),
+        None => (range.trim(), range.trim()),
+    };
+    let (r1, c1) = crate::utils::parse_coordinate(s).ok()?;
+    let (r2, c2) = crate::utils::parse_coordinate(e).ok()?;
+    let (nr1, nc1, nr2, nc2) = if is_row {
+        (shift.map_start(r1), c1, shift.map_end(r2), c2)
+    } else {
+        (r1, shift.map_start(c1), r2, shift.map_end(c2))
+    };
+    if nr1 > nr2 || nc1 > nc2 {
+        return None;
+    }
+    let start = crate::utils::coordinate_from_row_col(nr1, nc1);
+    if (nr1, nc1) == (nr2, nc2) {
+        Some(start)
+    } else {
+        Some(format!(
+            "{}:{}",
+            start,
+            crate::utils::coordinate_from_row_col(nr2, nc2)
+        ))
+    }
+}
+
+/// Shift a whitespace-separated multi-range sqref; None if every range was
+/// deleted.
+fn shift_sqref(sqref: &str, shift: Shift, is_row: bool) -> Option<String> {
+    let parts: Vec<String> = sqref
+        .split_whitespace()
+        .filter_map(|r| shift_range_str(r, shift, is_row))
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+/// Shift the keys of a row/column dimension map, dropping deleted lines.
+fn shift_dim_keys(dims: &HashMap<u32, f64>, shift: Shift) -> HashMap<u32, f64> {
+    let mut out = HashMap::with_capacity(dims.len());
+    for (&k, &v) in dims {
+        if let Some(nk) = shift.map(k) {
+            out.insert(nk, v);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

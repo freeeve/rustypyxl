@@ -1,6 +1,6 @@
 //! Python bindings for Worksheet.
 
-use pyo3::exceptions::{PyNotImplementedError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::Py;
@@ -427,40 +427,28 @@ impl PyWorksheet {
         }
     }
 
-    /// Insert rows. Not yet implemented.
+    /// Insert `amount` blank rows before row `idx` (1-based; openpyxl semantics).
     #[pyo3(signature = (idx, amount=None))]
-    fn insert_rows(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
-        let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err(
-            "insert_rows is not yet implemented",
-        ))
+    fn insert_rows(&self, idx: u32, amount: Option<u32>, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.insert_rows(idx, amount.unwrap_or(1)))
     }
 
-    /// Insert columns. Not yet implemented.
+    /// Insert `amount` blank columns before column `idx` (1-based).
     #[pyo3(signature = (idx, amount=None))]
-    fn insert_cols(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
-        let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err(
-            "insert_cols is not yet implemented",
-        ))
+    fn insert_cols(&self, idx: u32, amount: Option<u32>, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.insert_columns(idx, amount.unwrap_or(1)))
     }
 
-    /// Delete rows. Not yet implemented.
+    /// Delete `amount` rows starting at row `idx` (1-based).
     #[pyo3(signature = (idx, amount=None))]
-    fn delete_rows(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
-        let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err(
-            "delete_rows is not yet implemented",
-        ))
+    fn delete_rows(&self, idx: u32, amount: Option<u32>, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.delete_rows(idx, amount.unwrap_or(1)))
     }
 
-    /// Delete columns. Not yet implemented.
+    /// Delete `amount` columns starting at column `idx` (1-based).
     #[pyo3(signature = (idx, amount=None))]
-    fn delete_cols(&self, idx: u32, amount: Option<u32>) -> PyResult<()> {
-        let _ = (idx, amount);
-        Err(PyNotImplementedError::new_err(
-            "delete_cols is not yet implemented",
-        ))
+    fn delete_cols(&self, idx: u32, amount: Option<u32>, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.delete_columns(idx, amount.unwrap_or(1)))
     }
 
     /// Get the freeze-panes anchor cell, if any.
