@@ -443,6 +443,38 @@ impl PyWorkbook {
         }
     }
 
+    /// Evaluate a formula string in the context of a sheet and return the
+    /// computed value (a number, string, bool, None for blank, or an Excel error
+    /// string like "#DIV/0!"). See the formula engine's documented subset.
+    pub fn evaluate_formula(
+        &self,
+        sheet_name: &str,
+        formula: &str,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        let value = self
+            .inner
+            .evaluate_formula(sheet_name, formula)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(formula_value_to_python(value, py))
+    }
+
+    /// Evaluate the cell at 1-based (row, column): a formula cell is computed,
+    /// any other cell yields its value, and a blank cell yields None.
+    pub fn evaluate_cell(
+        &self,
+        sheet_name: &str,
+        row: u32,
+        column: u32,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        let value = self
+            .inner
+            .evaluate_cell(sheet_name, row, column)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(formula_value_to_python(value, py))
+    }
+
     /// Rich-text runs of a cell as a list of dicts (text + font attributes), or
     /// None if the cell is not rich text.
     pub fn get_cell_rich_text(
@@ -1469,6 +1501,29 @@ pub(crate) fn cell_value_to_python(value: &CellValue, py: Python<'_>) -> PyObjec
         CellValue::Boolean(b) => b.to_object(py),
         CellValue::Formula(f) => format!("={}", f).to_object(py),
         CellValue::Date(d) => iso_string_to_python(py, d).unwrap_or_else(|| d.to_object(py)),
+    }
+}
+
+/// Convert an evaluated formula value to a Python object: numbers become
+/// int/float, text a str, booleans a bool, blanks None, and Excel error values
+/// their string form (e.g. "#DIV/0!").
+pub(crate) fn formula_value_to_python(
+    value: rustypyxl_core::FormulaValue,
+    py: Python<'_>,
+) -> PyObject {
+    use rustypyxl_core::FormulaValue;
+    match value {
+        FormulaValue::Empty => py.None(),
+        FormulaValue::Text(s) => s.to_object(py),
+        FormulaValue::Bool(b) => b.to_object(py),
+        FormulaValue::Error(e) => e.to_object(py),
+        FormulaValue::Number(n) => {
+            if n.fract() == 0.0 && n.is_finite() && n.abs() < 9.007_199_254_740_992e15 {
+                (n as i64).to_object(py)
+            } else {
+                n.to_object(py)
+            }
+        }
     }
 }
 

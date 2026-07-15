@@ -32,6 +32,7 @@ pub mod chart_writer;
 pub mod conditional;
 pub mod drawing_writer;
 pub mod error;
+pub mod formula;
 pub mod image;
 pub mod numfmt;
 pub mod rich_text;
@@ -58,6 +59,7 @@ pub mod s3;
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
+pub use formula::{evaluate as evaluate_formula, CellResolver, FormulaValue};
 pub use numfmt::{builtin_format_code, format_number, format_value};
 pub use rich_text::{RichText, RunFont, TextRun};
 pub use style::{

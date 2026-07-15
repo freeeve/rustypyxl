@@ -174,6 +174,68 @@ fn resolve_rel_target(base_part: &str, target: &str) -> String {
     parts.join("/")
 }
 
+/// Convert a stored cell value to a formula value (formulas are handled by the
+/// evaluator, not here, so a bare Formula maps to its cached text if any).
+fn cell_value_to_formula(value: &CellValue) -> crate::formula::FormulaValue {
+    use crate::formula::FormulaValue;
+    match value {
+        CellValue::Number(n) => FormulaValue::Number(*n),
+        CellValue::Boolean(b) => FormulaValue::Bool(*b),
+        CellValue::String(s) => FormulaValue::Text(s.to_string()),
+        CellValue::Date(s) => FormulaValue::Text(s.clone()),
+        CellValue::Formula(f) => FormulaValue::Text(f.clone()),
+        CellValue::Empty => FormulaValue::Empty,
+    }
+}
+
+/// A [`crate::formula::CellResolver`] over a workbook: unqualified references
+/// resolve against the current sheet, `Sheet!A1` against a named sheet, and a
+/// referenced formula cell is evaluated recursively with cycle detection.
+struct WorkbookResolver<'a> {
+    wb: &'a Workbook,
+    current_sheet: usize,
+    visited: std::collections::HashSet<(usize, u32, u32)>,
+    depth: usize,
+}
+
+impl crate::formula::CellResolver for WorkbookResolver<'_> {
+    fn resolve(&mut self, sheet: Option<&str>, row: u32, col: u32) -> crate::formula::FormulaValue {
+        use crate::formula::FormulaValue;
+        let sheet_idx = match sheet {
+            None => self.current_sheet,
+            Some(name) => match self.wb.sheet_names.iter().position(|n| n == name) {
+                Some(i) => i,
+                None => return FormulaValue::Error("#REF!".to_string()),
+            },
+        };
+        let key = (sheet_idx, row, col);
+        if self.visited.contains(&key) {
+            // circular reference
+            return FormulaValue::Error("#REF!".to_string());
+        }
+        let cell = self.wb.worksheets[sheet_idx].get_cell_value(row, col);
+        match cell {
+            None | Some(CellValue::Empty) => FormulaValue::Empty,
+            Some(CellValue::Formula(f)) => {
+                if self.depth > 128 {
+                    return FormulaValue::Error("#REF!".to_string());
+                }
+                let f = f.clone();
+                self.visited.insert(key);
+                let saved = self.current_sheet;
+                self.current_sheet = sheet_idx;
+                self.depth += 1;
+                let result = crate::formula::evaluate(&f, self);
+                self.depth -= 1;
+                self.current_sheet = saved;
+                self.visited.remove(&key);
+                result
+            }
+            Some(value) => cell_value_to_formula(value),
+        }
+    }
+}
+
 /// Extract the raw `<tag …>…</tag>` (or self-closing `<tag …/>`) substring from
 /// an XML document, for preserving an element verbatim. Returns None if absent.
 fn extract_xml_element(xml: &[u8], tag: &str) -> Option<String> {
@@ -317,6 +379,48 @@ impl Workbook {
             }
         }
         Err(RustypyxlError::WorksheetNotFound(name.to_string()))
+    }
+
+    /// Evaluate a formula string in the context of a sheet, resolving cell and
+    /// range references against the workbook's current cell values. Formula
+    /// cells referenced by the expression are evaluated recursively (with cycle
+    /// detection). Returns an Excel-style error value on unsupported syntax or
+    /// type errors rather than failing. See [`crate::formula`] for the supported
+    /// subset.
+    pub fn evaluate_formula(
+        &self,
+        sheet_name: &str,
+        formula: &str,
+    ) -> Result<crate::formula::FormulaValue> {
+        let idx = self
+            .sheet_names
+            .iter()
+            .position(|n| n == sheet_name)
+            .ok_or_else(|| RustypyxlError::WorksheetNotFound(sheet_name.to_string()))?;
+        let mut resolver = WorkbookResolver {
+            wb: self,
+            current_sheet: idx,
+            visited: std::collections::HashSet::new(),
+            depth: 0,
+        };
+        Ok(crate::formula::evaluate(formula, &mut resolver))
+    }
+
+    /// Evaluate the cell at 1-based (row, column) on a sheet: a formula cell is
+    /// computed, any other cell yields its stored value, and a blank cell yields
+    /// [`crate::formula::FormulaValue::Empty`].
+    pub fn evaluate_cell(
+        &self,
+        sheet_name: &str,
+        row: u32,
+        column: u32,
+    ) -> Result<crate::formula::FormulaValue> {
+        let ws = self.get_sheet_by_name(sheet_name)?;
+        match ws.get_cell_value(row, column) {
+            Some(CellValue::Formula(f)) => self.evaluate_formula(sheet_name, f),
+            Some(value) => Ok(cell_value_to_formula(value)),
+            None => Ok(crate::formula::FormulaValue::Empty),
+        }
     }
 
     /// Get a worksheet by index.
