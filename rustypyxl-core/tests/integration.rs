@@ -5,9 +5,7 @@ use rustypyxl::conditional::{
     ColorScale, ConditionalColor, ConditionalFormatType, ConditionalFormatting,
     ConditionalOperator, ConditionalRule, DataBar,
 };
-use rustypyxl::pagesetup::{
-    HeaderFooterSection, Orientation, PageMargins, PageSetup, PaperSize,
-};
+use rustypyxl::pagesetup::{HeaderFooterSection, Orientation, PageMargins, PageSetup, PaperSize};
 use rustypyxl::table::{Table, TableColumn, TableStyle, TotalsRowFunction};
 use rustypyxl::{CellValue, Workbook};
 use std::fs;
