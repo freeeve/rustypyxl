@@ -578,6 +578,25 @@ impl PyWorksheet {
         self.with_sheet_mut(py, |ws| ws.add_image(img))
     }
 
+    /// Size a column to fit its content and return the width set (or None if the
+    /// column is empty). `column` is 1-based. The width is an estimate from the
+    /// displayed text length, not pixel-perfect.
+    fn auto_fit_column(&self, column: u32, py: Python<'_>) -> PyResult<Option<f64>> {
+        if let Some(ref wb) = self.workbook {
+            let mut this = wb.borrow_mut(py);
+            let idx = self.resolve_index(&this)?;
+            return Ok(this.inner.worksheets[idx].auto_fit_column(column));
+        }
+        Err(PyValueError::new_err(
+            "Worksheet is not attached to a workbook",
+        ))
+    }
+
+    /// Auto-fit every column that has content.
+    fn auto_fit_all(&self, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.auto_fit_all())
+    }
+
     /// Get the freeze-panes anchor cell, if any.
     #[getter]
     fn freeze_panes(&self, py: Python<'_>) -> PyResult<Option<String>> {

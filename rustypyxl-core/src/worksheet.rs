@@ -464,6 +464,93 @@ impl Worksheet {
         self.column_dimensions.get(&column).copied()
     }
 
+    /// Estimate the width (in Excel character units) needed to show a column's
+    /// content, or `None` if the column has no populated cells.
+    ///
+    /// This is an approximation, not pixel-perfect: Excel measures actual glyph
+    /// widths, whereas this counts characters of the *displayed* string (the
+    /// value rendered under its number format), scales roughly by font size and
+    /// bold, adds padding, and clamps to Excel's maximum. Good enough for the
+    /// common "make the columns readable" need.
+    pub fn estimate_column_width(&self, column: u32) -> Option<f64> {
+        // Excel's default column width plus padding for cell margins/gridline.
+        const PADDING: f64 = 2.0;
+        // Excel's hard maximum column width.
+        const MAX_WIDTH: f64 = 255.0;
+
+        let mut max_units: f64 = 0.0;
+        let mut saw_cell = false;
+        for (key, cell) in &self.cells {
+            let (_, col) = decode_cell_key(*key);
+            if col != column {
+                continue;
+            }
+            if matches!(cell.value, CellValue::Empty) && cell.rich_text.is_none() {
+                continue;
+            }
+            saw_cell = true;
+
+            // The effective format code may live on the interned per-cell field
+            // (set through the core API and on load) or on the cell's style (set
+            // through the styled-cell API).
+            let style_format = cell.style.as_ref().and_then(|s| s.number_format.as_deref());
+            let code = cell
+                .number_format
+                .as_deref()
+                .or(style_format)
+                .unwrap_or("General");
+            let display = crate::numfmt::format_value(&cell.value, code);
+            // A wrapped/multi-line string is only as wide as its longest line.
+            let longest_line = display
+                .split('\n')
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0) as f64;
+
+            let mut units = longest_line;
+            if let Some(style) = &cell.style {
+                if let Some(font) = &style.font {
+                    if let Some(size) = font.size {
+                        if size > 0.0 {
+                            units *= size / 11.0;
+                        }
+                    }
+                    if font.bold {
+                        units *= 1.05;
+                    }
+                }
+            }
+            max_units = max_units.max(units);
+        }
+
+        if !saw_cell {
+            return None;
+        }
+        Some((max_units + PADDING).min(MAX_WIDTH))
+    }
+
+    /// Size a column to fit its content and return the width set. Does nothing
+    /// and returns `None` when the column has no populated cells.
+    pub fn auto_fit_column(&mut self, column: u32) -> Option<f64> {
+        let width = self.estimate_column_width(column)?;
+        self.set_column_width(column, width);
+        Some(width)
+    }
+
+    /// Auto-fit every column that has content.
+    pub fn auto_fit_all(&mut self) {
+        let mut columns: Vec<u32> = self
+            .cells
+            .keys()
+            .map(|key| decode_cell_key(*key).1)
+            .collect();
+        columns.sort_unstable();
+        columns.dedup();
+        for column in columns {
+            self.auto_fit_column(column);
+        }
+    }
+
     /// Set row height.
     pub fn set_row_height(&mut self, row: u32, height: f64) {
         self.row_dimensions.insert(row, height);
