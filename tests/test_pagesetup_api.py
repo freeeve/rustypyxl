@@ -29,7 +29,8 @@ def test_print_area_property(tmp_path):
     out = str(tmp_path / "pa.xlsx")
     wb.save(out)
     ows = openpyxl.load_workbook(out)["S"]
-    assert "A1:D20" in str(ows.print_area)
+    # Excel stores the print area as an absolute, sheet-qualified defined name.
+    assert "$A$1:$D$20" in str(ows.print_area)
 
 
 def test_header_footer(tmp_path):

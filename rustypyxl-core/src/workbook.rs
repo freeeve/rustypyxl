@@ -174,6 +174,37 @@ pub(crate) fn resolve_rel_target(base_part: &str, target: &str) -> String {
     parts.join("/")
 }
 
+/// Build the value of a `_xlnm.Print_Area` defined name: the range qualified
+/// with its sheet and made absolute, e.g. "Sheet1"!$A$1:$D$20. A sheet name
+/// with a space or special char is wrapped in single quotes.
+fn qualify_print_area(sheet: &str, area: &str) -> String {
+    let sheet_ref = if sheet.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        sheet.to_string()
+    } else {
+        format!("'{}'", sheet.replace('\'', "''"))
+    };
+    let abs: String = area
+        .split(':')
+        .map(absolute_ref)
+        .collect::<Vec<_>>()
+        .join(":");
+    format!("{}!{}", sheet_ref, abs)
+}
+
+/// Add `$` anchors to a plain A1 cell reference (e.g. "A1" -> "$A$1"). Leaves an
+/// already-anchored or unparseable reference unchanged.
+fn absolute_ref(cell: &str) -> String {
+    if cell.contains('$') {
+        return cell.to_string();
+    }
+    let bytes = cell.as_bytes();
+    let split = bytes.iter().position(|b| b.is_ascii_digit());
+    match split {
+        Some(i) if i > 0 => format!("${}${}", &cell[..i], &cell[i..]),
+        _ => cell.to_string(),
+    }
+}
+
 /// Normalize a user-supplied aggregation name to its OOXML subtotal token.
 fn normalize_subtotal(agg: &str) -> String {
     match agg.to_ascii_lowercase().as_str() {
@@ -1051,11 +1082,25 @@ impl Workbook {
             .zip(&self.worksheets)
             .map(|(name, ws)| (name.clone(), ws.visibility))
             .collect();
+        // Excel stores each sheet's print area as a sheet-scoped
+        // `_xlnm.Print_Area` defined name, so synthesize those alongside the
+        // user's named ranges.
+        let mut all_named_ranges = self.named_ranges.clone();
+        for (idx, ws) in self.worksheets.iter().enumerate() {
+            if let Some(area) = ws.page_setup.as_ref().and_then(|ps| ps.print_area.as_ref()) {
+                all_named_ranges.push(NamedRange {
+                    name: "_xlnm.Print_Area".to_string(),
+                    range: qualify_print_area(&self.sheet_names[idx], area),
+                    local_sheet_id: Some(idx as u32),
+                    hidden: false,
+                });
+            }
+        }
         writer::write_workbook_xml(
             zip,
             &options,
             &sheet_meta,
-            &self.named_ranges,
+            &all_named_ranges,
             self.active_sheet,
             self.date1904,
             pivot_caches_xml.as_deref(),
