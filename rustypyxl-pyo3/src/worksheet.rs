@@ -691,7 +691,9 @@ impl PyWorksheet {
             None => None,
         };
         self.with_sheet_mut(py, |ws| {
-            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            let ps = ws
+                .page_setup
+                .get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
             if let Some(o) = orient {
                 ps.orientation = o;
             }
@@ -719,6 +721,7 @@ impl PyWorksheet {
 
     /// Set the page margins (in inches).
     #[pyo3(signature = (left=0.7, right=0.7, top=0.75, bottom=0.75, header=0.3, footer=0.3))]
+    #[allow(clippy::too_many_arguments)]
     fn set_page_margins(
         &self,
         left: f64,
@@ -731,7 +734,9 @@ impl PyWorksheet {
     ) -> PyResult<()> {
         use rustypyxl_core::pagesetup::PageMargins;
         self.with_sheet_mut(py, |ws| {
-            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            let ps = ws
+                .page_setup
+                .get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
             ps.margins = PageMargins {
                 left,
                 right,
@@ -759,7 +764,9 @@ impl PyWorksheet {
     ) -> PyResult<()> {
         use rustypyxl_core::pagesetup::HeaderFooterSection;
         self.with_sheet_mut(py, |ws| {
-            let ps = ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
+            let ps = ws
+                .page_setup
+                .get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new);
             let mut header = HeaderFooterSection::new();
             header.left = header_left;
             header.center = header_center;
@@ -785,7 +792,9 @@ impl PyWorksheet {
     #[setter]
     fn set_print_area(&self, py: Python<'_>, area: Option<String>) -> PyResult<()> {
         self.with_sheet_mut(py, |ws| {
-            ws.page_setup.get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new).print_area = area;
+            ws.page_setup
+                .get_or_insert_with(rustypyxl_core::pagesetup::PageSetup::new)
+                .print_area = area;
         })
     }
 
@@ -906,6 +915,24 @@ impl PyWorksheet {
         Ok(list.into_any().unbind())
     }
 
+    /// Protect the sheet, optionally with a password (hashed with Excel's
+    /// legacy verifier on save).
+    #[pyo3(signature = (password=None))]
+    fn protect_sheet(&self, password: Option<String>, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.enable_protection(password))
+    }
+
+    /// Remove sheet protection.
+    fn unprotect_sheet(&self, py: Python<'_>) -> PyResult<()> {
+        self.with_sheet_mut(py, |ws| ws.disable_protection())
+    }
+
+    /// Whether the sheet is protected.
+    #[getter]
+    fn sheet_protected(&self, py: Python<'_>) -> PyResult<bool> {
+        self.with_sheet_ref(py, |ws| ws.is_protected())
+    }
+
     /// The AutoFilter proxy: `ws.auto_filter.ref = "A1:C10"`.
     #[getter]
     fn auto_filter(&self, py: Python<'_>) -> PyResult<crate::dimensions::PyAutoFilter> {
@@ -922,10 +949,7 @@ impl PyWorksheet {
     /// Column dimensions, indexed by column letter:
     /// `ws.column_dimensions['A'].width = 20`.
     #[getter]
-    fn column_dimensions(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<crate::dimensions::PyColumnDimensions> {
+    fn column_dimensions(&self, py: Python<'_>) -> PyResult<crate::dimensions::PyColumnDimensions> {
         let wb = self
             .workbook
             .as_ref()
