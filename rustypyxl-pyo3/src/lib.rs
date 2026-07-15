@@ -6,6 +6,7 @@
 use pyo3::prelude::*;
 
 mod cell;
+mod dimensions;
 mod streaming;
 mod style;
 mod workbook;
@@ -91,6 +92,10 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorkbook>()?;
     m.add_class::<PyPivotTable>()?;
     m.add_class::<PyWorksheet>()?;
+    m.add_class::<dimensions::PyColumnDimensions>()?;
+    m.add_class::<dimensions::PyColumnDimension>()?;
+    m.add_class::<dimensions::PyRowDimensions>()?;
+    m.add_class::<dimensions::PyRowDimension>()?;
     m.add_class::<PyCell>()?;
     m.add_class::<PyCellRangeIterator>()?;
 

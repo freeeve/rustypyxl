@@ -597,6 +597,36 @@ impl PyWorksheet {
         self.with_sheet_mut(py, |ws| ws.auto_fit_all())
     }
 
+    /// Column dimensions, indexed by column letter:
+    /// `ws.column_dimensions['A'].width = 20`.
+    #[getter]
+    fn column_dimensions(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<crate::dimensions::PyColumnDimensions> {
+        let wb = self
+            .workbook
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("Worksheet is not attached to a workbook"))?;
+        Ok(crate::dimensions::PyColumnDimensions {
+            workbook: wb.clone_ref(py),
+            uid: self.uid,
+        })
+    }
+
+    /// Row dimensions, indexed by row number: `ws.row_dimensions[1].height = 15`.
+    #[getter]
+    fn row_dimensions(&self, py: Python<'_>) -> PyResult<crate::dimensions::PyRowDimensions> {
+        let wb = self
+            .workbook
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("Worksheet is not attached to a workbook"))?;
+        Ok(crate::dimensions::PyRowDimensions {
+            workbook: wb.clone_ref(py),
+            uid: self.uid,
+        })
+    }
+
     /// Get the freeze-panes anchor cell, if any.
     #[getter]
     fn freeze_panes(&self, py: Python<'_>) -> PyResult<Option<String>> {
