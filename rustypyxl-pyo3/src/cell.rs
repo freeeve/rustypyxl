@@ -349,6 +349,17 @@ impl PyCell {
         Ok(self.number_format_internal.clone())
     }
 
+    /// The cell's value rendered the way Excel would display it under this
+    /// cell's number format (its format code applied to the value).
+    #[getter]
+    fn display_value(&self, py: Python<'_>) -> PyResult<String> {
+        let val = self.value(py)?;
+        let fmt = self
+            .number_format(py)?
+            .unwrap_or_else(|| "General".to_string());
+        crate::format_value(val.bind(py), &fmt)
+    }
+
     /// Set the cell's number format.
     #[setter]
     fn set_number_format(&mut self, py: Python<'_>, format: Option<String>) -> PyResult<()> {

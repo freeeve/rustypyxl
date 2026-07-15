@@ -33,6 +33,7 @@ pub mod conditional;
 pub mod drawing_writer;
 pub mod error;
 pub mod image;
+pub mod numfmt;
 pub mod rich_text;
 pub mod style;
 pub mod utils;
@@ -57,6 +58,7 @@ pub mod s3;
 // Re-export main types at crate level
 pub use cell::CellValue;
 pub use error::{Result, RustypyxlError};
+pub use numfmt::{builtin_format_code, format_number, format_value};
 pub use rich_text::{RichText, RunFont, TextRun};
 pub use style::{
     Alignment, Border, BorderStyle, CellStyle, Color, Fill, Font, GradientFill, GradientStop,
