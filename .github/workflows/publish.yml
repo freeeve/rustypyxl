@@ -45,7 +45,10 @@ jobs:
           - { runner: ubuntu-latest, target: aarch64, libc: manylinux, manylinux: auto }
           - { runner: ubuntu-latest, target: x86_64, libc: musllinux, manylinux: musllinux_1_2 }
           - { runner: ubuntu-latest, target: aarch64, libc: musllinux, manylinux: musllinux_1_2 }
-          - { runner: macos-13, target: x86_64 }
+          # macOS Intel (x86_64) is dropped: the macos-13 runner is scarce and
+          # slow to schedule, and it is a shrinking audience. Apple Silicon
+          # (arm64) is covered by macos-latest; Intel-Mac users fall back to the
+          # sdist. Re-add `{ runner: macos-13, target: x86_64 }` if demand returns.
           - { runner: macos-latest, target: aarch64 }
           - { runner: windows-latest, target: x64 }
 
