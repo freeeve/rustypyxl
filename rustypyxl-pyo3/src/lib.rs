@@ -66,6 +66,34 @@ fn format_value(value: &Bound<'_, PyAny>, number_format: &str) -> PyResult<Strin
     Ok(rustypyxl_core::format_value(&cv, number_format))
 }
 
+/// Encrypt raw xlsx bytes with a password (ECMA-376 agile encryption), returning
+/// the encrypted OLE2/CFB container bytes. Useful for encrypting a workbook you
+/// already have as bytes without a load/save cycle.
+#[pyfunction]
+fn encrypt_bytes<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    password: &str,
+) -> PyResult<pyo3::Bound<'py, pyo3::types::PyBytes>> {
+    let out = py
+        .allow_threads(|| rustypyxl_core::crypto::encrypt(data, password))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &out))
+}
+
+/// Decrypt an encrypted xlsx container to its plaintext xlsx (ZIP) bytes.
+#[pyfunction]
+fn decrypt_bytes<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    password: &str,
+) -> PyResult<pyo3::Bound<'py, pyo3::types::PyBytes>> {
+    let out = py
+        .allow_threads(|| rustypyxl_core::crypto::decrypt(data, password))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &out))
+}
+
 /// Convert a Python date/datetime/time to an Excel serial (1900 date system).
 fn datetime_to_serial(value: &Bound<'_, PyAny>) -> PyResult<f64> {
     // date and datetime expose toordinal; a bare time does not.
@@ -118,6 +146,8 @@ fn rustypyxl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Functions
     m.add_function(wrap_pyfunction!(load_workbook, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
+    m.add_function(wrap_pyfunction!(encrypt_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(decrypt_bytes, m)?)?;
 
     // Add submodule for styles (openpyxl compatibility)
     let styles = PyModule::new(m.py(), "styles")?;

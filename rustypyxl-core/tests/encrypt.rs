@@ -39,6 +39,24 @@ fn wrong_password_fails_to_open_our_own_output() {
 }
 
 #[test]
+fn encryption_is_byte_lossless() {
+    // The encryption layer must recover the plaintext exactly -- not merely a
+    // workbook with equal content. Encrypt arbitrary bytes and decrypt them back.
+    let original = sample().save_to_bytes().unwrap();
+    let encrypted = rustypyxl::crypto::encrypt(&original, "pw").unwrap();
+    let recovered = rustypyxl::crypto::decrypt(&encrypted, "pw").unwrap();
+    assert_eq!(
+        recovered, original,
+        "decrypt(encrypt(x)) must equal x byte-for-byte"
+    );
+
+    // A larger payload spanning several 4096-byte segments, too.
+    let big: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    let enc = rustypyxl::crypto::encrypt(&big, "k").unwrap();
+    assert_eq!(rustypyxl::crypto::decrypt(&enc, "k").unwrap(), big);
+}
+
+#[test]
 fn larger_workbook_round_trips() {
     // Exercise a package that spans multiple 4096-byte segments and the regular
     // FAT (a big EncryptedPackage stream).
