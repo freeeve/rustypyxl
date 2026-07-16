@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 # The core is published as `rustypyxl`, but this crate's own extension module is
 # also named `rustypyxl` (see [lib] above), so import the dependency under an
 # alias to avoid the name clash. Binding source keeps using `rustypyxl_core::`.
-rustypyxl_core = { package = "rustypyxl", path = "../rustypyxl-core", features = ["parquet", "decrypt"] }
+rustypyxl_core = { package = "rustypyxl", path = "../rustypyxl-core", features = ["parquet", "decrypt", "encrypt"] }
 pyo3 = { workspace = true }
 
 [features]

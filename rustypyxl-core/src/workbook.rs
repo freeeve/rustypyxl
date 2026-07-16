@@ -960,6 +960,24 @@ impl Workbook {
         Ok(cursor.into_inner())
     }
 
+    /// Save the workbook as password-protected (agile-encrypted) bytes. Requires
+    /// the `encrypt` feature. The saved ZIP is encrypted with AES-256; the file
+    /// opens in Excel and other readers with the given password.
+    #[cfg(feature = "encrypt")]
+    pub fn save_to_bytes_with_password(&self, password: &str) -> Result<Vec<u8>> {
+        let plain = self.save_to_bytes()?;
+        crate::crypto::encrypt(&plain, password)
+    }
+
+    /// Save the workbook as a password-protected (encrypted) file. Requires the
+    /// `encrypt` feature.
+    #[cfg(feature = "encrypt")]
+    pub fn save_with_password(&self, path: &str, password: &str) -> Result<()> {
+        let bytes = self.save_to_bytes_with_password(password)?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
     /// Save the workbook to any writer that implements Write + Seek.
     pub fn save_to_writer<W: std::io::Write + Seek>(&self, writer: W) -> Result<()> {
         let mut zip = self.create_zip_writer(writer)?;

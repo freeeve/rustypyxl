@@ -116,14 +116,14 @@ jobs:
       # compiles out, so a silent wrap here fails the build instead of
       # corrupting a coordinate at runtime.
       - name: Run Rust tests (debug, overflow checks on)
-        run: cargo test -p rustypyxl --features parquet,decrypt
+        run: cargo test -p rustypyxl --features parquet,encrypt
 
       # Core only, not --workspace: the pyo3 crate is a cdylib extension module
       # that does not link as a standalone test binary on macOS, and its real
       # tests are the Python suite built via maturin in the matrix above. This
       # leg exists to exercise the pure-Rust library across platforms.
       - name: Run Rust tests (release)
-        run: cargo test -p rustypyxl --features parquet,decrypt --release
+        run: cargo test -p rustypyxl --features parquet,encrypt --release
 
   lint:
     name: Clippy

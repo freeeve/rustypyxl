@@ -361,18 +361,40 @@ impl PyWorkbook {
     ///
     /// Args:
     ///     filename: Path to save the Excel file (str or os.PathLike)
-    fn save(&self, filename: std::path::PathBuf, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.save(&filename.to_string_lossy()))
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+    ///     password: Encrypt the file with this password (agile encryption)
+    #[pyo3(signature = (filename, password=None))]
+    fn save(
+        &self,
+        filename: std::path::PathBuf,
+        password: Option<&str>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
+        let path = filename.to_string_lossy();
+        py.allow_threads(|| match password {
+            Some(pw) => self.inner.save_with_password(&path, pw),
+            None => self.inner.save(&path),
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Save the workbook to bytes.
     ///
+    /// Args:
+    ///     password: Encrypt the bytes with this password (agile encryption)
+    ///
     /// Returns:
     ///     bytes: The workbook as an xlsx file in memory
-    fn save_to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (password=None))]
+    fn save_to_bytes<'py>(
+        &self,
+        password: Option<&str>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = py
-            .allow_threads(|| self.inner.save_to_bytes())
+            .allow_threads(|| match password {
+                Some(pw) => self.inner.save_to_bytes_with_password(pw),
+                None => self.inner.save_to_bytes(),
+            })
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
