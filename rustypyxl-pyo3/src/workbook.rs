@@ -39,9 +39,19 @@ impl PyWorkbook {
     /// Returns:
     ///     Workbook: The loaded workbook
     #[staticmethod]
-    #[pyo3(signature = (source))]
-    pub fn load(source: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (source, password=None))]
+    pub fn load(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<Self> {
         let py = source.py();
+
+        // A password opens an encrypted (or plain) workbook: resolve the source
+        // to bytes and decrypt as needed.
+        if let Some(pw) = password {
+            let bytes = read_source_bytes(source)?;
+            let inner = py
+                .allow_threads(|| Workbook::load_from_bytes_with_password(&bytes, pw))
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            return Ok(PyWorkbook { inner });
+        }
 
         // Check if source is bytes (before PathBuf, which str also satisfies)
         if let Ok(bytes) = source.extract::<Vec<u8>>() {
@@ -1538,6 +1548,23 @@ fn iso_string_to_python(py: Python<'_>, s: &str) -> Option<PyObject> {
 }
 
 /// Convert a CellValue to a Python object.
+/// Read a load source (bytes, a file path, or a file-like object) into bytes.
+fn read_source_bytes(source: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(bytes) = source.extract::<Vec<u8>>() {
+        return Ok(bytes);
+    }
+    if let Ok(path) = source.extract::<std::path::PathBuf>() {
+        return std::fs::read(&path)
+            .map_err(|e| PyValueError::new_err(format!("could not read {}: {e}", path.display())));
+    }
+    if source.hasattr("read")? {
+        return source.call_method0("read")?.extract::<Vec<u8>>();
+    }
+    Err(PyTypeError::new_err(
+        "Expected file path (str or os.PathLike), bytes, or file-like object with .read() method",
+    ))
+}
+
 /// A read-only view of a pivot table (openpyxl-level read support).
 #[pyclass(name = "PivotTable", frozen)]
 pub struct PyPivotTable {

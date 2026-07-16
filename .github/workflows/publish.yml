@@ -27,7 +27,7 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install maturin pytest openpyxl pyarrow Pillow
+          python -m pip install maturin pytest openpyxl pyarrow Pillow msoffcrypto-tool
           maturin develop --release
           pytest tests/
 
@@ -102,7 +102,7 @@ jobs:
       - name: Install the wheel and run the suite against it
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest openpyxl pyarrow Pillow
+          python -m pip install pytest openpyxl pyarrow Pillow msoffcrypto-tool
           # Only the manylinux x86_64 wheel is installable here; pip ignores the
           # rest. --no-index proves the wheel is used, not a PyPI download.
           python -m pip install --no-index --find-links dist rustypyxl

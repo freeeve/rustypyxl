@@ -26,6 +26,13 @@ hashbrown = { version = "0.14", optional = true }
 parquet = { version = "54", optional = true, default-features = false, features = ["arrow", "snap", "zstd", "lz4", "flate2"] }
 arrow = { version = "54", optional = true, default-features = false }
 
+# Encrypted-workbook reading (optional). Adds no new crates to the tree: the
+# AES/SHA primitives are already pulled in by zip's aes-crypto feature, and the
+# compound-file container is parsed in-crate.
+aes = { version = "0.8", optional = true }
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+
 # S3 support (optional)
 aws-sdk-s3 = { version = "1", optional = true }
 aws-config = { version = "1", optional = true, features = ["behavior-version-latest"] }
@@ -42,6 +49,7 @@ bench = []
 pprof = ["dep:pprof"]
 fast-hash = ["dep:ahash", "dep:hashbrown"]
 parquet = ["dep:parquet", "dep:arrow"]
+decrypt = ["dep:aes", "dep:sha1", "dep:sha2"]
 s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-smithy-types", "dep:tokio"]
 
 [[bin]]

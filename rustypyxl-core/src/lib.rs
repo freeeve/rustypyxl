@@ -30,6 +30,8 @@ pub mod cell;
 pub mod chart;
 pub mod chart_writer;
 pub mod conditional;
+#[cfg(feature = "decrypt")]
+pub mod crypto;
 pub mod drawing_writer;
 pub mod error;
 pub mod formula;

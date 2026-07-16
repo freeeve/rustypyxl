@@ -224,6 +224,12 @@ fn normalize_subtotal(agg: &str) -> String {
     .to_string()
 }
 
+/// Whether bytes are an OLE2/CFB container (an encrypted OOXML workbook) rather
+/// than a ZIP. Cheap magic-byte check; needs no crypto feature.
+fn looks_encrypted(data: &[u8]) -> bool {
+    data.len() >= 8 && data[..8] == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
+}
+
 /// Capitalize the first letter for a data-field display label ("sum" -> "Sum").
 fn cap_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -379,7 +385,19 @@ impl Workbook {
             ))
         })?;
 
-        let mut archive = ZipArchive::new(BufReader::new(file))?;
+        let mut archive = ZipArchive::new(BufReader::new(file)).map_err(|e| {
+            // A CFB container fails to open as a ZIP; point at the password loader.
+            if std::fs::read(path)
+                .ok()
+                .is_some_and(|d| looks_encrypted(&d))
+            {
+                RustypyxlError::InvalidFormat(
+                    "workbook is encrypted; open it with a password via load_with_password".into(),
+                )
+            } else {
+                RustypyxlError::from(e)
+            }
+        })?;
 
         let mut workbook = Workbook::new();
         workbook.parse_workbook(&mut archive)?;
@@ -389,6 +407,14 @@ impl Workbook {
 
     /// Load a workbook from bytes (e.g., from memory or network).
     pub fn load_from_bytes(data: &[u8]) -> Result<Self> {
+        // An encrypted workbook is an OLE2/CFB container, not a ZIP; give a
+        // clear error pointing at the password-taking loader.
+        if looks_encrypted(data) {
+            return Err(RustypyxlError::InvalidFormat(
+                "workbook is encrypted; open it with a password via load_from_bytes_with_password"
+                    .into(),
+            ));
+        }
         let cursor = Cursor::new(data);
         let mut archive = ZipArchive::new(cursor)?;
 
@@ -396,6 +422,31 @@ impl Workbook {
         workbook.parse_workbook(&mut archive)?;
 
         Ok(workbook)
+    }
+
+    /// Load a password-protected (encrypted) workbook from bytes. Requires the
+    /// `decrypt` feature. A non-encrypted input is loaded normally (the password
+    /// is ignored).
+    #[cfg(feature = "decrypt")]
+    pub fn load_from_bytes_with_password(data: &[u8], password: &str) -> Result<Self> {
+        if crate::crypto::is_encrypted(data) {
+            let plain = crate::crypto::decrypt(data, password)?;
+            return Self::load_from_bytes(&plain);
+        }
+        Self::load_from_bytes(data)
+    }
+
+    /// Load a password-protected (encrypted) workbook from a file path. Requires
+    /// the `decrypt` feature.
+    #[cfg(feature = "decrypt")]
+    pub fn load_with_password(path: &str, password: &str) -> Result<Self> {
+        let data = std::fs::read(path).map_err(|e| {
+            RustypyxlError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Failed to open file '{}': {}", path, e),
+            ))
+        })?;
+        Self::load_from_bytes_with_password(&data, password)
     }
 
     /// Get the active (first) worksheet.

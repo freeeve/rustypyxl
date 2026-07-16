@@ -25,6 +25,7 @@ use worksheet::{PyCellRangeIterator, PyWorksheet};
 ///
 /// Args:
 ///     source: File path (str), bytes, or file-like object with .read() method
+///     password: Password for a protected (encrypted) workbook, if any
 ///
 /// Returns:
 ///     Workbook: The loaded workbook
@@ -32,11 +33,11 @@ use worksheet::{PyCellRangeIterator, PyWorksheet};
 /// Example:
 ///     wb = load_workbook('file.xlsx')
 ///     wb = load_workbook(file_bytes)
-///     wb = load_workbook(io.BytesIO(file_bytes))
+///     wb = load_workbook('protected.xlsx', password='secret')
 #[pyfunction]
-#[pyo3(signature = (source))]
-fn load_workbook(source: &Bound<'_, PyAny>) -> PyResult<PyWorkbook> {
-    PyWorkbook::load(source)
+#[pyo3(signature = (source, password=None))]
+fn load_workbook(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyWorkbook> {
+    PyWorkbook::load(source, password)
 }
 
 /// Render a value the way Excel would display it under a number-format code.

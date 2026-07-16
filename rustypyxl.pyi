@@ -11,7 +11,9 @@ _ColorArg = str | Color | None
 # Color when it carries a theme, a palette index, or a tint.
 _ColorValue = str | Color | None
 
-def load_workbook(source: str | os.PathLike[str] | bytes | BinaryIO) -> Workbook: ...
+def load_workbook(
+    source: str | os.PathLike[str] | bytes | BinaryIO, password: str | None = None
+) -> Workbook: ...
 def format_value(
     value: str | int | float | bool | datetime.datetime | datetime.date | datetime.time | None,
     number_format: str,
@@ -20,7 +22,9 @@ def format_value(
 class Workbook:
     def __init__(self) -> None: ...
     @staticmethod
-    def load(source: str | os.PathLike[str] | bytes | BinaryIO) -> Workbook: ...
+    def load(
+        source: str | os.PathLike[str] | bytes | BinaryIO, password: str | None = None
+    ) -> Workbook: ...
     @property
     def active(self) -> Worksheet: ...
     @active.setter
