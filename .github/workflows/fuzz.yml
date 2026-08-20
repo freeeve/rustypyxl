@@ -1,9 +1,8 @@
 name: Fuzz
 
+# Manual-only. The nightly schedule was removed to stop it consuming build
+# minutes; run it on demand (or locally with `cargo fuzz run <target>`).
 on:
-  schedule:
-    # Nightly, off the critical path of PRs -- fuzzing is a soak, not a gate
-    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       duration:
